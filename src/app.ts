@@ -98,7 +98,7 @@ export function initApp() {
   writePaletteData(scene.palette);
   writeAtmosphereParams(scene.atmosphere);
   writeScatterParams(scene.sunAngle, scene.sunElevation);
-  writeFormsData(scene.forms, scene.palette.colors, scene.sunAngle, scene.tonalMap, scene.velvet, scene.tonalSort, scene.gravity);
+  writeFormsData(scene.forms, scene.palette.colors, scene.sunAngle, scene.tonalMap, scene.velvet, scene.tonalSort, scene.gravity, scene.baseOpacity, scene.falloff);
   writeLightData(scene.lights, 32);
   writeCompositorParams({
     shadowChroma: scene.shadowChroma,
@@ -160,6 +160,8 @@ export function initApp() {
   let prevGravity = scene.gravity;
   let prevTonalSort = scene.tonalSort;
   let prevEcho = scene.echo;
+  let prevBaseOpacity = scene.baseOpacity;
+  let prevFalloff = scene.falloff;
   let prevPaletteColors = scene.palette.colors;
   let prevForms = scene.forms;
   let prevFormsLen = scene.forms.length;
@@ -170,7 +172,7 @@ export function initApp() {
     writeAtmosphereParams(state.atmosphere);
     writeScatterParams(state.sunAngle, state.sunElevation);
     writePaletteData(state.palette);
-    writeFormsData(state.forms, state.palette.colors, state.sunAngle, state.tonalMap, state.velvet, state.tonalSort, state.gravity);
+    writeFormsData(state.forms, state.palette.colors, state.sunAngle, state.tonalMap, state.velvet, state.tonalSort, state.gravity, state.baseOpacity, state.falloff);
     writeLightData(state.lights, 32);
     writeCompositorParams({
       shadowChroma: state.shadowChroma,
@@ -188,6 +190,8 @@ export function initApp() {
         state.gravity !== prevGravity ||
         state.tonalSort !== prevTonalSort ||
         state.echo !== prevEcho ||
+        state.baseOpacity !== prevBaseOpacity ||
+        state.falloff !== prevFalloff ||
         state.palette.colors !== prevPaletteColors) {
       requestFullRebake();
     }
@@ -208,6 +212,8 @@ export function initApp() {
     prevGravity = state.gravity;
     prevTonalSort = state.tonalSort;
     prevEcho = state.echo;
+    prevBaseOpacity = state.baseOpacity;
+    prevFalloff = state.falloff;
     prevPaletteColors = state.palette.colors;
     prevForms = state.forms;
     prevFormsLen = state.forms.length;

@@ -39,10 +39,10 @@ struct FormsParams {
   velvet: f32,
   tonal_sort: f32,
   tonal_enabled: f32,
-  _pad0: f32,
+  base_opacity: f32,
   gravity: f32,    // downward dissolution amount
   baked_count: u32,
-  _pad3: f32,
+  falloff: f32,
 };
 
 @group(0) @binding(0) var<uniform> globals: Globals;
@@ -53,6 +53,8 @@ struct FormsParams {
 @group(2) @binding(2) var density_tex: texture_2d<f32>;
 @group(2) @binding(3) var output_tex: texture_storage_2d<rgba16float, write>;
 @group(2) @binding(4) var baked_tex: texture_2d<f32>;
+@group(2) @binding(5) var accum_tex: texture_2d<f32>;
+@group(2) @binding(6) var live_tex: texture_storage_2d<rgba16float, write>;
 
 // --- Inline simplex noise (same as depth-field.wgsl) ---
 fn mod289v3(x: vec3f) -> vec3f { return x - floor(x * (1.0 / 289.0)) * 289.0; }
@@ -188,6 +190,17 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
     }
   }
 
+  // Read accumulation weight for diminishing returns
+  let accum_data = textureLoad(accum_tex, vec2i(gid.xy), 0);
+  // During full rebake (baked_count == 0), ignore stale accumulation
+  let existing_weight = select(accum_data.a, 0.0, params.baked_count == 0u);
+
+  // Live-only contribution tracking (for glaze bake)
+  var live_ks = vec3f(0.0);
+  var live_weight_sum = 0.0;
+  var live_opacity = 0.0;
+  var running_weight = 0.0; // intra-stroke weight for multi-segment attenuation
+
   let grav_probe = 0.06;
   let velvet_exp = mix(1.5, 0.7, params.velvet);
 
@@ -243,19 +256,36 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
       form_color *= clamp(lr, 0.3, 3.0);
     }
 
-    // Velvet-shaped alpha
-    let alpha = pow(edge * f.opacity, velvet_exp);
+    // Diminishing returns: attenuation based on accumulated + intra-stroke weight
+    let raw_alpha = pow(edge * f.opacity, velvet_exp);
+    let attenuation = params.base_opacity * pow(params.falloff, existing_weight + running_weight);
+    let effective_alpha = raw_alpha * attenuation;
+    running_weight += raw_alpha; // raw weight tracks user intent, not landed paint
 
     // Accumulate pigment in K/S space — colors mix subtractively
     let refl = rgb_to_reflectance(form_color);
     let ks = (1.0 - refl) * (1.0 - refl) / (2.0 * refl);
-    ks_accum += ks * alpha;
-    weight_accum += alpha;
+    ks_accum += ks * effective_alpha;
+    weight_accum += effective_alpha;
     // Union of independent coverages
-    opacity_accum = alpha + opacity_accum * (1.0 - alpha);
+    opacity_accum = effective_alpha + opacity_accum * (1.0 - effective_alpha);
+
+    // Track live contribution separately for glaze bake
+    live_ks += ks * effective_alpha;
+    live_weight_sum += effective_alpha;
+    live_opacity = effective_alpha + live_opacity * (1.0 - effective_alpha);
   }
 
-  // Convert mixed K/S back to RGB
+  // Write live-only contribution for glaze bake
+  if (live_weight_sum > 0.001) {
+    let live_ks_avg = live_ks / live_weight_sum;
+    let live_r = 1.0 + live_ks_avg - sqrt(live_ks_avg * live_ks_avg + 2.0 * live_ks_avg);
+    textureStore(live_tex, vec2i(gid.xy), vec4f(reflectance_to_rgb(live_r), live_opacity));
+  } else {
+    textureStore(live_tex, vec2i(gid.xy), vec4f(0.0));
+  }
+
+  // Convert mixed K/S back to RGB — full baked+live composite for display
   if (weight_accum > 0.001) {
     let ks_mixed = ks_accum / weight_accum;
     let r_mixed = 1.0 + ks_mixed - sqrt(ks_mixed * ks_mixed + 2.0 * ks_mixed);

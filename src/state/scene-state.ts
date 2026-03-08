@@ -16,6 +16,8 @@ export interface SceneState {
   gravity: number; // 0-1, downward dissolution for form brush (default 0.4)
   tonalSort: boolean; // sort forms dark-to-light for K-M mixing
   shadowChroma: number; // 0-1, color-in-shadow intensity
+  baseOpacity: number; // 0.1-1.0, glazing base opacity per stroke (default 0.5)
+  falloff: number; // 0.5-0.9, diminishing returns per accumulated layer (default 0.7)
 }
 
 const defaultPalette: PaletteState = {
@@ -61,4 +63,6 @@ export const sceneStore = createStore<SceneState>({
   gravity: 0.4,
   tonalSort: true,
   shadowChroma: 0.4,
+  baseOpacity: 0.5,
+  falloff: 0.7,
 });

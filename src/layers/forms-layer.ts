@@ -3,6 +3,7 @@ import { allocTexture, allocPingPong, type PingPongTexture } from '../gpu/textur
 import { createComputePipeline } from '../gpu/pipeline-manager.js';
 import { getGlobalBindGroupLayout } from '../gpu/bind-groups.js';
 import formsShader from '../shaders/forms/forms.wgsl';
+import glazeShader from '../shaders/forms/glaze.wgsl';
 import type { FormDef, TonalMapParams } from './layer-types.js';
 import { MAX_FORMS, FORM_STRIDE } from './layer-types.js';
 
@@ -23,6 +24,17 @@ let pendingFullRebake = false;
 let currentTotalFormCount = 0;
 let bakedPP: PingPongTexture;
 
+// Tonal accumulation — tracks paint density for diminishing returns
+let accumPP: PingPongTexture;
+let liveTex: GPUTexture;
+
+// Glaze bake pipeline
+let glazePipeline: GPUComputePipeline;
+let glazeParamLayout: GPUBindGroupLayout;
+let glazeTexLayout: GPUBindGroupLayout;
+let glazeParamBuffer: GPUBuffer;
+let glazeParamBG: GPUBindGroup;
+
 export function initFormsLayer() {
   const { device } = getGPU();
 
@@ -42,6 +54,8 @@ export function initFormsLayer() {
       { binding: 2, visibility: GPUShaderStage.COMPUTE, texture: { sampleType: 'unfilterable-float' } },
       { binding: 3, visibility: GPUShaderStage.COMPUTE, storageTexture: { access: 'write-only', format: 'rgba16float' } },
       { binding: 4, visibility: GPUShaderStage.COMPUTE, texture: { sampleType: 'unfilterable-float' } },
+      { binding: 5, visibility: GPUShaderStage.COMPUTE, texture: { sampleType: 'unfilterable-float' } },
+      { binding: 6, visibility: GPUShaderStage.COMPUTE, storageTexture: { access: 'write-only', format: 'rgba16float' } },
     ],
   });
 
@@ -58,7 +72,7 @@ export function initFormsLayer() {
 
   paramBuffer = device.createBuffer({
     label: 'forms-params',
-    size: 48, // form_count, sun_angle, key_value, value_range, contrast, velvet, tonal_sort, tonal_enabled, scatter + pad
+    size: 48, // form_count, sun_angle, key_value, value_range, contrast, velvet, tonal_sort, tonal_enabled, base_opacity, gravity, baked_count, falloff
     usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
   });
 
@@ -75,6 +89,48 @@ export function initFormsLayer() {
     entries: [
       { binding: 0, resource: { buffer: paramBuffer } },
       { binding: 1, resource: { buffer: formStorageBuffer } },
+    ],
+  });
+
+  // Glaze bake pipeline
+  glazeParamLayout = device.createBindGroupLayout({
+    label: 'glaze-param-layout',
+    entries: [
+      { binding: 0, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'uniform' } },
+    ],
+  });
+
+  glazeTexLayout = device.createBindGroupLayout({
+    label: 'glaze-tex-layout',
+    entries: [
+      { binding: 0, visibility: GPUShaderStage.COMPUTE, texture: { sampleType: 'unfilterable-float' } },
+      { binding: 1, visibility: GPUShaderStage.COMPUTE, texture: { sampleType: 'unfilterable-float' } },
+      { binding: 2, visibility: GPUShaderStage.COMPUTE, storageTexture: { access: 'write-only', format: 'rgba16float' } },
+    ],
+  });
+
+  glazePipeline = createComputePipeline('glaze', device, {
+    label: 'glaze-compute',
+    layout: device.createPipelineLayout({
+      bindGroupLayouts: [glazeParamLayout, glazeTexLayout],
+    }),
+    compute: {
+      module: device.createShaderModule({ label: 'glaze-shader', code: glazeShader }),
+      entryPoint: 'main',
+    },
+  });
+
+  glazeParamBuffer = device.createBuffer({
+    label: 'glaze-params',
+    size: 16, // GlazeParams: is_clear + 3 padding u32
+    usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+  });
+
+  glazeParamBG = device.createBindGroup({
+    label: 'glaze-param-bg',
+    layout: glazeParamLayout,
+    entries: [
+      { binding: 0, resource: { buffer: glazeParamBuffer } },
     ],
   });
 }
@@ -103,6 +159,14 @@ export function updateFormsTextures(width: number, height: number) {
   bakedPP = allocPingPong('forms-baked', 'rgba16float', width, height,
     GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST | GPUTextureUsage.COPY_SRC);
 
+  // Accumulation buffer — RGB reserved, A = layer weight for diminishing returns
+  accumPP = allocPingPong('forms-accum', 'rgba16float', width, height,
+    GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST | GPUTextureUsage.COPY_SRC | GPUTextureUsage.STORAGE_BINDING);
+
+  // Live forms contribution only (written by forms shader, read by glaze bake)
+  liveTex = allocTexture('forms-live', 'rgba16float', width, height,
+    GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING);
+
   textureBG = device.createBindGroup({
     label: 'forms-tex-bg',
     layout: textureLayout,
@@ -113,6 +177,8 @@ export function updateFormsTextures(width: number, height: number) {
       { binding: 2, resource: densityPP.createView() },
       { binding: 3, resource: formsTex.createView() },
       { binding: 4, resource: bakedPP.readView },
+      { binding: 5, resource: accumPP.readView },
+      { binding: 6, resource: liveTex.createView() },
     ],
   });
 
@@ -129,6 +195,8 @@ export function writeFormsData(
   velvet = 0.6,
   tonalSort = true,
   gravity = 0.4,
+  baseOpacity = 0.5,
+  falloff = 0.7,
 ) {
   const { device } = getGPU();
 
@@ -161,9 +229,10 @@ export function writeFormsData(
   headerF32[5] = velvet;
   headerF32[6] = tonalSort ? 1.0 : 0.0;
   headerF32[7] = tonalMap.enabled ? 1.0 : 0.0;
-  headerF32[8] = 0; // scatter removed, baked at 0
+  headerF32[8] = baseOpacity;
   headerF32[9] = gravity;
   headerU32[10] = pendingFullRebake ? 0 : bakedFormCount;
+  headerF32[11] = falloff;
   device.queue.writeBuffer(paramBuffer, 0, headerData);
 
   if (count === 0) return;
@@ -213,11 +282,38 @@ function rebuildFormsTextureBG() {
       { binding: 2, resource: densityPP.createView() },
       { binding: 3, resource: formsTex.createView() },
       { binding: 4, resource: bakedPP.readView },
+      { binding: 5, resource: accumPP.readView },
+      { binding: 6, resource: liveTex.createView() },
     ],
   });
 }
 
-function bakeCurrentForms(encoder: GPUCommandEncoder) {
+function bakeCurrentForms(encoder: GPUCommandEncoder, isClear: boolean) {
+  const { device } = getGPU();
+
+  // 1. Write glaze params (is_clear flag)
+  device.queue.writeBuffer(glazeParamBuffer, 0, new Uint32Array([isClear ? 1 : 0, 0, 0, 0]));
+
+  // 2. Rebuild glaze texture bind group (live_tex read, accum.read, accum.write)
+  const glazeTexBG = device.createBindGroup({
+    layout: glazeTexLayout,
+    entries: [
+      { binding: 0, resource: liveTex.createView() },
+      { binding: 1, resource: accumPP.readView },
+      { binding: 2, resource: accumPP.writeView },
+    ],
+  });
+
+  // 3. Dispatch glaze compute — merges live contribution into accumulation weight
+  const pass = encoder.beginComputePass({ label: 'glaze-bake' });
+  pass.setPipeline(glazePipeline);
+  pass.setBindGroup(0, glazeParamBG);
+  pass.setBindGroup(1, glazeTexBG);
+  pass.dispatchWorkgroups(Math.ceil(currentWidth / 8), Math.ceil(currentHeight / 8));
+  pass.end();
+  accumPP.swap();
+
+  // 4. Copy forms output → baked (visual seeding for next frame)
   const formsTex = allocTexture('forms', 'rgba16float', currentWidth, currentHeight,
     GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_SRC | GPUTextureUsage.COPY_DST);
 
@@ -227,6 +323,8 @@ function bakeCurrentForms(encoder: GPUCommandEncoder) {
     { width: currentWidth, height: currentHeight },
   );
   bakedPP.swap();
+
+  // 5. Rebuild bind groups to pick up swapped views
   rebuildFormsTextureBG();
   bakedFormCount = currentTotalFormCount;
 }
@@ -245,11 +343,11 @@ export function getBakedFormCount() {
 
 export function handlePendingBakes(encoder: GPUCommandEncoder) {
   if (pendingFullRebake) {
-    bakeCurrentForms(encoder);
+    bakeCurrentForms(encoder, true);
     pendingFullRebake = false;
     pendingBake = false;
   } else if (pendingBake) {
-    bakeCurrentForms(encoder);
+    bakeCurrentForms(encoder, false);
     pendingBake = false;
   }
 }
