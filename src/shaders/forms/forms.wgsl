@@ -39,7 +39,7 @@ struct FormsParams {
   velvet: f32,
   tonal_sort: f32,
   tonal_enabled: f32,
-  scatter: f32,
+  _pad0: f32,
   gravity: f32,    // downward dissolution amount
   _pad2: f32,
   _pad3: f32,
@@ -178,18 +178,20 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
     var union_d = 999.0;
     var nearest_d = 999.0;
     var nearest_i = 0u;
-    let blend_k = 0.05;
+    let blend_k = 0.035;
+
+    // Smooth Y reference for gravity (weighted by proximity, avoids nearest-form staircase)
+    var ref_y = 0.0;
+    var ref_w = 0.0;
 
     for (var i = 0u; i < params.form_count; i++) {
-      var d = eval_sdf(forms[i], p, aspect);
-
-      // Edge irregularity (scatter-controlled)
-      let center = vec2f(forms[i].x * aspect, forms[i].y);
-      let e_uv = (p - center) * 12.0 + vec2f(forms[i].edge_seed * 100.0);
-      d += (snoise2d(e_uv) * 0.6 + snoise2d(e_uv * 2.3) * 0.3)
-           * forms[i].softness * 0.15 * params.scatter;
-
+      let d = eval_sdf(forms[i], p, aspect);
       union_d = smooth_union(union_d, d, blend_k);
+
+      // Accumulate weighted Y for smooth gravity reference
+      let w = max(0.0, 1.0 - abs(d) * 15.0);
+      ref_y += forms[i].y * w;
+      ref_w += w;
 
       if (d < nearest_d) {
         nearest_d = d;
@@ -199,17 +201,17 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
 
     // Shade the union shape using nearest form's properties
     let nf = forms[nearest_i];
+    let smooth_y = select(nf.y, ref_y / ref_w, ref_w > 0.001);
     let depth_diss = nf.depth * nf.depth * 2.0;
     let eff_soft = nf.softness
-      * (1.0 + depth_diss)
-      * (1.0 + dissolution_mask * 3.0)
-      * (1.0 + params.scatter * 2.0);
+      * (1.0 + depth_diss * 0.3)
+      * (1.0 + dissolution_mask * 1.5);
 
     // Gravity: asymmetric softness — bottom edges dissolve, top stays defined
-    let below = max(0.0, p.y - nf.y);
+    let below = max(0.0, p.y - smooth_y);
     let grav = smoothstep(0.0, 0.15, below) * params.gravity;
-    let gravity_pull = grav * 0.04;     // extends the SDF surface downward
-    let gravity_soft = grav * 3.0;      // softens edges below
+    let gravity_pull = grav * 0.04;
+    let gravity_soft = grav * 1.5;
     var final_d = union_d - gravity_pull;
     var final_soft = eff_soft * (1.0 + gravity_soft);
 
@@ -256,7 +258,7 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
 
     // Apply velvet and output
     let alpha = edge * nf.opacity;
-    let velvet_exp = mix(1.0, 0.7, params.velvet);
+    let velvet_exp = mix(1.5, 0.7, params.velvet);
     result_alpha = pow(alpha, velvet_exp);
     result_color = form_color;
   }

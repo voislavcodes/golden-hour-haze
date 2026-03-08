@@ -111,7 +111,6 @@ export function writeFormsData(
   tonalMap: TonalMapParams = { enabled: true, valueRange: 0.8, keyValue: 0.5, contrast: 0.6 },
   velvet = 0.6,
   tonalSort = true,
-  scatter = 0.3,
   gravity = 0.4,
 ) {
   const { device } = getGPU();
@@ -136,7 +135,7 @@ export function writeFormsData(
   headerF32[5] = velvet;
   headerF32[6] = tonalSort ? 1.0 : 0.0;
   headerF32[7] = tonalMap.enabled ? 1.0 : 0.0;
-  headerF32[8] = scatter;
+  headerF32[8] = 0; // scatter removed, baked at 0
   headerF32[9] = gravity;
   device.queue.writeBuffer(paramBuffer, 0, headerData);
 

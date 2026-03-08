@@ -53,7 +53,6 @@ import './controls/palette-brush.js';
 import './controls/drift-field.js';
 import './controls/anchor-control.js';
 import './controls/velvet-slider.js';
-import './controls/scatter-slider.js';
 import './controls/gravity-slider.js';
 import { initPointerInput } from './input/pointer.js';
 import { initGestureInput } from './input/gesture.js';
@@ -96,7 +95,7 @@ export function initApp() {
   writePaletteData(scene.palette);
   writeAtmosphereParams(scene.atmosphere);
   writeScatterParams(scene.sunAngle, scene.sunElevation);
-  writeFormsData(scene.forms, scene.palette.colors, scene.sunAngle, scene.tonalMap, scene.velvet, scene.tonalSort, scene.scatter, scene.gravity);
+  writeFormsData(scene.forms, scene.palette.colors, scene.sunAngle, scene.tonalMap, scene.velvet, scene.tonalSort, scene.gravity);
   writeLightData(scene.lights, 32);
   writeCompositorParams({
     shadowChroma: scene.shadowChroma,
@@ -157,7 +156,7 @@ export function initApp() {
     writeAtmosphereParams(state.atmosphere);
     writeScatterParams(state.sunAngle, state.sunElevation);
     writePaletteData(state.palette);
-    writeFormsData(state.forms, state.palette.colors, state.sunAngle, state.tonalMap, state.velvet, state.tonalSort, state.scatter);
+    writeFormsData(state.forms, state.palette.colors, state.sunAngle, state.tonalMap, state.velvet, state.tonalSort, state.gravity);
     writeLightData(state.lights, 32);
     writeCompositorParams({
       shadowChroma: state.shadowChroma,
@@ -242,7 +241,7 @@ function setupFormPlacement(_canvas: HTMLCanvasElement) {
   uiStore.subscribe((ui) => {
     if (ui.activeTool === 'form' && ui.mouseDown) {
       const scene = sceneStore.get();
-      const spacing = 0.008; // decisive marks, wider than cloud
+      const spacing = 0.012; // decisive marks, wider than cloud
 
       const dx = ui.mouseX - lastFormX;
       const dy = ui.mouseY - lastFormY;
@@ -257,9 +256,9 @@ function setupFormPlacement(_canvas: HTMLCanvasElement) {
 
         const echo = scene.echo;
         const opacity = 0.3 + echo * 0.7;
-        const softMod = 1.0 + (1.0 - echo) * 0.5;
         const formRadius = mods.size;
-        const softness = Math.max(mods.softness * softMod, formRadius * 0.4);
+        // Form brush: soft atmospheric edges, decisive but not hard
+        const softness = formRadius * 0.8;
 
         if (!wasDown) pushHistory();
 
@@ -319,9 +318,8 @@ function setupFormPlacement(_canvas: HTMLCanvasElement) {
 
     if (ui.activeTool === 'cloud' && ui.mouseDown) {
       const scene = sceneStore.get();
-      const scatter = scene.scatter;
-      const spacing = 0.004 + scatter * 0.021; // scatter 0→0.004, 1→0.025
-      const sizeBoost = 1.0 + (1.0 - scatter) * 0.3; // low scatter→30% larger forms
+      const spacing = 0.004;
+      const sizeBoost = 1.3;
 
       const dx = ui.mouseX - lastFormX;
       const dy = ui.mouseY - lastFormY;
@@ -340,9 +338,10 @@ function setupFormPlacement(_canvas: HTMLCanvasElement) {
         const echo = scene.echo;
         const opacity = 0.3 + echo * 0.7; // echo 0→faint, echo 1→solid
         const softMod = 1.0 + (1.0 - echo) * 0.5; // low echo = softer edges
-        // Cloud brush: minimum softness proportional to form size for dissolving edges
+        // Cloud brush: softness capped proportional to form size
         const formRadius = mods.size * sizeBoost;
-        const softness = Math.max(mods.softness * softMod, formRadius * 0.6);
+        const rawSoft = mods.softness * softMod;
+        const softness = Math.max(formRadius * 0.3, Math.min(rawSoft, formRadius * 1.5));
 
         if (!wasDown) pushHistory(); // save state before first form in stroke
 
