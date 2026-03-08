@@ -259,7 +259,7 @@ export function writeAtmosphereParams(params: AtmosphereParams) {
 
   // Grain params
   device.queue.writeBuffer(grainParamBuffer, 0, new Float32Array([
-    params.grain, 1.0 + params.grain * 3.0, 0, 0,
+    params.grain, 1.0 + params.grain * 3.0, params.grainAngle, 0,
   ]));
 }
 

@@ -3,7 +3,7 @@ import { allocTexture } from '../gpu/texture-pool.js';
 import { createComputePipeline } from '../gpu/pipeline-manager.js';
 import { getGlobalBindGroupLayout } from '../gpu/bind-groups.js';
 import formsShader from '../shaders/forms/forms.wgsl';
-import type { FormDef } from './layer-types.js';
+import type { FormDef, TonalMapParams } from './layer-types.js';
 import { MAX_FORMS, FORM_STRIDE } from './layer-types.js';
 
 let pipeline: GPUComputePipeline;
@@ -50,7 +50,7 @@ export function initFormsLayer() {
 
   paramBuffer = device.createBuffer({
     label: 'forms-params',
-    size: 16,
+    size: 32, // form_count, sun_angle, key_value, value_range, contrast, velvet, tonal_sort, tonal_enabled
     usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
   });
 
@@ -104,20 +104,43 @@ export function updateFormsTextures(width: number, height: number) {
   });
 }
 
-export function writeFormsData(forms: FormDef[], palette: { r: number; g: number; b: number }[], sunAngle = 0.8) {
+export function writeFormsData(
+  forms: FormDef[],
+  palette: { r: number; g: number; b: number }[],
+  sunAngle = 0.8,
+  tonalMap: TonalMapParams = { enabled: true, valueRange: 0.8, keyValue: 0.5, contrast: 0.6 },
+  velvet = 0.6,
+  tonalSort = true,
+) {
   const { device } = getGPU();
 
-  const count = Math.min(forms.length, MAX_FORMS);
-  const headerData = new ArrayBuffer(16);
-  new Uint32Array(headerData)[0] = count;
-  new Float32Array(headerData, 4)[0] = sunAngle;
+  // Tonal sort: render darkest forms first for K-M layering
+  const toRender = tonalSort ? forms.slice().sort((a, b) => {
+    const colA = palette[Math.min(a.colorIndex, palette.length - 1)] ?? { r: 0.5, g: 0.5, b: 0.5 };
+    const colB = palette[Math.min(b.colorIndex, palette.length - 1)] ?? { r: 0.5, g: 0.5, b: 0.5 };
+    return (0.2126 * colA.r + 0.7152 * colA.g + 0.0722 * colA.b)
+         - (0.2126 * colB.r + 0.7152 * colB.g + 0.0722 * colB.b);
+  }) : forms;
+
+  const count = Math.min(toRender.length, MAX_FORMS);
+  const headerData = new ArrayBuffer(32);
+  const headerU32 = new Uint32Array(headerData);
+  const headerF32 = new Float32Array(headerData);
+  headerU32[0] = count;
+  headerF32[1] = sunAngle;
+  headerF32[2] = tonalMap.keyValue;
+  headerF32[3] = tonalMap.valueRange;
+  headerF32[4] = tonalMap.contrast;
+  headerF32[5] = velvet;
+  headerF32[6] = tonalSort ? 1.0 : 0.0;
+  headerF32[7] = tonalMap.enabled ? 1.0 : 0.0;
   device.queue.writeBuffer(paramBuffer, 0, headerData);
 
   if (count === 0) return;
 
   const data = new Float32Array(count * 16);
   for (let i = 0; i < count; i++) {
-    const f = forms[i];
+    const f = toRender[i];
     const color = palette[Math.min(f.colorIndex, palette.length - 1)] ?? { r: 0.5, g: 0.5, b: 0.5 };
     const off = i * 16;
     data[off] = f.type;

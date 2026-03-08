@@ -51,6 +51,13 @@ export class LightWells extends BaseControl {
 
   private _unsubTool?: () => void;
   private _unsubScene?: () => void;
+  private _gesturePointers: Map<number, { x: number; y: number }> = new Map();
+  private _gestureBaseDist: number = 0;
+  private _gestureBaseAngle: number = 0;
+  private _gestureBaseScaleX: number = 1;
+  private _gestureBaseScaleY: number = 1;
+  private _gestureBaseRot: number = 0;
+  private _gestureIndex: number = -1;
 
   connectedCallback() {
     super.connectedCallback();
@@ -100,6 +107,9 @@ export class LightWells extends BaseControl {
       colorG: 0.85,
       colorB: 0.6,
       scatter: 0.5,
+      scaleX: 1.0,
+      scaleY: 1.0,
+      rotation: 0,
     };
 
     sceneStore.update((s) => ({
@@ -109,11 +119,57 @@ export class LightWells extends BaseControl {
 
   private _onLightPointerDown(e: PointerEvent, index: number) {
     e.stopPropagation();
-    this._dragIndex = index;
     (e.target as HTMLElement).setPointerCapture(e.pointerId);
+
+    this._gesturePointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+
+    if (this._gesturePointers.size === 1) {
+      this._dragIndex = index;
+    } else if (this._gesturePointers.size === 2) {
+      // Start two-finger gesture for stretch/rotate
+      this._dragIndex = -1;
+      this._gestureIndex = index;
+      const pts = [...this._gesturePointers.values()];
+      const dx = pts[1].x - pts[0].x;
+      const dy = pts[1].y - pts[0].y;
+      this._gestureBaseDist = Math.sqrt(dx * dx + dy * dy);
+      this._gestureBaseAngle = Math.atan2(dy, dx);
+      const light = this._lights[index];
+      if (light) {
+        this._gestureBaseScaleX = light.scaleX;
+        this._gestureBaseScaleY = light.scaleY;
+        this._gestureBaseRot = light.rotation;
+      }
+    }
   }
 
   private _onLightPointerMove(e: PointerEvent) {
+    this._gesturePointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+
+    if (this._gesturePointers.size === 2 && this._gestureIndex >= 0) {
+      // Two-finger: update scale + rotation
+      const pts = [...this._gesturePointers.values()];
+      const dx = pts[1].x - pts[0].x;
+      const dy = pts[1].y - pts[0].y;
+      const dist = Math.sqrt(dx * dx + dy * dy);
+      const angle = Math.atan2(dy, dx);
+      const scaleRatio = dist / Math.max(this._gestureBaseDist, 1);
+      const angleDelta = angle - this._gestureBaseAngle;
+      const idx = this._gestureIndex;
+
+      sceneStore.update((s) => {
+        const lights = [...s.lights];
+        lights[idx] = {
+          ...lights[idx],
+          scaleX: this.clamp(this._gestureBaseScaleX * scaleRatio, 0.1, 5.0),
+          scaleY: this.clamp(this._gestureBaseScaleY / scaleRatio, 0.1, 5.0),
+          rotation: this._gestureBaseRot + angleDelta,
+        };
+        return { lights };
+      });
+      return;
+    }
+
     if (this._dragIndex < 0) return;
 
     const rect = this.getBoundingClientRect();
@@ -131,8 +187,12 @@ export class LightWells extends BaseControl {
     });
   }
 
-  private _onLightPointerUp(_e: PointerEvent) {
+  private _onLightPointerUp(e: PointerEvent) {
+    this._gesturePointers.delete(e.pointerId);
     this._dragIndex = -1;
+    if (this._gesturePointers.size < 2) {
+      this._gestureIndex = -1;
+    }
   }
 
   private _lightColor(light: LightDef): string {

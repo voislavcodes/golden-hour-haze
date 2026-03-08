@@ -201,7 +201,9 @@ export function writeLightData(lights: LightDef[], maxSteps: number) {
     data[off + 6] = l.colorG;
     data[off + 7] = l.colorB;
     data[off + 8] = l.scatter;
-    // padding
+    data[off + 9] = l.scaleX;
+    data[off + 10] = l.scaleY;
+    data[off + 11] = l.rotation;
   }
   device.queue.writeBuffer(lightStorageBuffer, 0, data);
 }

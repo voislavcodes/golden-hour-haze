@@ -4,10 +4,14 @@ import { createRenderPipeline } from '../gpu/pipeline-manager.js';
 import { getGlobalBindGroupLayout } from '../gpu/bind-groups.js';
 import compositeShader from '../shaders/composite/composite.wgsl';
 import { getBloomTexture } from './light-layer.js';
+import type { CompositorParams } from './layer-types.js';
 
 let pipeline: GPURenderPipeline;
 let textureLayout: GPUBindGroupLayout;
+let compositorParamLayout: GPUBindGroupLayout;
 let textureBG: GPUBindGroup;
+let compositorParamBG: GPUBindGroup;
+let compositorParamBuffer: GPUBuffer;
 let sampler: GPUSampler;
 let currentWidth = 0;
 let currentHeight = 0;
@@ -34,11 +38,32 @@ export function initCompositor() {
     ],
   });
 
+  compositorParamLayout = device.createBindGroupLayout({
+    label: 'compositor-param-layout',
+    entries: [
+      { binding: 0, visibility: GPUShaderStage.FRAGMENT, buffer: { type: 'uniform' } },
+    ],
+  });
+
+  compositorParamBuffer = device.createBuffer({
+    label: 'compositor-params',
+    size: 32, // 8 floats
+    usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+  });
+
+  compositorParamBG = device.createBindGroup({
+    label: 'compositor-param-bg',
+    layout: compositorParamLayout,
+    entries: [
+      { binding: 0, resource: { buffer: compositorParamBuffer } },
+    ],
+  });
+
   const mod = device.createShaderModule({ label: 'composite-shader', code: compositeShader });
   pipeline = createRenderPipeline('composite', device, {
     label: 'composite-render',
     layout: device.createPipelineLayout({
-      bindGroupLayouts: [getGlobalBindGroupLayout(device), textureLayout],
+      bindGroupLayouts: [getGlobalBindGroupLayout(device), textureLayout, compositorParamLayout],
     }),
     vertex: { module: mod, entryPoint: 'vs_main' },
     fragment: {
@@ -100,6 +125,20 @@ export function rebuildCompositorBindGroup() {
   });
 }
 
+export function writeCompositorParams(params: CompositorParams) {
+  const { device } = getGPU();
+  device.queue.writeBuffer(compositorParamBuffer, 0, new Float32Array([
+    params.shadowChroma,
+    params.grayscale,
+    params.anchorX,
+    params.anchorY,
+    params.anchorBoost,
+    params.anchorFalloff,
+    0, // _pad1
+    0, // _pad2
+  ]));
+}
+
 export function renderComposite(encoder: GPUCommandEncoder, targetView: GPUTextureView, globalBG: GPUBindGroup) {
   const pass = encoder.beginRenderPass({
     label: 'composite-pass',
@@ -113,6 +152,7 @@ export function renderComposite(encoder: GPUCommandEncoder, targetView: GPUTextu
   pass.setPipeline(pipeline);
   pass.setBindGroup(0, globalBG);
   pass.setBindGroup(1, textureBG);
+  pass.setBindGroup(2, compositorParamBG);
   pass.draw(3);
   pass.end();
 }

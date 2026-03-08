@@ -33,8 +33,12 @@ struct FormData {
 struct FormsParams {
   form_count: u32,
   sun_angle: f32,
-  _pad2: f32,
-  _pad3: f32,
+  key_value: f32,
+  value_range: f32,
+  contrast: f32,
+  velvet: f32,
+  tonal_sort: f32,
+  tonal_enabled: f32,
 };
 
 @group(0) @binding(0) var<uniform> globals: Globals;
@@ -74,25 +78,7 @@ fn snoise2d(v: vec2f) -> f32 {
                                a0.z * x12.z + h.z * x12.w));
 }
 
-// --- Inline K-M pigment mixing (same as kubelka-munk.wgsl) ---
-fn rgb_to_reflectance(c: vec3f) -> vec3f {
-  let r = clamp(c, vec3f(0.001), vec3f(0.999));
-  return r * r;
-}
-
-fn reflectance_to_rgb(r: vec3f) -> vec3f {
-  return sqrt(clamp(r, vec3f(0.0), vec3f(1.0)));
-}
-
-fn km_mix(c1: vec3f, c2: vec3f, t: f32) -> vec3f {
-  let r1 = rgb_to_reflectance(c1);
-  let r2 = rgb_to_reflectance(c2);
-  let ks1 = (1.0 - r1) * (1.0 - r1) / (2.0 * r1);
-  let ks2 = (1.0 - r2) * (1.0 - r2) / (2.0 * r2);
-  let ks_mixed = mix(ks1, ks2, t);
-  let r = 1.0 + ks_mixed - sqrt(ks_mixed * ks_mixed + 2.0 * ks_mixed);
-  return reflectance_to_rgb(r);
-}
+#include "../common/kubelka-munk.wgsl"
 
 // --- SDF primitives ---
 fn sdf_circle(p: vec2f, center: vec2f, radius: f32) -> f32 {
@@ -126,6 +112,13 @@ fn hash2(p: vec2f) -> f32 {
 
 fn lum(c: vec3f) -> f32 {
   return dot(c, vec3f(0.2126, 0.7152, 0.0722));
+}
+
+// Tonal hierarchy: depth → S-curve → value
+fn tonal_value(depth: f32, key: f32, range: f32, contrast: f32) -> f32 {
+  let v = mix(key - range * 0.5, key + range * 0.5, 1.0 - depth);
+  let t = (v - 0.5) * contrast * 2.0;
+  return 0.5 + 0.5 * sign(t) * (1.0 - exp(-abs(t)));
 }
 
 @compute @workgroup_size(8, 8, 1)
@@ -218,6 +211,14 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
     let highlight = max(0.0, light_response - 0.5) * 0.2;
     form_color += vec3f(highlight * 1.1, highlight * 0.9, highlight * 0.7);
 
+    // Tonal hierarchy: constrain luminance to depth-derived value
+    if (params.tonal_enabled > 0.5) {
+      let target_value = tonal_value(depth, params.key_value, params.value_range, params.contrast);
+      let form_lum = lum(form_color);
+      let lum_ratio = target_value / max(form_lum, 0.001);
+      form_color = form_color * clamp(lum_ratio, 0.3, 3.0);
+    }
+
     // --- B2: K-M color bleeding at edges ---
     let edge_zone = smoothstep(0.0, 0.3, alpha) * smoothstep(1.0, 0.7, alpha);
     if (edge_zone > 0.01 && result_alpha > 0.01) {
@@ -225,10 +226,12 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
       form_color = mix(form_color, km_blended, edge_zone);
     }
 
-    // Front-to-back composite
+    // K-M subtractive front-to-back composite
     if (result_alpha < 0.999) {
       let contrib = alpha * (1.0 - result_alpha);
-      result_color += form_color * contrib;
+      let velvet_contrib = pow(contrib, mix(2.0, 0.5, params.velvet));
+      let t = velvet_contrib / max(velvet_contrib + result_alpha, 0.001);
+      result_color = km_mix(result_color, form_color, t);
       result_alpha += contrib;
     }
   }

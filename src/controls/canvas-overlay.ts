@@ -11,6 +11,7 @@ const TOOL_CURSORS: Record<Tool, string> = {
   drift:    'grab',
   palette:  'copy',
   depth:    'ns-resize',
+  anchor:   'crosshair',
 };
 
 @customElement('ghz-canvas-overlay')

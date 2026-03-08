@@ -13,7 +13,7 @@ struct Globals {
 struct GrainParams {
   intensity: f32,
   scale: f32,
-  _pad1: f32,
+  angle: f32,
   _pad2: f32,
 };
 
@@ -39,9 +39,15 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
   let depth = textureLoad(depth_tex, vec2i(gid.xy), 0).r;
   let depth_scale = 1.0 - depth * 0.7; // near = full grain, far = reduced
 
+  // Rotate noise sampling coordinates by grain angle
+  let ca = cos(params.angle);
+  let sa = sin(params.angle);
+  let raw_p = vec2f(f32(gid.x), f32(gid.y));
+  let rotated_p = vec2f(raw_p.x * ca - raw_p.y * sa, raw_p.x * sa + raw_p.y * ca);
+
   // High frequency noise at varying scales
   let t = globals.time;
-  let p1 = vec2f(f32(gid.x), f32(gid.y)) * params.scale;
+  let p1 = rotated_p * params.scale;
   let g1 = hash(p1 + vec2f(t * 7.3, t * 11.1));
   let g2 = hash(p1 * 2.37 + vec2f(t * 13.7, t * 5.3));
   let g3 = hash(p1 * 0.73 + vec2f(t * 3.1, t * 17.9));

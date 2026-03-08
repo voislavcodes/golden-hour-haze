@@ -9,6 +9,7 @@ const toolKeys: Record<string, Tool> = {
   r: 'drift',
   p: 'palette',
   z: 'depth',
+  a: 'anchor',
 };
 
 export function initKeyboardInput() {
@@ -29,6 +30,12 @@ export function initKeyboardInput() {
     }
     if (e.key === ']') {
       uiStore.update((s) => ({ brushSize: Math.min(0.25, s.brushSize * 1.25) }));
+      return;
+    }
+
+    // Grayscale preview
+    if (e.key.toLowerCase() === 'g') {
+      uiStore.update((s) => ({ grayscalePreview: !s.grayscalePreview }));
       return;
     }
 

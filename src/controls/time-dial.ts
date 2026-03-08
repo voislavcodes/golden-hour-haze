@@ -40,7 +40,19 @@ export class TimeDial extends BaseControl {
         inset: 0;
         border-radius: 50%;
         border: 2px solid var(--ghz-glass-border);
-        background: var(--ghz-glass-bg);
+        background: conic-gradient(
+          from 0deg,
+          var(--ghz-glass-bg) 0deg,
+          rgba(232, 168, 64, 0.15) 35deg,
+          rgba(232, 168, 64, 0.25) 45deg,
+          rgba(232, 168, 64, 0.15) 55deg,
+          var(--ghz-glass-bg) 90deg,
+          var(--ghz-glass-bg) 270deg,
+          rgba(100, 140, 200, 0.15) 305deg,
+          rgba(100, 140, 200, 0.25) 315deg,
+          rgba(100, 140, 200, 0.15) 325deg,
+          var(--ghz-glass-bg) 360deg
+        );
         backdrop-filter: blur(var(--ghz-glass-blur));
         -webkit-backdrop-filter: blur(var(--ghz-glass-blur));
       }
@@ -92,9 +104,35 @@ export class TimeDial extends BaseControl {
   @state() private _dragging: boolean = false;
 
   private _unsubscribe?: () => void;
+  private _angleLUT: Float32Array = new Float32Array(256);
+
+  private _buildAngleLUT() {
+    // Non-linear mapping: golden hour (~0.75 rad) and blue hour (~5.5 rad) get 10x resolution
+    const N = 256;
+    const weights = new Float32Array(N);
+    let total = 0;
+
+    for (let i = 0; i < N; i++) {
+      const angle = (i / N) * Math.PI * 2;
+      // Gaussian weight centered on golden hour and blue hour
+      const gd = angle - 0.75;
+      const bd = angle - 5.5;
+      const w = 1.0 + 9.0 * (Math.exp(-gd * gd * 4) + Math.exp(-bd * bd * 4));
+      weights[i] = w;
+      total += w;
+    }
+
+    // Build cumulative distribution → angle LUT
+    let cum = 0;
+    for (let i = 0; i < N; i++) {
+      cum += weights[i] / total;
+      this._angleLUT[i] = cum * Math.PI * 2;
+    }
+  }
 
   connectedCallback() {
     super.connectedCallback();
+    this._buildAngleLUT();
     this._angle = sceneStore.get().sunAngle;
     this._unsubscribe = sceneStore.select(
       (s) => s.sunAngle,
@@ -120,13 +158,16 @@ export class TimeDial extends BaseControl {
     const cx = rect.left + rect.width / 2;
     const cy = rect.top + rect.height / 2;
 
-    // Compute angle from center to pointer
+    // Compute dial position from center to pointer
     const dx = e.clientX - cx;
     const dy = e.clientY - cy;
-    let angle = Math.atan2(dy, dx); // -PI to PI
+    let dialAngle = Math.atan2(dy, dx);
+    if (dialAngle < 0) dialAngle += Math.PI * 2;
 
-    // Normalize to 0 - 2PI
-    if (angle < 0) angle += Math.PI * 2;
+    // Non-linear mapping: look up actual sun angle from LUT
+    const t = dialAngle / (Math.PI * 2);
+    const idx = Math.min(255, Math.floor(t * 256));
+    const angle = this._angleLUT[idx];
 
     this._angle = angle;
     sceneStore.set({ sunAngle: angle });

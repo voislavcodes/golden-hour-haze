@@ -1,5 +1,7 @@
 // Final compositor — samples all layer outputs, depth-aware blending, ACES tonemapping
 
+#include "../common/kubelka-munk.wgsl"
+
 struct Globals {
   resolution: vec2f,
   time: f32,
@@ -7,6 +9,17 @@ struct Globals {
   mouse: vec2f,
   dpr: f32,
   _pad: f32,
+};
+
+struct CompositorParams {
+  shadow_chroma: f32,
+  grayscale: f32,
+  anchor_x: f32,
+  anchor_y: f32,
+  anchor_boost: f32,
+  anchor_falloff: f32,
+  _pad1: f32,
+  _pad2: f32,
 };
 
 @group(0) @binding(0) var<uniform> globals: Globals;
@@ -18,6 +31,7 @@ struct Globals {
 @group(1) @binding(5) var light_tex: texture_2d<f32>;
 @group(1) @binding(6) var bloom_tex: texture_2d<f32>;
 @group(1) @binding(7) var tex_sampler: sampler;
+@group(2) @binding(0) var<uniform> comp_params: CompositorParams;
 
 struct VertexOutput {
   @builtin(position) position: vec4f,
@@ -89,12 +103,17 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4f {
   let atmo_contribution = scatter * density * 1.5;
   sky += atmo_contribution;
 
+  // Color-in-shadow: darken forms with their own hue, not neutral gray
+  let shadow_depth = density * depth;
+  let shadow_amount = smoothstep(0.0, 0.8, shadow_depth);
+  let form_hue_shadow = forms.rgb * vec3f(0.3, 0.25, 0.35);
+  let shadowed = km_mix(forms.rgb, form_hue_shadow, shadow_amount * comp_params.shadow_chroma);
+
   // Composite forms over sky with depth-aware atmospheric opacity
-  let depth2 = depth * depth; // quadratic — distant forms dissolve faster
-  let haze_color = sky * 0.5 + scatter * 0.3; // haze tinted by sky + scatter
-  let atmo_opacity = clamp(depth2 * density * 2.0, 0.0, 0.85); // cap at 85%
-  let form_through_atmo = mix(forms.rgb, haze_color, atmo_opacity);
-  var color = mix(sky, form_through_atmo, forms.a * (1.0 - atmo_opacity * 0.5));
+  let depth2 = depth * depth;
+  let atmosphere_fog = vec3f(0.75, 0.60, 0.50) * density * 0.2;
+  let form_color = shadowed + atmosphere_fog * (1.0 - shadow_amount);
+  var color = km_mix(sky, form_color, forms.a);
 
   // Add light scatter and bloom
   color += light * 0.5;
@@ -104,11 +123,22 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4f {
   let grain_amount = grain * 0.08;
   color += vec3f(grain_amount - 0.04); // centered around 0
 
+  // Anchor chroma focus point
+  let anchor_pos = vec2f(comp_params.anchor_x, comp_params.anchor_y);
+  let dist_to_anchor = length(uv - anchor_pos);
+  let anchor_influence = 1.0 - smoothstep(0.0, comp_params.anchor_falloff, dist_to_anchor);
+  let gray_for_anchor = dot(color, vec3f(0.2126, 0.7152, 0.0722));
+  let sat_scale = mix(1.0 - comp_params.anchor_boost * 0.4, 1.0 + comp_params.anchor_boost * 0.3, anchor_influence);
+  color = mix(vec3f(gray_for_anchor), color, sat_scale);
+
   // Tonemapping
   color = aces_tonemap(color);
 
   // sRGB output
   color = linear_to_srgb(color);
+
+  // Grayscale preview toggle
+  color = mix(color, vec3f(dot(color, vec3f(0.2126, 0.7152, 0.0722))), comp_params.grayscale);
 
   return vec4f(color, 1.0);
 }

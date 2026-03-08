@@ -1,6 +1,6 @@
 import { createStore } from './store.js';
 
-export type Tool = 'select' | 'form' | 'light' | 'dissolve' | 'drift' | 'palette' | 'depth';
+export type Tool = 'select' | 'form' | 'light' | 'dissolve' | 'drift' | 'palette' | 'depth' | 'anchor';
 
 export interface UIState {
   activeTool: Tool;
@@ -13,6 +13,7 @@ export interface UIState {
   pointerType: string;
   showUI: boolean;
   brushSize: number;
+  grayscalePreview: boolean;
 }
 
 export const uiStore = createStore<UIState>({
@@ -26,4 +27,5 @@ export const uiStore = createStore<UIState>({
   pointerType: 'mouse',
   showUI: true,
   brushSize: 0.06,
+  grayscalePreview: false,
 });

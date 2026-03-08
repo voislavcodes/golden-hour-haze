@@ -18,6 +18,7 @@ export interface AtmosphereParams {
   driftY: number;
   driftSpeed: number;
   turbulence: number;    // 0-1
+  grainAngle: number;    // radians, rotates grain texture
 }
 
 export interface FormDef {
@@ -46,6 +47,32 @@ export interface LightDef {
   colorG: number;
   colorB: number;
   scatter: number;
+  scaleX: number;      // elliptical X scale (default 1)
+  scaleY: number;      // elliptical Y scale (default 1)
+  rotation: number;    // ellipse rotation in radians (default 0)
+}
+
+export interface TonalMapParams {
+  enabled: boolean;
+  valueRange: number;
+  keyValue: number;
+  contrast: number;
+}
+
+export interface AnchorPoint {
+  x: number;
+  y: number;
+  chromaBoost: number;
+  muteFalloff: number;
+}
+
+export interface CompositorParams {
+  shadowChroma: number;   // 0-1
+  grayscale: number;      // 0 or 1
+  anchorX: number;
+  anchorY: number;
+  anchorBoost: number;
+  anchorFalloff: number;
 }
 
 export interface PaletteColor {

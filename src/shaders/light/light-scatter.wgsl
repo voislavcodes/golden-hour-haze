@@ -20,9 +20,9 @@ struct LightData {
   color_g: f32,
   color_b: f32,
   scatter: f32,
-  _pad1: f32,
-  _pad2: f32,
-  _pad3: f32,
+  scale_x: f32,
+  scale_y: f32,
+  rotation: f32,
 };
 
 struct LightParams {
@@ -40,6 +40,16 @@ struct LightParams {
 @group(2) @binding(2) var forms_tex: texture_2d<f32>;
 @group(2) @binding(3) var output_tex: texture_storage_2d<rgba16float, write>;
 
+// Elliptical distance: transform point by inverse rotation + scale
+fn elliptical_dist(p: vec2f, center: vec2f, sx: f32, sy: f32, rot: f32) -> f32 {
+  let d = p - center;
+  let cr = cos(-rot);
+  let sr = sin(-rot);
+  let rd = vec2f(d.x * cr - d.y * sr, d.x * sr + d.y * cr);
+  let scaled = vec2f(rd.x / max(sx, 0.001), rd.y / max(sy, 0.001));
+  return length(scaled);
+}
+
 @compute @workgroup_size(8, 8, 1)
 fn main(@builtin(global_invocation_id) gid: vec3u) {
   let dims = textureDimensions(output_tex);
@@ -56,10 +66,11 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
     let light_pos = vec2f(light.x, light.y);
     let light_color = vec3f(light.color_r, light.color_g, light.color_b);
 
-    // Direct light contribution
+    // Direct light contribution with elliptical falloff
     let to_light = light_pos - uv;
     let dist = length(to_light);
-    let falloff = 1.0 / (1.0 + dist * dist * 4.0 / (light.radius * light.radius));
+    let edist = elliptical_dist(uv, light_pos, light.scale_x, light.scale_y, light.rotation);
+    let falloff = 1.0 / (1.0 + edist * edist * 4.0 / (light.radius * light.radius));
 
     // Ray march from pixel toward light through density
     let dir = normalize(to_light);
@@ -80,8 +91,8 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
 
       // In-scattering: light scattered toward viewer at this point
       let scatter_falloff = exp(-accumulated_density);
-      let point_dist = length(sample_pos - light_pos);
-      let point_falloff = 1.0 / (1.0 + point_dist * point_dist * 8.0 / (light.radius * light.radius));
+      let point_edist = elliptical_dist(sample_pos, light_pos, light.scale_x, light.scale_y, light.rotation);
+      let point_falloff = 1.0 / (1.0 + point_edist * point_edist * 8.0 / (light.radius * light.radius));
       scatter_contrib += light_color * scatter_falloff * point_falloff * step_size * light.scatter;
     }
 

@@ -32,6 +32,7 @@ import {
   updateCompositorTextures,
   rebuildCompositorBindGroup,
   renderComposite,
+  writeCompositorParams,
 } from './layers/compositor.js';
 import { initUILayer, renderUI } from './layers/ui-layer.js';
 import { sceneStore } from './state/scene-state.js';
@@ -50,6 +51,8 @@ import './controls/dissolve-brush.js';
 import './controls/ghost-strokes.js';
 import './controls/palette-brush.js';
 import './controls/drift-field.js';
+import './controls/anchor-control.js';
+import './controls/velvet-slider.js';
 import { initPointerInput } from './input/pointer.js';
 import { initGestureInput } from './input/gesture.js';
 import { initKeyboardInput } from './input/keyboard.js';
@@ -91,18 +94,27 @@ export function initApp() {
   writePaletteData(scene.palette);
   writeAtmosphereParams(scene.atmosphere);
   writeScatterParams(scene.sunAngle, scene.sunElevation);
-  writeFormsData(scene.forms, scene.palette.colors, scene.sunAngle);
+  writeFormsData(scene.forms, scene.palette.colors, scene.sunAngle, scene.tonalMap, scene.velvet, scene.tonalSort);
   writeLightData(scene.lights, 32);
+  writeCompositorParams({
+    shadowChroma: scene.shadowChroma,
+    grayscale: uiStore.get().grayscalePreview ? 1.0 : 0.0,
+    anchorX: scene.anchor?.x ?? 0.5,
+    anchorY: scene.anchor?.y ?? 0.5,
+    anchorBoost: scene.anchor?.chromaBoost ?? 0,
+    anchorFalloff: scene.anchor ? scene.anchor.muteFalloff : 999.0,
+  });
 
   // Input
   initPointerInput(canvas);
   initGestureInput(canvas, (gesture) => {
-    // Pinch controls atmosphere grain
+    // Pinch controls atmosphere grain, rotation controls grain angle
     if (gesture.active) {
       sceneStore.update((s) => ({
         atmosphere: {
           ...s.atmosphere,
           grain: Math.max(0, Math.min(1, s.atmosphere.grain * gesture.pinchScale)),
+          grainAngle: s.atmosphere.grainAngle + gesture.rotation,
         },
       }));
     }
@@ -143,8 +155,29 @@ export function initApp() {
     writeAtmosphereParams(state.atmosphere);
     writeScatterParams(state.sunAngle, state.sunElevation);
     writePaletteData(state.palette);
-    writeFormsData(state.forms, state.palette.colors, state.sunAngle);
+    writeFormsData(state.forms, state.palette.colors, state.sunAngle, state.tonalMap, state.velvet, state.tonalSort);
     writeLightData(state.lights, 32);
+    writeCompositorParams({
+      shadowChroma: state.shadowChroma,
+      grayscale: uiStore.get().grayscalePreview ? 1.0 : 0.0,
+      anchorX: state.anchor?.x ?? 0.5,
+      anchorY: state.anchor?.y ?? 0.5,
+      anchorBoost: state.anchor?.chromaBoost ?? 0,
+      anchorFalloff: state.anchor ? state.anchor.muteFalloff : 999.0,
+    });
+  });
+
+  // Also react to UI state changes (grayscale toggle)
+  uiStore.subscribe((ui) => {
+    const state = sceneStore.get();
+    writeCompositorParams({
+      shadowChroma: state.shadowChroma,
+      grayscale: ui.grayscalePreview ? 1.0 : 0.0,
+      anchorX: state.anchor?.x ?? 0.5,
+      anchorY: state.anchor?.y ?? 0.5,
+      anchorBoost: state.anchor?.chromaBoost ?? 0,
+      anchorFalloff: state.anchor ? state.anchor.muteFalloff : 999.0,
+    });
   });
 
   // Handle resize
@@ -264,6 +297,9 @@ function setupFormPlacement(_canvas: HTMLCanvasElement) {
             colorG: 0.85,
             colorB: 0.6,
             scatter: 0.8,
+            scaleX: 1.0,
+            scaleY: 1.0,
+            rotation: 0,
           },
         ],
       });

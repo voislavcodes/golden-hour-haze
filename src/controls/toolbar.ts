@@ -17,6 +17,7 @@ const TOOLS: ToolEntry[] = [
   { id: 'drift',    label: 'DRFT', shortcut: 'R' },
   { id: 'palette',  label: 'PAL',  shortcut: 'P' },
   { id: 'depth',    label: 'DPTH', shortcut: 'Z' },
+  { id: 'anchor',   label: 'ANCR', shortcut: 'A' },
 ];
 
 @customElement('ghz-toolbar')
