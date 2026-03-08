@@ -14,6 +14,7 @@ export interface SceneState {
   anchor: AnchorPoint | null;
   velvet: number; // 0-1, surface smoothness
   scatter: number; // 0-1, cloud brush scatter (0=smooth strokes, 1=cloudy)
+  gravity: number; // 0-1, downward dissolution for form brush (default 0.4)
   tonalSort: boolean; // sort forms dark-to-light for K-M mixing
   shadowChroma: number; // 0-1, color-in-shadow intensity
 }
@@ -59,6 +60,7 @@ export const sceneStore = createStore<SceneState>({
   anchor: null,
   velvet: 0.6,
   scatter: 0.3,
+  gravity: 0.4,
   tonalSort: true,
   shadowChroma: 0.4,
 });

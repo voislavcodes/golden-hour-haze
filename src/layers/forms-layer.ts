@@ -112,6 +112,7 @@ export function writeFormsData(
   velvet = 0.6,
   tonalSort = true,
   scatter = 0.3,
+  gravity = 0.4,
 ) {
   const { device } = getGPU();
 
@@ -136,7 +137,7 @@ export function writeFormsData(
   headerF32[6] = tonalSort ? 1.0 : 0.0;
   headerF32[7] = tonalMap.enabled ? 1.0 : 0.0;
   headerF32[8] = scatter;
-  headerF32[9] = 0; // _pad
+  headerF32[9] = gravity;
   device.queue.writeBuffer(paramBuffer, 0, headerData);
 
   if (count === 0) return;
@@ -162,7 +163,7 @@ export function writeFormsData(
     data[off + 13] = f.strokeDirY ?? 0;
     // edge_seed: unique per-form hash based on position
     data[off + 14] = ((f.x * 127.1 + f.y * 311.7) % 1.0 + 1.0) % 1.0;
-    data[off + 15] = 0; // _pad
+    data[off + 15] = f.taper ?? 0;
   }
   device.queue.writeBuffer(formStorageBuffer, 0, data);
 }

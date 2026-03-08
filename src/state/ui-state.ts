@@ -1,6 +1,6 @@
 import { createStore } from './store.js';
 
-export type Tool = 'select' | 'cloud' | 'light' | 'dissolve' | 'drift' | 'palette' | 'depth' | 'anchor';
+export type Tool = 'select' | 'cloud' | 'form' | 'light' | 'dissolve' | 'drift' | 'palette' | 'depth' | 'anchor';
 
 export interface UIState {
   activeTool: Tool;

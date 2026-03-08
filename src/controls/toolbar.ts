@@ -12,6 +12,7 @@ interface ToolEntry {
 const TOOLS: ToolEntry[] = [
   { id: 'select',   label: 'SEL',  shortcut: 'V' },
   { id: 'cloud',    label: 'CLD',  shortcut: 'C' },
+  { id: 'form',     label: 'FRM',  shortcut: 'F' },
   { id: 'light',    label: 'LGT',  shortcut: 'L' },
   { id: 'dissolve', label: 'DSLV', shortcut: 'D' },
   { id: 'drift',    label: 'DRFT', shortcut: 'R' },

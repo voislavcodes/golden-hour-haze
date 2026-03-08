@@ -35,6 +35,7 @@ export interface FormDef {
   dissolution: number;   // 0-1
   strokeDirX: number;    // normalized stroke direction
   strokeDirY: number;
+  taper: number;         // end/start radius ratio for type=3 (0=needle, 1=uniform, >1=flaring)
 }
 
 export interface LightDef {

@@ -74,7 +74,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4f {
   let density_data = textureSample(density_tex, tex_sampler, uv);
   let scatter = textureSample(scatter_tex, tex_sampler, uv).rgb;
   let grain = textureSample(grain_tex, tex_sampler, uv).r;
-  let forms = textureSample(forms_tex, tex_sampler, uv);
+  let forms = textureLoad(forms_tex, vec2i(uv * vec2f(textureDimensions(forms_tex))), 0);
   let light = textureSample(light_tex, tex_sampler, uv).rgb;
   let bloom = textureSample(bloom_tex, tex_sampler, uv).rgb;
 
@@ -113,7 +113,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4f {
   let depth2 = depth * depth;
   let atmosphere_fog = vec3f(0.75, 0.60, 0.50) * density * 0.2;
   let form_color = shadowed + atmosphere_fog * (1.0 - shadow_amount);
-  var color = km_mix(sky, form_color, forms.a);
+  var color = mix(sky, form_color, forms.a);
 
   // Add light scatter and bloom
   color += light * 0.5;

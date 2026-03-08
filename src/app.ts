@@ -54,6 +54,7 @@ import './controls/drift-field.js';
 import './controls/anchor-control.js';
 import './controls/velvet-slider.js';
 import './controls/scatter-slider.js';
+import './controls/gravity-slider.js';
 import { initPointerInput } from './input/pointer.js';
 import { initGestureInput } from './input/gesture.js';
 import { initKeyboardInput } from './input/keyboard.js';
@@ -95,7 +96,7 @@ export function initApp() {
   writePaletteData(scene.palette);
   writeAtmosphereParams(scene.atmosphere);
   writeScatterParams(scene.sunAngle, scene.sunElevation);
-  writeFormsData(scene.forms, scene.palette.colors, scene.sunAngle, scene.tonalMap, scene.velvet, scene.tonalSort, scene.scatter);
+  writeFormsData(scene.forms, scene.palette.colors, scene.sunAngle, scene.tonalMap, scene.velvet, scene.tonalSort, scene.scatter, scene.gravity);
   writeLightData(scene.lights, 32);
   writeCompositorParams({
     shadowChroma: scene.shadowChroma,
@@ -236,8 +237,86 @@ function setupFormPlacement(_canvas: HTMLCanvasElement) {
   let wasDown = false;
   let lastFormX = 0;
   let lastFormY = 0;
+  let lastFormSize = 0;
 
   uiStore.subscribe((ui) => {
+    if (ui.activeTool === 'form' && ui.mouseDown) {
+      const scene = sceneStore.get();
+      const spacing = 0.008; // decisive marks, wider than cloud
+
+      const dx = ui.mouseX - lastFormX;
+      const dy = ui.mouseY - lastFormY;
+      const aspect = window.innerWidth / window.innerHeight;
+      const adx = dx * aspect;
+      const ady = dy;
+      const aDist = Math.sqrt(adx * adx + ady * ady);
+
+      if (!wasDown || aDist >= spacing) {
+        const metrics = updateStrokeMetrics(ui.mouseX, ui.mouseY, ui.pressure, performance.now());
+        const mods = metricsToModifiers(metrics, ui.brushSize);
+
+        const echo = scene.echo;
+        const opacity = 0.3 + echo * 0.7;
+        const softMod = 1.0 + (1.0 - echo) * 0.5;
+        const formRadius = mods.size;
+        const softness = Math.max(mods.softness * softMod, formRadius * 0.4);
+
+        if (!wasDown) pushHistory();
+
+        let newForm: FormDef;
+
+        if (!wasDown || aDist < 0.001) {
+          // Initial click: circle stamp
+          lastFormSize = formRadius;
+          newForm = {
+            type: 0,
+            x: ui.mouseX,
+            y: ui.mouseY,
+            sizeX: formRadius,
+            sizeY: formRadius,
+            rotation: mods.rotation,
+            softness,
+            depth: ui.mouseY,
+            colorIndex: scene.palette.activeIndex,
+            opacity,
+            dissolution: 0,
+            strokeDirX: metrics.dirX,
+            strokeDirY: metrics.dirY,
+            taper: 0,
+          };
+        } else {
+          // Drag: tapered capsule (type=3)
+          const angle = Math.atan2(ady, adx);
+          const dist = Math.sqrt(dx * dx + dy * dy);
+          const startR = lastFormSize;
+          const endR = formRadius;
+          const taper = startR > 0.0001 ? endR / startR : 1.0;
+
+          newForm = {
+            type: 3, // tapered capsule
+            x: lastFormX,
+            y: lastFormY,
+            sizeX: aDist,
+            sizeY: startR,   // start radius
+            rotation: angle,
+            softness,
+            depth: (lastFormY + ui.mouseY) / 2,
+            colorIndex: scene.palette.activeIndex,
+            opacity,
+            dissolution: 0,
+            strokeDirX: dx / dist,
+            strokeDirY: dy / dist,
+            taper,
+          };
+          lastFormSize = endR;
+        }
+
+        sceneStore.set({ forms: [...scene.forms, newForm] });
+        lastFormX = ui.mouseX;
+        lastFormY = ui.mouseY;
+      }
+    }
+
     if (ui.activeTool === 'cloud' && ui.mouseDown) {
       const scene = sceneStore.get();
       const scatter = scene.scatter;
@@ -261,6 +340,9 @@ function setupFormPlacement(_canvas: HTMLCanvasElement) {
         const echo = scene.echo;
         const opacity = 0.3 + echo * 0.7; // echo 0→faint, echo 1→solid
         const softMod = 1.0 + (1.0 - echo) * 0.5; // low echo = softer edges
+        // Cloud brush: minimum softness proportional to form size for dissolving edges
+        const formRadius = mods.size * sizeBoost;
+        const softness = Math.max(mods.softness * softMod, formRadius * 0.6);
 
         if (!wasDown) pushHistory(); // save state before first form in stroke
 
@@ -275,13 +357,14 @@ function setupFormPlacement(_canvas: HTMLCanvasElement) {
             sizeX: mods.size * sizeBoost,
             sizeY: mods.size * sizeBoost,
             rotation: mods.rotation,
-            softness: mods.softness * softMod,
+            softness,
             depth: ui.mouseY,
             colorIndex: scene.palette.activeIndex,
             opacity,
             dissolution: 0,
             strokeDirX: metrics.dirX,
             strokeDirY: metrics.dirY,
+            taper: 0,
           };
         } else {
           // Drag: capsule (line segment) from previous point to current point
@@ -295,13 +378,14 @@ function setupFormPlacement(_canvas: HTMLCanvasElement) {
             sizeX: aDist,
             sizeY: mods.size * sizeBoost, // capsule half-thickness
             rotation: angle,
-            softness: mods.softness * softMod,
+            softness,
             depth: (lastFormY + ui.mouseY) / 2,
             colorIndex: scene.palette.activeIndex,
             opacity,
             dissolution: 0,
             strokeDirX: dx / dist,
             strokeDirY: dy / dist,
+            taper: 0,
           };
         }
 

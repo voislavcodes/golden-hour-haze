@@ -27,7 +27,7 @@ struct FormData {
   stroke_dir_x: f32,
   stroke_dir_y: f32,
   edge_seed: f32,
-  _pad: f32,
+  taper: f32,      // end/start radius ratio for type=3 tapered capsule
 };
 
 struct FormsParams {
@@ -40,7 +40,7 @@ struct FormsParams {
   tonal_sort: f32,
   tonal_enabled: f32,
   scatter: f32,
-  _pad1: f32,
+  gravity: f32,    // downward dissolution amount
   _pad2: f32,
   _pad3: f32,
 };
@@ -108,6 +108,16 @@ fn smooth_union(d1: f32, d2: f32, k: f32) -> f32 {
   return mix(d2, d1, h) - k * h * (1.0 - h);
 }
 
+fn sdf_tapered_capsule(p: vec2f, a: vec2f, b: vec2f, ra: f32, rb: f32) -> f32 {
+  let pa = p - a;
+  let ba = b - a;
+  let l2 = dot(ba, ba);
+  if (l2 < 0.00001) { return length(pa) - ra; }
+  let h = clamp(dot(pa, ba) / l2, 0.0, 1.0);
+  let r = mix(ra, rb, h);
+  return length(pa - ba * h) - r;
+}
+
 fn hash2(p: vec2f) -> f32 {
   var p3 = fract(vec3f(p.x, p.y, p.x) * 0.1031);
   p3 += dot(p3, vec3f(p3.y + 33.33, p3.z + 33.33, p3.x + 33.33));
@@ -133,9 +143,14 @@ fn eval_sdf(f: FormData, p: vec2f, aspect: f32) -> f32 {
     d = sdf_circle(p, center, f.size_x);
   } else if (f.type_id < 1.5) {
     d = sdf_box(p, center, vec2f(f.size_x, f.size_y), f.rotation);
-  } else {
+  } else if (f.type_id < 2.5) {
     let end = center + vec2f(cos(f.rotation), sin(f.rotation)) * f.size_x;
     d = sdf_line_seg(p, center, end, f.size_y);
+  } else {
+    // type=3: tapered capsule (form brush)
+    let end = center + vec2f(cos(f.rotation), sin(f.rotation)) * f.size_x;
+    let end_r = f.size_y * f.taper;
+    d = sdf_tapered_capsule(p, center, end, f.size_y, end_r);
   }
   return d;
 }
@@ -187,9 +202,24 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
     let depth_diss = nf.depth * nf.depth * 2.0;
     let eff_soft = nf.softness
       * (1.0 + depth_diss)
-      * (1.0 + dissolution_mask * 3.0);
+      * (1.0 + dissolution_mask * 3.0)
+      * (1.0 + params.scatter * 2.0);
 
-    let edge = 1.0 - smoothstep(0.0, max(eff_soft, 0.001), union_d);
+    // Gravity: asymmetric softness — bottom edges dissolve, top stays defined
+    let below = max(0.0, p.y - nf.y);
+    let grav = smoothstep(0.0, 0.15, below) * params.gravity;
+    let gravity_pull = grav * 0.04;     // extends the SDF surface downward
+    let gravity_soft = grav * 3.0;      // softens edges below
+    var final_d = union_d - gravity_pull;
+    var final_soft = eff_soft * (1.0 + gravity_soft);
+
+    // Form brush (type=3): inherent asymmetric softness even at gravity=0
+    if (nf.type_id > 2.5) {
+      let asym = smoothstep(0.0, 0.12, below);
+      final_soft *= (1.0 + asym * 1.2);
+    }
+
+    let edge = 1.0 - smoothstep(0.0, max(final_soft, 0.001), final_d);
     var form_color = vec3f(nf.color_r, nf.color_g, nf.color_b);
 
     // Gentle tonal variation along stroke direction
@@ -199,8 +229,16 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
     let sun_facing = dot(sp, sun_dir) * 0.5 + 0.5;
     form_color *= mix(0.95, 1.05, sun_facing);
 
-    // Stroke texture (continuous across entire shape)
-    if (sl > 0.01) {
+    // Stroke texture (type-branched)
+    if (nf.type_id > 2.5) {
+      // Coarse dry-brush scrape for form brush
+      let sc_along = dot(p, sd) * 4.0;
+      let sc_across = dot(p, sp) * 14.0;
+      let scrape = snoise2d(vec2f(sc_along, sc_across)) * 0.5
+                 + snoise2d(vec2f(sc_along * 0.5, sc_across * 0.5)) * 0.3;
+      form_color *= (1.0 + scrape * 0.10);
+    } else if (sl > 0.01) {
+      // Original fine texture for cloud brush
       let st_uv = vec2f(dot(p, sd) * 8.0, dot(p, sp) * 24.0);
       form_color *= (1.0 + snoise2d(st_uv) * 0.04);
     }
@@ -218,7 +256,7 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
 
     // Apply velvet and output
     let alpha = edge * nf.opacity;
-    let velvet_exp = mix(1.5, 0.7, params.velvet);
+    let velvet_exp = mix(1.0, 0.7, params.velvet);
     result_alpha = pow(alpha, velvet_exp);
     result_color = form_color;
   }
