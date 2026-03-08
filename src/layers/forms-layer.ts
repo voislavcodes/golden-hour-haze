@@ -1,5 +1,5 @@
 import { getGPU } from '../gpu/context.js';
-import { allocTexture } from '../gpu/texture-pool.js';
+import { allocTexture, allocPingPong, type PingPongTexture } from '../gpu/texture-pool.js';
 import { createComputePipeline } from '../gpu/pipeline-manager.js';
 import { getGlobalBindGroupLayout } from '../gpu/bind-groups.js';
 import formsShader from '../shaders/forms/forms.wgsl';
@@ -15,6 +15,13 @@ let paramBG: GPUBindGroup;
 let textureBG: GPUBindGroup;
 let currentWidth = 0;
 let currentHeight = 0;
+
+// Bake state — completed strokes baked into persistent texture
+let bakedFormCount = 0;
+let pendingBake = false;
+let pendingFullRebake = false;
+let currentTotalFormCount = 0;
+let bakedPP: PingPongTexture;
 
 export function initFormsLayer() {
   const { device } = getGPU();
@@ -34,6 +41,7 @@ export function initFormsLayer() {
       { binding: 1, visibility: GPUShaderStage.COMPUTE, texture: { sampleType: 'unfilterable-float' } },
       { binding: 2, visibility: GPUShaderStage.COMPUTE, texture: { sampleType: 'unfilterable-float' } },
       { binding: 3, visibility: GPUShaderStage.COMPUTE, storageTexture: { access: 'write-only', format: 'rgba16float' } },
+      { binding: 4, visibility: GPUShaderStage.COMPUTE, texture: { sampleType: 'unfilterable-float' } },
     ],
   });
 
@@ -79,7 +87,7 @@ export function updateFormsTextures(width: number, height: number) {
   const { device } = getGPU();
 
   const formsTex = allocTexture('forms', 'rgba16float', width, height,
-    GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING);
+    GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_SRC | GPUTextureUsage.COPY_DST);
 
   // Ensure dissolution mask exists
   allocTexture('dissolution', 'r32float', width, height,
@@ -91,6 +99,10 @@ export function updateFormsTextures(width: number, height: number) {
   const densityPP = allocTexture('forms-density-ref', 'rgba16float', width, height,
     GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.RENDER_ATTACHMENT);
 
+  // Baked strokes ping-pong
+  bakedPP = allocPingPong('forms-baked', 'rgba16float', width, height,
+    GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST | GPUTextureUsage.COPY_SRC);
+
   textureBG = device.createBindGroup({
     label: 'forms-tex-bg',
     layout: textureLayout,
@@ -100,8 +112,13 @@ export function updateFormsTextures(width: number, height: number) {
         GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING).createView() },
       { binding: 2, resource: densityPP.createView() },
       { binding: 3, resource: formsTex.createView() },
+      { binding: 4, resource: bakedPP.readView },
     ],
   });
+
+  // Resize invalidates baked content — full rebake needed
+  bakedFormCount = 0;
+  pendingFullRebake = true;
 }
 
 export function writeFormsData(
@@ -115,15 +132,24 @@ export function writeFormsData(
 ) {
   const { device } = getGPU();
 
-  // Tonal sort: render darkest forms first for K-M layering
-  const toRender = tonalSort ? forms.slice().sort((a, b) => {
-    const colA = palette[Math.min(a.colorIndex, palette.length - 1)] ?? { r: 0.5, g: 0.5, b: 0.5 };
-    const colB = palette[Math.min(b.colorIndex, palette.length - 1)] ?? { r: 0.5, g: 0.5, b: 0.5 };
-    return (0.2126 * colA.r + 0.7152 * colA.g + 0.0722 * colA.b)
-         - (0.2126 * colB.r + 0.7152 * colB.g + 0.0722 * colB.b);
-  }) : forms;
+  // Sort baked and live partitions independently for tonal sort
+  const lumOf = (f: FormDef) => {
+    const c = palette[Math.min(f.colorIndex, palette.length - 1)] ?? { r: 0.5, g: 0.5, b: 0.5 };
+    return 0.2126 * c.r + 0.7152 * c.g + 0.0722 * c.b;
+  };
+  const cmpLum = (a: FormDef, b: FormDef) => lumOf(a) - lumOf(b);
+
+  let toRender: FormDef[];
+  if (tonalSort) {
+    const baked = forms.slice(0, bakedFormCount).sort(cmpLum);
+    const live = forms.slice(bakedFormCount).sort(cmpLum);
+    toRender = baked.concat(live);
+  } else {
+    toRender = forms;
+  }
 
   const count = Math.min(toRender.length, MAX_FORMS);
+  currentTotalFormCount = count;
   const headerData = new ArrayBuffer(48);
   const headerU32 = new Uint32Array(headerData);
   const headerF32 = new Float32Array(headerData);
@@ -137,6 +163,7 @@ export function writeFormsData(
   headerF32[7] = tonalMap.enabled ? 1.0 : 0.0;
   headerF32[8] = 0; // scatter removed, baked at 0
   headerF32[9] = gravity;
+  headerU32[10] = pendingFullRebake ? 0 : bakedFormCount;
   device.queue.writeBuffer(paramBuffer, 0, headerData);
 
   if (count === 0) return;
@@ -167,7 +194,80 @@ export function writeFormsData(
   device.queue.writeBuffer(formStorageBuffer, 0, data);
 }
 
+function rebuildFormsTextureBG() {
+  const { device } = getGPU();
+  const formsTex = allocTexture('forms', 'rgba16float', currentWidth, currentHeight,
+    GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_SRC | GPUTextureUsage.COPY_DST);
+  const depthTex = allocTexture('depth', 'r32float', currentWidth, currentHeight,
+    GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING);
+  const densityPP = allocTexture('forms-density-ref', 'rgba16float', currentWidth, currentHeight,
+    GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.RENDER_ATTACHMENT);
+
+  textureBG = device.createBindGroup({
+    label: 'forms-tex-bg',
+    layout: textureLayout,
+    entries: [
+      { binding: 0, resource: depthTex.createView() },
+      { binding: 1, resource: allocTexture('dissolution', 'r32float', currentWidth, currentHeight,
+        GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING).createView() },
+      { binding: 2, resource: densityPP.createView() },
+      { binding: 3, resource: formsTex.createView() },
+      { binding: 4, resource: bakedPP.readView },
+    ],
+  });
+}
+
+function bakeCurrentForms(encoder: GPUCommandEncoder) {
+  const formsTex = allocTexture('forms', 'rgba16float', currentWidth, currentHeight,
+    GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_SRC | GPUTextureUsage.COPY_DST);
+
+  encoder.copyTextureToTexture(
+    { texture: formsTex },
+    { texture: bakedPP.write },
+    { width: currentWidth, height: currentHeight },
+  );
+  bakedPP.swap();
+  rebuildFormsTextureBG();
+  bakedFormCount = currentTotalFormCount;
+}
+
+export function requestBake() {
+  pendingBake = true;
+}
+
+export function requestFullRebake() {
+  pendingFullRebake = true;
+}
+
+export function getBakedFormCount() {
+  return bakedFormCount;
+}
+
+export function handlePendingBakes(encoder: GPUCommandEncoder) {
+  if (pendingFullRebake) {
+    bakeCurrentForms(encoder);
+    pendingFullRebake = false;
+    pendingBake = false;
+  } else if (pendingBake) {
+    bakeCurrentForms(encoder);
+    pendingBake = false;
+  }
+}
+
 export function dispatchForms(encoder: GPUCommandEncoder, globalBG: GPUBindGroup) {
+  // When no live forms and no pending rebake, copy baked→output instead of dispatching compute
+  const liveCount = currentTotalFormCount - bakedFormCount;
+  if (liveCount === 0 && !pendingFullRebake && !pendingBake && bakedFormCount > 0) {
+    const formsTex = allocTexture('forms', 'rgba16float', currentWidth, currentHeight,
+      GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_SRC | GPUTextureUsage.COPY_DST);
+    encoder.copyTextureToTexture(
+      { texture: bakedPP.read },
+      { texture: formsTex },
+      { width: currentWidth, height: currentHeight },
+    );
+    return;
+  }
+
   const pass = encoder.beginComputePass({ label: 'forms-compute-pass' });
   pass.setPipeline(pipeline);
   pass.setBindGroup(0, globalBG);

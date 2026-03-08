@@ -41,7 +41,7 @@ struct FormsParams {
   tonal_enabled: f32,
   _pad0: f32,
   gravity: f32,    // downward dissolution amount
-  _pad2: f32,
+  baked_count: u32,
   _pad3: f32,
 };
 
@@ -52,6 +52,7 @@ struct FormsParams {
 @group(2) @binding(1) var dissolution_tex: texture_2d<f32>;
 @group(2) @binding(2) var density_tex: texture_2d<f32>;
 @group(2) @binding(3) var output_tex: texture_storage_2d<rgba16float, write>;
+@group(2) @binding(4) var baked_tex: texture_2d<f32>;
 
 // --- Inline simplex noise (same as depth-field.wgsl) ---
 fn mod289v3(x: vec3f) -> vec3f { return x - floor(x * (1.0 / 289.0)) * 289.0; }
@@ -175,10 +176,22 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
   var weight_accum = 0.0;
   var opacity_accum = 0.0;
 
+  // Seed from baked texture (completed strokes)
+  if (params.baked_count > 0u) {
+    let baked = textureLoad(baked_tex, vec2i(gid.xy), 0);
+    if (baked.a > 0.001) {
+      let baked_refl = rgb_to_reflectance(baked.rgb);
+      let baked_ks = (1.0 - baked_refl) * (1.0 - baked_refl) / (2.0 * baked_refl);
+      ks_accum = baked_ks * baked.a;
+      weight_accum = baked.a;
+      opacity_accum = baked.a;
+    }
+  }
+
   let grav_probe = 0.06;
   let velvet_exp = mix(1.5, 0.7, params.velvet);
 
-  for (var i = 0u; i < params.form_count; i++) {
+  for (var i = params.baked_count; i < params.form_count; i++) {
     let f = forms[i];
     let d = eval_sdf(f, p, aspect);
 

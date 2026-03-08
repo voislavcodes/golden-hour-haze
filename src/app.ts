@@ -20,6 +20,9 @@ import {
   updateFormsTextures,
   writeFormsData,
   dispatchForms,
+  requestBake,
+  requestFullRebake,
+  handlePendingBakes,
 } from './layers/forms-layer.js';
 import {
   initLightLayer,
@@ -150,6 +153,17 @@ export function initApp() {
     pushHistory();
   });
 
+  // Track previous state for detecting global param changes / undo
+  let prevSunAngle = scene.sunAngle;
+  let prevTonalMap = scene.tonalMap;
+  let prevVelvet = scene.velvet;
+  let prevGravity = scene.gravity;
+  let prevTonalSort = scene.tonalSort;
+  let prevEcho = scene.echo;
+  let prevPaletteColors = scene.palette.colors;
+  let prevForms = scene.forms;
+  let prevFormsLen = scene.forms.length;
+
   // React to state changes
   sceneStore.subscribe((state) => {
     writeDepthParams(state.depth);
@@ -166,6 +180,37 @@ export function initApp() {
       anchorBoost: state.anchor?.chromaBoost ?? 0,
       anchorFalloff: state.anchor ? state.anchor.muteFalloff : 999.0,
     });
+
+    // Detect global param changes → full rebake
+    if (state.sunAngle !== prevSunAngle ||
+        state.tonalMap !== prevTonalMap ||
+        state.velvet !== prevVelvet ||
+        state.gravity !== prevGravity ||
+        state.tonalSort !== prevTonalSort ||
+        state.echo !== prevEcho ||
+        state.palette.colors !== prevPaletteColors) {
+      requestFullRebake();
+    }
+
+    // Detect undo/redo: forms array shrinks or elements differ (not just append)
+    if (state.forms !== prevForms) {
+      const isAppend = state.forms.length > prevFormsLen &&
+        state.forms.length > 0 && prevForms.length > 0 &&
+        state.forms[prevFormsLen - 1] === prevForms[prevFormsLen - 1];
+      if (!isAppend) {
+        requestFullRebake();
+      }
+    }
+
+    prevSunAngle = state.sunAngle;
+    prevTonalMap = state.tonalMap;
+    prevVelvet = state.velvet;
+    prevGravity = state.gravity;
+    prevTonalSort = state.tonalSort;
+    prevEcho = state.echo;
+    prevPaletteColors = state.palette.colors;
+    prevForms = state.forms;
+    prevFormsLen = state.forms.length;
   });
 
   // Also react to UI state changes (grayscale toggle)
@@ -219,6 +264,7 @@ function renderFrame(dt: number, elapsed: number) {
   dispatchDepth(encoder, globalBindGroup);
   dispatchAtmosphere(encoder, globalBindGroup);
   dispatchForms(encoder, globalBindGroup);
+  handlePendingBakes(encoder);
   dispatchLight(encoder, globalBindGroup);
 
   // Rebuild compositor bind group to get latest texture views
@@ -318,6 +364,9 @@ function setupFormPlacement(_canvas: HTMLCanvasElement) {
 
     if (!ui.mouseDown && wasDown) {
       resetStrokeTracking();
+      if (ui.activeTool === 'form') {
+        requestBake();
+      }
     }
 
     if (ui.mouseDown && !wasDown && ui.activeTool === 'light') {
