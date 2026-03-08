@@ -180,9 +180,10 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
     var nearest_i = 0u;
     let blend_k = 0.035;
 
-    // Smooth depth reference (Gaussian weight avoids nearest-form staircase)
+    // Smooth depth & color reference (Gaussian weight avoids nearest-form staircase)
     var ref_w = 0.0;
     var ref_depth = 0.0;
+    var ref_ks = vec3f(0.0); // K-M K/S accumulator for color blending
     // Vertical probes for gravity: SDF sampled above and below
     let grav_probe = 0.06;
     var sdf_up = 999.0;
@@ -201,6 +202,11 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
       // Gaussian weight: smooth falloff, no hard cutoff
       let w = exp(-d * d * 100.0);
       ref_depth += forms[i].depth * w;
+      // Accumulate color in K/S space for subtractive blending
+      let fi_col = vec3f(forms[i].color_r, forms[i].color_g, forms[i].color_b);
+      let fi_refl = rgb_to_reflectance(fi_col);
+      let fi_ks = (1.0 - fi_refl) * (1.0 - fi_refl) / (2.0 * fi_refl);
+      ref_ks += fi_ks * w;
       ref_w += w;
 
       if (d < nearest_d) {
@@ -218,7 +224,15 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
       * (1.0 + dissolution_mask * 1.5);
 
     let edge = 1.0 - smoothstep(0.0, max(eff_soft, 0.001), union_d);
-    var form_color = vec3f(nf.color_r, nf.color_g, nf.color_b);
+    // Blend color in K-M space using Gaussian weights (subtractive pigment mixing)
+    var form_color: vec3f;
+    if (ref_w > 0.001) {
+      let ks = ref_ks / ref_w;
+      let r = 1.0 + ks - sqrt(ks * ks + 2.0 * ks);
+      form_color = reflectance_to_rgb(r);
+    } else {
+      form_color = vec3f(nf.color_r, nf.color_g, nf.color_b);
+    }
 
     // Gravity: pigment settling — probe SDF above & below to find vertical position
     // sdf_up > sdf_dn → near top of form (going up exits faster) → wash thins
