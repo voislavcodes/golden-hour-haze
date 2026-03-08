@@ -9,6 +9,7 @@ export interface SceneState {
   palette: PaletteState;
   sunAngle: number; // radians, drives time-of-day
   sunElevation: number;
+  echo: number; // 0-1, stroke coherence (controls form opacity/softness)
 }
 
 const defaultPalette: PaletteState = {
@@ -46,4 +47,5 @@ export const sceneStore = createStore<SceneState>({
   palette: defaultPalette,
   sunAngle: 0.8, // ~golden hour angle
   sunElevation: 0.15,
+  echo: 0.5,
 });

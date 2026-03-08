@@ -59,6 +59,7 @@ import {
   resetStrokeTracking,
 } from './input/pressure.js';
 import type { FormDef } from './layers/layer-types.js';
+import { pushHistory } from './state/history.js';
 
 let globalUniformBuffer: GPUBuffer;
 let globalBindGroup: GPUBindGroup;
@@ -110,6 +111,31 @@ export function initApp() {
 
   // Handle form placement on click
   setupFormPlacement(canvas);
+
+  // Wire dissolve brush — apply dissolution to nearby forms
+  document.addEventListener('dissolve-stroke', ((e: CustomEvent) => {
+    const stroke = e.detail as { x: number; y: number; radius: number; pressure: number };
+    const scene = sceneStore.get();
+    let changed = false;
+    const updatedForms = scene.forms.map((f) => {
+      const dx = f.x - stroke.x;
+      const dy = f.y - stroke.y;
+      const dist = Math.sqrt(dx * dx + dy * dy);
+      if (dist < stroke.radius + f.sizeX) {
+        changed = true;
+        const influence = Math.max(0, 1 - dist / (stroke.radius + f.sizeX));
+        return { ...f, dissolution: Math.min(1, f.dissolution + influence * stroke.pressure * 0.1) };
+      }
+      return f;
+    });
+    if (changed) {
+      sceneStore.set({ forms: updatedForms });
+    }
+  }) as EventListener);
+
+  document.addEventListener('dissolve-stroke-end', () => {
+    pushHistory();
+  });
 
   // React to state changes
   sceneStore.subscribe((state) => {
@@ -190,6 +216,11 @@ function setupFormPlacement(_canvas: HTMLCanvasElement) {
         const metrics = updateStrokeMetrics(ui.mouseX, ui.mouseY, ui.pressure, performance.now());
         const mods = metricsToModifiers(metrics);
 
+        // Echo controls form opacity and softness coherence
+        const echo = scene.echo;
+        const opacity = 0.3 + echo * 0.7; // echo 0→faint, echo 1→solid
+        const softMod = 1.0 + (1.0 - echo) * 0.5; // low echo = softer edges
+
         const newForm: FormDef = {
           type: 0, // circle
           x: ui.mouseX,
@@ -197,13 +228,14 @@ function setupFormPlacement(_canvas: HTMLCanvasElement) {
           sizeX: mods.size,
           sizeY: mods.size,
           rotation: mods.rotation,
-          softness: mods.softness,
+          softness: mods.softness * softMod,
           depth: ui.mouseY, // depth from vertical position
           colorIndex: scene.palette.activeIndex,
-          opacity: 0.8,
+          opacity,
           dissolution: 0,
         };
 
+        if (!wasDown) pushHistory(); // save state before first form in stroke
         sceneStore.set({ forms: [...scene.forms, newForm] });
         lastFormX = ui.mouseX;
         lastFormY = ui.mouseY;
@@ -215,6 +247,7 @@ function setupFormPlacement(_canvas: HTMLCanvasElement) {
     }
 
     if (ui.mouseDown && !wasDown && ui.activeTool === 'light') {
+      pushHistory();
       const scene = sceneStore.get();
       sceneStore.set({
         lights: [

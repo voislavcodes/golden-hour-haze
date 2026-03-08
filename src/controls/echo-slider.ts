@@ -1,6 +1,7 @@
 import { html, css } from 'lit';
 import { customElement, property } from 'lit/decorators.js';
 import { BaseControl } from './base-control.js';
+import { sceneStore } from '../state/scene-state.js';
 
 @customElement('ghz-echo-slider')
 export class EchoSlider extends BaseControl {
@@ -87,16 +88,26 @@ export class EchoSlider extends BaseControl {
   @property({ type: Number })
   value: number = 0.5;
 
+  private _unsub?: () => void;
+
+  connectedCallback() {
+    super.connectedCallback();
+    this.value = sceneStore.get().echo;
+    this._unsub = sceneStore.select(
+      (s) => s.echo,
+      (echo) => { this.value = echo; }
+    );
+  }
+
+  disconnectedCallback() {
+    super.disconnectedCallback();
+    this._unsub?.();
+  }
+
   private _onInput(e: Event) {
     const input = e.target as HTMLInputElement;
     this.value = parseFloat(input.value);
-    this.dispatchEvent(
-      new CustomEvent('echo-change', {
-        detail: { value: this.value },
-        bubbles: true,
-        composed: true,
-      })
-    );
+    sceneStore.set({ echo: this.value });
   }
 
   render() {

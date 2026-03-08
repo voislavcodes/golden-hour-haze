@@ -1,11 +1,12 @@
 import { uiStore, type Tool } from '../state/ui-state.js';
+import { undo, redo } from '../state/history.js';
 
 const toolKeys: Record<string, Tool> = {
   v: 'select',
   f: 'form',
   l: 'light',
   d: 'dissolve',
-  w: 'drift',
+  r: 'drift',
   p: 'palette',
   z: 'depth',
 };
@@ -27,10 +28,14 @@ export function initKeyboardInput() {
       uiStore.update((s) => ({ showUI: !s.showUI }));
     }
 
-    // Undo/Redo (placeholders for history system)
+    // Undo/Redo
     if ((e.metaKey || e.ctrlKey) && e.key === 'z') {
       e.preventDefault();
-      // Will be connected to history in Phase 8
+      if (e.shiftKey) {
+        redo();
+      } else {
+        undo();
+      }
     }
   });
 }

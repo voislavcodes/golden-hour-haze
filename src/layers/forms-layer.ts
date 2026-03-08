@@ -126,7 +126,7 @@ export function writeFormsData(forms: FormDef[], palette: { r: number; g: number
     data[off + 3] = f.sizeX;
     data[off + 4] = f.sizeY;
     data[off + 5] = f.rotation;
-    data[off + 6] = f.softness;
+    data[off + 6] = f.softness + f.dissolution * 0.3; // dissolution increases edge softness
     data[off + 7] = f.depth;
     data[off + 8] = color.r;
     data[off + 9] = color.g;
