@@ -248,7 +248,7 @@ export function writeFormsData(
     data[off + 3] = f.sizeX;
     data[off + 4] = f.sizeY;
     data[off + 5] = f.rotation;
-    data[off + 6] = f.softness + f.dissolution * 0.3; // dissolution increases edge softness
+    data[off + 6] = f.softness * (1.0 + f.dissolution * 3.0); // dissolution scales softness relative to form size
     data[off + 7] = f.depth;
     data[off + 8] = color.r;
     data[off + 9] = color.g;

@@ -14,6 +14,7 @@ export interface UIState {
   showUI: boolean;
   brushSize: number;
   grayscalePreview: boolean;
+  dissolveStrength: number;  // 0.1-1.0, default 0.5
 }
 
 export const uiStore = createStore<UIState>({
@@ -28,4 +29,5 @@ export const uiStore = createStore<UIState>({
   showUI: true,
   brushSize: 0.06,
   grayscalePreview: false,
+  dissolveStrength: 0.5,
 });

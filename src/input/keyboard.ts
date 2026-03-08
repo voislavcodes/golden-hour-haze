@@ -23,13 +23,21 @@ export function initKeyboardInput() {
       }
     }
 
-    // Brush size shortcuts
+    // Brush size / dissolve strength shortcuts (context-aware)
     if (e.key === '[') {
-      uiStore.update((s) => ({ brushSize: Math.max(0.01, s.brushSize * 0.8) }));
+      if (uiStore.get().activeTool === 'dissolve') {
+        uiStore.update((s) => ({ dissolveStrength: Math.max(0.1, s.dissolveStrength * 0.8) }));
+      } else {
+        uiStore.update((s) => ({ brushSize: Math.max(0.01, s.brushSize * 0.8) }));
+      }
       return;
     }
     if (e.key === ']') {
-      uiStore.update((s) => ({ brushSize: Math.min(0.25, s.brushSize * 1.25) }));
+      if (uiStore.get().activeTool === 'dissolve') {
+        uiStore.update((s) => ({ dissolveStrength: Math.min(1.0, s.dissolveStrength * 1.25) }));
+      } else {
+        uiStore.update((s) => ({ brushSize: Math.min(0.25, s.brushSize * 1.25) }));
+      }
       return;
     }
 

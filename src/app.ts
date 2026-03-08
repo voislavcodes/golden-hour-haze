@@ -132,6 +132,7 @@ export function initApp() {
   document.addEventListener('dissolve-stroke', ((e: CustomEvent) => {
     const stroke = e.detail as { x: number; y: number; radius: number; pressure: number };
     const scene = sceneStore.get();
+    const ds = uiStore.get().dissolveStrength;
     let changed = false;
     const updatedForms = scene.forms.map((f) => {
       const dx = f.x - stroke.x;
@@ -140,7 +141,7 @@ export function initApp() {
       if (dist < stroke.radius + f.sizeX) {
         changed = true;
         const influence = Math.max(0, 1 - dist / (stroke.radius + f.sizeX));
-        return { ...f, dissolution: Math.min(1, f.dissolution + influence * stroke.pressure * 0.1) };
+        return { ...f, dissolution: Math.min(1, f.dissolution + influence * stroke.pressure * 0.1 * ds) };
       }
       return f;
     });

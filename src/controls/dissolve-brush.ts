@@ -39,15 +39,30 @@ export class DissolveBrush extends BaseControl {
         pointer-events: none;
         transform: translate(-50%, -50%);
       }
+
+      .strength-hud {
+        position: absolute;
+        bottom: 24px;
+        left: 50%;
+        transform: translateX(-50%);
+        font: 500 11px/1 'SF Mono', 'Fira Code', monospace;
+        color: rgba(255, 200, 120, 0.7);
+        letter-spacing: 0.08em;
+        pointer-events: none;
+        user-select: none;
+        text-shadow: 0 1px 4px rgba(0,0,0,0.5);
+      }
     `,
   ];
 
   @state() private _isActive: boolean = false;
   @state() private _recentStrokes: BrushStroke[] = [];
+  @state() private _strength: number = 0.5;
 
   private _painting = false;
   private _strokes: BrushStroke[] = [];
   private _unsubTool?: () => void;
+  private _unsubStrength?: () => void;
 
   /** Access all recorded brush strokes */
   get strokes(): ReadonlyArray<BrushStroke> {
@@ -66,15 +81,23 @@ export class DissolveBrush extends BaseControl {
         } else {
           this.classList.remove('active');
           this._painting = false;
+          this.clearStrokes();
         }
       }
     );
     if (this._isActive) this.classList.add('active');
+
+    this._strength = uiStore.get().dissolveStrength;
+    this._unsubStrength = uiStore.select(
+      (s) => s.dissolveStrength,
+      (v) => { this._strength = v; }
+    );
   }
 
   disconnectedCallback() {
     super.disconnectedCallback();
     this._unsubTool?.();
+    this._unsubStrength?.();
   }
 
   private _onPointerDown(e: PointerEvent) {
@@ -153,6 +176,7 @@ export class DissolveBrush extends BaseControl {
             ></div>
           `
         )}
+        ${this._isActive ? html`<div class="strength-hud">DSLV ${this._strength.toFixed(2)}</div>` : ''}
       </div>
     `;
   }
