@@ -54,7 +54,6 @@ import './controls/drift-field.js';
 import './controls/anchor-control.js';
 import './controls/velvet-slider.js';
 import './controls/scatter-slider.js';
-import './controls/fusion-slider.js';
 import { initPointerInput } from './input/pointer.js';
 import { initGestureInput } from './input/gesture.js';
 import { initKeyboardInput } from './input/keyboard.js';
@@ -96,7 +95,7 @@ export function initApp() {
   writePaletteData(scene.palette);
   writeAtmosphereParams(scene.atmosphere);
   writeScatterParams(scene.sunAngle, scene.sunElevation);
-  writeFormsData(scene.forms, scene.palette.colors, scene.sunAngle, scene.tonalMap, scene.velvet, scene.tonalSort, scene.scatter, scene.fusion);
+  writeFormsData(scene.forms, scene.palette.colors, scene.sunAngle, scene.tonalMap, scene.velvet, scene.tonalSort, scene.scatter);
   writeLightData(scene.lights, 32);
   writeCompositorParams({
     shadowChroma: scene.shadowChroma,
@@ -157,7 +156,7 @@ export function initApp() {
     writeAtmosphereParams(state.atmosphere);
     writeScatterParams(state.sunAngle, state.sunElevation);
     writePaletteData(state.palette);
-    writeFormsData(state.forms, state.palette.colors, state.sunAngle, state.tonalMap, state.velvet, state.tonalSort, state.scatter, state.fusion);
+    writeFormsData(state.forms, state.palette.colors, state.sunAngle, state.tonalMap, state.velvet, state.tonalSort, state.scatter);
     writeLightData(state.lights, 32);
     writeCompositorParams({
       shadowChroma: state.shadowChroma,
@@ -239,7 +238,7 @@ function setupFormPlacement(_canvas: HTMLCanvasElement) {
   let lastFormY = 0;
 
   uiStore.subscribe((ui) => {
-    if (ui.activeTool === 'form' && ui.mouseDown) {
+    if (ui.activeTool === 'cloud' && ui.mouseDown) {
       const scene = sceneStore.get();
       const scatter = scene.scatter;
       const spacing = 0.004 + scatter * 0.021; // scatter 0→0.004, 1→0.025
@@ -247,10 +246,14 @@ function setupFormPlacement(_canvas: HTMLCanvasElement) {
 
       const dx = ui.mouseX - lastFormX;
       const dy = ui.mouseY - lastFormY;
-      const dist = Math.sqrt(dx * dx + dy * dy);
+      // Use aspect-corrected distance so spacing is uniform in all directions
+      const aspect = window.innerWidth / window.innerHeight;
+      const adx = dx * aspect;
+      const ady = dy;
+      const aDist = Math.sqrt(adx * adx + ady * ady);
 
       // Place on initial click or when dragged far enough
-      if (!wasDown || dist >= spacing) {
+      if (!wasDown || aDist >= spacing) {
         const metrics = updateStrokeMetrics(ui.mouseX, ui.mouseY, ui.pressure, performance.now());
         const mods = metricsToModifiers(metrics, ui.brushSize);
 
@@ -263,7 +266,7 @@ function setupFormPlacement(_canvas: HTMLCanvasElement) {
 
         let newForm: FormDef;
 
-        if (!wasDown || dist < 0.001) {
+        if (!wasDown || aDist < 0.001) {
           // Initial click: circle stamp at start point
           newForm = {
             type: 0,
@@ -282,18 +285,14 @@ function setupFormPlacement(_canvas: HTMLCanvasElement) {
           };
         } else {
           // Drag: capsule (line segment) from previous point to current point
-          // Compute in aspect-corrected space to match shader
-          const aspect = window.innerWidth / window.innerHeight;
-          const adx = dx * aspect;
-          const ady = dy;
-          const segLen = Math.sqrt(adx * adx + ady * ady);
           const angle = Math.atan2(ady, adx);
+          const dist = Math.sqrt(dx * dx + dy * dy);
 
           newForm = {
             type: 2, // line segment → capsule SDF
             x: lastFormX,
             y: lastFormY,
-            sizeX: segLen,
+            sizeX: aDist,
             sizeY: mods.size * sizeBoost, // capsule half-thickness
             rotation: angle,
             softness: mods.softness * softMod,

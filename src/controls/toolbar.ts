@@ -11,7 +11,7 @@ interface ToolEntry {
 
 const TOOLS: ToolEntry[] = [
   { id: 'select',   label: 'SEL',  shortcut: 'V' },
-  { id: 'form',     label: 'FORM', shortcut: 'F' },
+  { id: 'cloud',    label: 'CLD',  shortcut: 'C' },
   { id: 'light',    label: 'LGT',  shortcut: 'L' },
   { id: 'dissolve', label: 'DSLV', shortcut: 'D' },
   { id: 'drift',    label: 'DRFT', shortcut: 'R' },
@@ -69,7 +69,7 @@ export class Toolbar extends BaseControl {
   ];
 
   @state()
-  private _activeTool: Tool = 'form';
+  private _activeTool: Tool = 'cloud';
 
   private _unsubscribe?: () => void;
 

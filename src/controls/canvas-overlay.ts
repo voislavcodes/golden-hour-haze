@@ -5,7 +5,7 @@ import { uiStore, type Tool } from '../state/ui-state.js';
 
 const TOOL_CURSORS: Record<Tool, string> = {
   select:   'default',
-  form:     'crosshair',
+  cloud:    'crosshair',
   light:    'cell',
   dissolve: 'pointer',
   drift:    'grab',

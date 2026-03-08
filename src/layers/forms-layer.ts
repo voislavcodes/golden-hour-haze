@@ -112,7 +112,6 @@ export function writeFormsData(
   velvet = 0.6,
   tonalSort = true,
   scatter = 0.3,
-  fusion = 0.5,
 ) {
   const { device } = getGPU();
 
@@ -137,7 +136,7 @@ export function writeFormsData(
   headerF32[6] = tonalSort ? 1.0 : 0.0;
   headerF32[7] = tonalMap.enabled ? 1.0 : 0.0;
   headerF32[8] = scatter;
-  headerF32[9] = fusion;
+  headerF32[9] = 0; // _pad
   device.queue.writeBuffer(paramBuffer, 0, headerData);
 
   if (count === 0) return;
