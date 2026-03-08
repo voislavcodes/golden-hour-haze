@@ -50,7 +50,7 @@ export function initFormsLayer() {
 
   paramBuffer = device.createBuffer({
     label: 'forms-params',
-    size: 32, // form_count, sun_angle, key_value, value_range, contrast, velvet, tonal_sort, tonal_enabled
+    size: 48, // form_count, sun_angle, key_value, value_range, contrast, velvet, tonal_sort, tonal_enabled, scatter + pad
     usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
   });
 
@@ -111,6 +111,8 @@ export function writeFormsData(
   tonalMap: TonalMapParams = { enabled: true, valueRange: 0.8, keyValue: 0.5, contrast: 0.6 },
   velvet = 0.6,
   tonalSort = true,
+  scatter = 0.3,
+  fusion = 0.5,
 ) {
   const { device } = getGPU();
 
@@ -123,7 +125,7 @@ export function writeFormsData(
   }) : forms;
 
   const count = Math.min(toRender.length, MAX_FORMS);
-  const headerData = new ArrayBuffer(32);
+  const headerData = new ArrayBuffer(48);
   const headerU32 = new Uint32Array(headerData);
   const headerF32 = new Float32Array(headerData);
   headerU32[0] = count;
@@ -134,6 +136,8 @@ export function writeFormsData(
   headerF32[5] = velvet;
   headerF32[6] = tonalSort ? 1.0 : 0.0;
   headerF32[7] = tonalMap.enabled ? 1.0 : 0.0;
+  headerF32[8] = scatter;
+  headerF32[9] = fusion;
   device.queue.writeBuffer(paramBuffer, 0, headerData);
 
   if (count === 0) return;

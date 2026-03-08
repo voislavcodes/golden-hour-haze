@@ -39,6 +39,10 @@ struct FormsParams {
   velvet: f32,
   tonal_sort: f32,
   tonal_enabled: f32,
+  scatter: f32,
+  fusion: f32,
+  _pad2: f32,
+  _pad3: f32,
 };
 
 @group(0) @binding(0) var<uniform> globals: Globals;
@@ -121,6 +125,21 @@ fn tonal_value(depth: f32, key: f32, range: f32, contrast: f32) -> f32 {
   return 0.5 + 0.5 * sign(t) * (1.0 - exp(-abs(t)));
 }
 
+// Evaluate raw SDF distance for a single form (no effects)
+fn eval_sdf(f: FormData, p: vec2f, aspect: f32) -> f32 {
+  let center = vec2f(f.x * aspect, f.y);
+  var d: f32;
+  if (f.type_id < 0.5) {
+    d = sdf_circle(p, center, f.size_x);
+  } else if (f.type_id < 1.5) {
+    d = sdf_box(p, center, vec2f(f.size_x, f.size_y), f.rotation);
+  } else {
+    let end = center + vec2f(cos(f.rotation), sin(f.rotation)) * f.size_x;
+    d = sdf_line_seg(p, center, end, f.size_y);
+  }
+  return d;
+}
+
 @compute @workgroup_size(8, 8, 1)
 fn main(@builtin(global_invocation_id) gid: vec3u) {
   let dims = textureDimensions(output_tex);
@@ -129,112 +148,174 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
   let pixel = vec2f(f32(gid.x), f32(gid.y));
   let uv = pixel / vec2f(f32(dims.x), f32(dims.y));
   let aspect = f32(dims.x) / f32(dims.y);
-
-  // Aspect-corrected coordinates
   let p = vec2f(uv.x * aspect, uv.y);
 
   let depth = textureLoad(depth_tex, vec2i(gid.xy), 0).r;
   let dissolution_mask = textureLoad(dissolution_tex, vec2i(gid.xy), 0).r;
   let atmo = textureLoad(density_tex, vec2i(gid.xy), 0);
-
-  // Sun direction for interior tonal variation and light response
   let sun_dir = vec2f(cos(params.sun_angle), sin(params.sun_angle));
 
-  // Evaluate all forms, compositing front to back
   var result_color = vec3f(0.0);
   var result_alpha = 0.0;
 
-  for (var i = 0u; i < params.form_count; i++) {
-    let f = forms[i];
-    let center = vec2f(f.x * aspect, f.y);
+  if (params.fusion > 0.0 && params.form_count > 0u) {
+    // ========================================================
+    // FUSION PATH: Evaluate all forms as a single union shape.
+    // One SDF, one edge, one shade pass — no internal ridges.
+    // ========================================================
 
-    var d: f32;
-    if (f.type_id < 0.5) {
-      d = sdf_circle(p, center, f.size_x);
-    } else if (f.type_id < 1.5) {
-      d = sdf_box(p, center, vec2f(f.size_x, f.size_y), f.rotation);
-    } else {
-      let end = center + vec2f(cos(f.rotation), sin(f.rotation)) * f.size_x;
-      d = sdf_line_seg(p, center, end, f.size_y);
+    // Pass 1: Compute smooth union of all SDFs, track nearest form for color
+    var union_d = 999.0;
+    var nearest_d = 999.0;
+    var nearest_i = 0u;
+    let blend_k = 0.01 + 0.04 * params.fusion; // smooth union radius
+
+    for (var i = 0u; i < params.form_count; i++) {
+      var d = eval_sdf(forms[i], p, aspect);
+
+      // Edge irregularity (scatter-controlled)
+      let center = vec2f(forms[i].x * aspect, forms[i].y);
+      let e_uv = (p - center) * 12.0 + vec2f(forms[i].edge_seed * 100.0);
+      d += (snoise2d(e_uv) * 0.6 + snoise2d(e_uv * 2.3) * 0.3)
+           * forms[i].softness * 0.15 * params.scatter;
+
+      union_d = smooth_union(union_d, d, blend_k);
+
+      if (d < nearest_d) {
+        nearest_d = d;
+        nearest_i = i;
+      }
     }
 
-    // Early-out: skip noise evaluation for pixels far from this form
-    let max_soft = f.softness * 3.0;
-    if (d > max_soft) { continue; }
-
-    // --- A2: Edge irregularity via FBM noise displacing the SDF ---
-    let edge_uv = (p - center) * 12.0 + vec2f(f.edge_seed * 100.0);
-    let edge_fbm = snoise2d(edge_uv) * 0.6 + snoise2d(edge_uv * 2.3) * 0.3;
-    let irregularity = edge_fbm * f.softness * 0.15;
-    d += irregularity;
-
-    // Perceptual edge dissolution
-    var form_color = vec3f(f.color_r, f.color_g, f.color_b);
-    let bg_color = result_color;
-
-    let lum_contrast = abs(lum(form_color) - lum(bg_color));
-    let hold = clamp(lum_contrast * 3.0, 0.0, 1.0);
-
-    let depth_diss = f.depth * f.depth * 2.0;
-    let eff_soft = f.softness
+    // Pass 2: Shade the union shape once using nearest form's properties
+    let nf = forms[nearest_i];
+    let depth_diss = nf.depth * nf.depth * 2.0;
+    let eff_soft = nf.softness
       * (1.0 + depth_diss)
-      * (1.0 - hold * 0.7)
       * (1.0 + dissolution_mask * 3.0);
 
-    let edge = 1.0 - smoothstep(0.0, max(eff_soft, 0.001), d);
-    let alpha = edge * f.opacity;
+    let edge = 1.0 - smoothstep(0.0, max(eff_soft, 0.001), union_d);
+    var form_color = vec3f(nf.color_r, nf.color_g, nf.color_b);
 
-    // --- A3: Interior tonal variation based on sun direction ---
-    let to_center = center - p;
-    let tc_len = length(to_center);
-    let to_center_n = select(vec2f(0.0), to_center / tc_len, tc_len > 0.001);
-    let sun_facing = dot(to_center_n, sun_dir) * 0.5 + 0.5;
-    let tonal_shift = mix(0.85, 1.15, sun_facing);
-    // Attenuate tonal shift at edges to prevent dark fringe per-form
-    form_color *= mix(1.0, tonal_shift, edge);
+    // Gentle tonal variation along stroke direction (global, not per-form)
+    let sl = length(vec2f(nf.stroke_dir_x, nf.stroke_dir_y));
+    let sd = select(sun_dir, normalize(vec2f(nf.stroke_dir_x, nf.stroke_dir_y)), sl > 0.01);
+    let sp = vec2f(-sd.y, sd.x);
+    let sun_facing = dot(sp, sun_dir) * 0.5 + 0.5;
+    form_color *= mix(0.95, 1.05, sun_facing);
 
-    // --- A4: Stroke direction texture ---
-    let stroke_len = length(vec2f(f.stroke_dir_x, f.stroke_dir_y));
-    if (stroke_len > 0.01) {
-      let sdir = vec2f(f.stroke_dir_x, f.stroke_dir_y) / stroke_len;
-      let perp = vec2f(-sdir.y, sdir.x);
-      // Anisotropic UV: 3:1 aspect ratio creates elongated brush marks
-      let stroke_uv = vec2f(dot(p - center, sdir) * 8.0, dot(p - center, perp) * 24.0);
-      let stroke_tex = snoise2d(stroke_uv + vec2f(f.edge_seed * 50.0)) * 0.08;
-      form_color *= (1.0 + stroke_tex);
+    // Global stroke texture (continuous across entire shape)
+    if (sl > 0.01) {
+      let st_uv = vec2f(dot(p, sd) * 8.0, dot(p, sp) * 24.0);
+      form_color *= (1.0 + snoise2d(st_uv) * 0.04);
     }
 
-    // --- C1: Directional light response ---
-    let light_response = sun_facing * (1.0 - f.depth * 0.5);
-    let highlight = max(0.0, light_response - 0.5) * 0.2;
+    // Light response
+    let highlight = max(0.0, sun_facing - 0.5) * 0.12 * (1.0 - nf.depth * 0.5);
     form_color += vec3f(highlight * 1.1, highlight * 0.9, highlight * 0.7);
 
-    // Tonal hierarchy: constrain luminance to depth-derived value
+    // Tonal hierarchy
     if (params.tonal_enabled > 0.5) {
-      let target_value = tonal_value(depth, params.key_value, params.value_range, params.contrast);
-      let form_lum = lum(form_color);
-      let lum_ratio = target_value / max(form_lum, 0.001);
-      form_color = form_color * clamp(lum_ratio, 0.3, 3.0);
+      let tv = tonal_value(depth, params.key_value, params.value_range, params.contrast);
+      let lr = tv / max(lum(form_color), 0.001);
+      form_color *= clamp(lr, 0.3, 3.0);
     }
 
-    // --- B2: K-M color bleeding at edges ---
-    let edge_zone = smoothstep(0.0, 0.3, alpha) * smoothstep(1.0, 0.7, alpha);
-    if (edge_zone > 0.01 && result_alpha > 0.1) {
-      let bg = clamp(result_color / result_alpha, vec3f(0.0), vec3f(1.0));
-      let km_blended = km_mix(bg, form_color, alpha);
-      form_color = mix(form_color, km_blended, edge_zone);
-    }
+    // Apply velvet and output
+    let alpha = edge * nf.opacity;
+    let velvet_exp = mix(1.5, 0.7, params.velvet);
+    result_alpha = pow(alpha, velvet_exp);
+    result_color = form_color;
 
-    // K-M subtractive front-to-back composite
-    if (result_alpha < 0.999) {
-      let contrib = alpha * (1.0 - result_alpha);
-      let velvet_exp = mix(1.5, 0.7, params.velvet);
-      let eff_contrib = pow(contrib, velvet_exp);
-      // Skip negligible contributions — avoids km_mix against uninitialized black
-      if (eff_contrib < 0.002) { continue; }
-      let t = eff_contrib / (eff_contrib + result_alpha);
-      result_color = km_mix(result_color, form_color, t);
-      result_alpha += eff_contrib;
+  } else {
+    // ========================================================
+    // NORMAL PATH: Per-form K-M compositing (painterly/cloudy)
+    // ========================================================
+    for (var i = 0u; i < params.form_count; i++) {
+      let f = forms[i];
+      let center = vec2f(f.x * aspect, f.y);
+
+      var d: f32;
+      if (f.type_id < 0.5) {
+        d = sdf_circle(p, center, f.size_x);
+      } else if (f.type_id < 1.5) {
+        d = sdf_box(p, center, vec2f(f.size_x, f.size_y), f.rotation);
+      } else {
+        let end = center + vec2f(cos(f.rotation), sin(f.rotation)) * f.size_x;
+        d = sdf_line_seg(p, center, end, f.size_y);
+      }
+
+      let max_soft = f.softness * 3.0;
+      if (d > max_soft) { continue; }
+
+      // A2: Edge irregularity
+      let edge_uv = (p - center) * 12.0 + vec2f(f.edge_seed * 100.0);
+      let edge_fbm = snoise2d(edge_uv) * 0.6 + snoise2d(edge_uv * 2.3) * 0.3;
+      d += edge_fbm * f.softness * 0.15 * params.scatter;
+
+      var form_color = vec3f(f.color_r, f.color_g, f.color_b);
+      let bg_color = result_color;
+      let lum_contrast = abs(lum(form_color) - lum(bg_color));
+      let hold = clamp(lum_contrast * 3.0, 0.0, 1.0);
+
+      let depth_diss = f.depth * f.depth * 2.0;
+      let eff_soft = f.softness
+        * (1.0 + depth_diss)
+        * (1.0 - hold * 0.7)
+        * (1.0 + dissolution_mask * 3.0);
+
+      let edge = 1.0 - smoothstep(0.0, max(eff_soft, 0.001), d);
+      let alpha = edge * f.opacity;
+
+      // A3: Interior tonal variation
+      let to_center = center - p;
+      let tc_len = length(to_center);
+      let to_center_n = select(vec2f(0.0), to_center / tc_len, tc_len > 0.001);
+      let sun_facing = dot(to_center_n, sun_dir) * 0.5 + 0.5;
+      let tonal_shift = mix(0.85, 1.15, sun_facing);
+      form_color *= mix(1.0, tonal_shift, edge);
+
+      // A4: Stroke direction texture
+      let stroke_len = length(vec2f(f.stroke_dir_x, f.stroke_dir_y));
+      if (stroke_len > 0.01) {
+        let sdir = vec2f(f.stroke_dir_x, f.stroke_dir_y) / stroke_len;
+        let perp = vec2f(-sdir.y, sdir.x);
+        let stroke_uv = vec2f(dot(p - center, sdir) * 8.0, dot(p - center, perp) * 24.0);
+        let stroke_tex = snoise2d(stroke_uv + vec2f(f.edge_seed * 50.0)) * 0.08;
+        form_color *= (1.0 + stroke_tex);
+      }
+
+      // C1: Directional light response
+      let light_response = sun_facing * (1.0 - f.depth * 0.5);
+      let highlight = max(0.0, light_response - 0.5) * 0.2;
+      form_color += vec3f(highlight * 1.1, highlight * 0.9, highlight * 0.7);
+
+      // Tonal hierarchy
+      if (params.tonal_enabled > 0.5) {
+        let target_value = tonal_value(depth, params.key_value, params.value_range, params.contrast);
+        let form_lum = lum(form_color);
+        let lum_ratio = target_value / max(form_lum, 0.001);
+        form_color = form_color * clamp(lum_ratio, 0.3, 3.0);
+      }
+
+      // B2: K-M color bleeding at edges
+      let edge_zone = smoothstep(0.0, 0.3, alpha) * smoothstep(1.0, 0.7, alpha);
+      if (edge_zone > 0.01 && result_alpha > 0.1) {
+        let bg = clamp(result_color / result_alpha, vec3f(0.0), vec3f(1.0));
+        let km_blended = km_mix(bg, form_color, alpha);
+        form_color = mix(form_color, km_blended, edge_zone);
+      }
+
+      // K-M subtractive front-to-back composite
+      if (result_alpha < 0.999) {
+        let contrib = alpha * (1.0 - result_alpha);
+        let velvet_exp = mix(1.5, 0.7, params.velvet);
+        let eff_contrib = pow(contrib, velvet_exp);
+        if (eff_contrib < 0.002) { continue; }
+        let t = eff_contrib / (eff_contrib + result_alpha);
+        result_color = km_mix(result_color, form_color, t);
+        result_alpha += eff_contrib;
+      }
     }
   }
 

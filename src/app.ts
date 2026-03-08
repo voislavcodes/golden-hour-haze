@@ -53,6 +53,8 @@ import './controls/palette-brush.js';
 import './controls/drift-field.js';
 import './controls/anchor-control.js';
 import './controls/velvet-slider.js';
+import './controls/scatter-slider.js';
+import './controls/fusion-slider.js';
 import { initPointerInput } from './input/pointer.js';
 import { initGestureInput } from './input/gesture.js';
 import { initKeyboardInput } from './input/keyboard.js';
@@ -94,7 +96,7 @@ export function initApp() {
   writePaletteData(scene.palette);
   writeAtmosphereParams(scene.atmosphere);
   writeScatterParams(scene.sunAngle, scene.sunElevation);
-  writeFormsData(scene.forms, scene.palette.colors, scene.sunAngle, scene.tonalMap, scene.velvet, scene.tonalSort);
+  writeFormsData(scene.forms, scene.palette.colors, scene.sunAngle, scene.tonalMap, scene.velvet, scene.tonalSort, scene.scatter, scene.fusion);
   writeLightData(scene.lights, 32);
   writeCompositorParams({
     shadowChroma: scene.shadowChroma,
@@ -155,7 +157,7 @@ export function initApp() {
     writeAtmosphereParams(state.atmosphere);
     writeScatterParams(state.sunAngle, state.sunElevation);
     writePaletteData(state.palette);
-    writeFormsData(state.forms, state.palette.colors, state.sunAngle, state.tonalMap, state.velvet, state.tonalSort);
+    writeFormsData(state.forms, state.palette.colors, state.sunAngle, state.tonalMap, state.velvet, state.tonalSort, state.scatter, state.fusion);
     writeLightData(state.lights, 32);
     writeCompositorParams({
       shadowChroma: state.shadowChroma,
@@ -235,17 +237,20 @@ function setupFormPlacement(_canvas: HTMLCanvasElement) {
   let wasDown = false;
   let lastFormX = 0;
   let lastFormY = 0;
-  const MIN_SPACING = 0.015; // minimum distance between forms during drag
 
   uiStore.subscribe((ui) => {
     if (ui.activeTool === 'form' && ui.mouseDown) {
+      const scene = sceneStore.get();
+      const scatter = scene.scatter;
+      const spacing = 0.004 + scatter * 0.021; // scatter 0→0.004, 1→0.025
+      const sizeBoost = 1.0 + (1.0 - scatter) * 0.3; // low scatter→30% larger forms
+
       const dx = ui.mouseX - lastFormX;
       const dy = ui.mouseY - lastFormY;
       const dist = Math.sqrt(dx * dx + dy * dy);
 
       // Place on initial click or when dragged far enough
-      if (!wasDown || dist >= MIN_SPACING) {
-        const scene = sceneStore.get();
+      if (!wasDown || dist >= spacing) {
         const metrics = updateStrokeMetrics(ui.mouseX, ui.mouseY, ui.pressure, performance.now());
         const mods = metricsToModifiers(metrics, ui.brushSize);
 
@@ -254,23 +259,53 @@ function setupFormPlacement(_canvas: HTMLCanvasElement) {
         const opacity = 0.3 + echo * 0.7; // echo 0→faint, echo 1→solid
         const softMod = 1.0 + (1.0 - echo) * 0.5; // low echo = softer edges
 
-        const newForm: FormDef = {
-          type: 0, // circle
-          x: ui.mouseX,
-          y: ui.mouseY,
-          sizeX: mods.size,
-          sizeY: mods.size,
-          rotation: mods.rotation,
-          softness: mods.softness * softMod,
-          depth: ui.mouseY, // depth from vertical position
-          colorIndex: scene.palette.activeIndex,
-          opacity,
-          dissolution: 0,
-          strokeDirX: metrics.dirX,
-          strokeDirY: metrics.dirY,
-        };
-
         if (!wasDown) pushHistory(); // save state before first form in stroke
+
+        let newForm: FormDef;
+
+        if (!wasDown || dist < 0.001) {
+          // Initial click: circle stamp at start point
+          newForm = {
+            type: 0,
+            x: ui.mouseX,
+            y: ui.mouseY,
+            sizeX: mods.size * sizeBoost,
+            sizeY: mods.size * sizeBoost,
+            rotation: mods.rotation,
+            softness: mods.softness * softMod,
+            depth: ui.mouseY,
+            colorIndex: scene.palette.activeIndex,
+            opacity,
+            dissolution: 0,
+            strokeDirX: metrics.dirX,
+            strokeDirY: metrics.dirY,
+          };
+        } else {
+          // Drag: capsule (line segment) from previous point to current point
+          // Compute in aspect-corrected space to match shader
+          const aspect = window.innerWidth / window.innerHeight;
+          const adx = dx * aspect;
+          const ady = dy;
+          const segLen = Math.sqrt(adx * adx + ady * ady);
+          const angle = Math.atan2(ady, adx);
+
+          newForm = {
+            type: 2, // line segment → capsule SDF
+            x: lastFormX,
+            y: lastFormY,
+            sizeX: segLen,
+            sizeY: mods.size * sizeBoost, // capsule half-thickness
+            rotation: angle,
+            softness: mods.softness * softMod,
+            depth: (lastFormY + ui.mouseY) / 2,
+            colorIndex: scene.palette.activeIndex,
+            opacity,
+            dissolution: 0,
+            strokeDirX: dx / dist,
+            strokeDirY: dy / dist,
+          };
+        }
+
         sceneStore.set({ forms: [...scene.forms, newForm] });
         lastFormX = ui.mouseX;
         lastFormY = ui.mouseY;

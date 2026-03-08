@@ -100,6 +100,13 @@ export class CanvasOverlay extends BaseControl {
     });
   }
 
+  private _onLostCapture() {
+    // Pointer capture released without pointerup (e.g. system gesture)
+    if (uiStore.get().mouseDown) {
+      uiStore.set({ mouseDown: false, pressure: 0 });
+    }
+  }
+
   render() {
     return html`
       <div
@@ -108,7 +115,8 @@ export class CanvasOverlay extends BaseControl {
         @pointermove=${this._onPointerMove}
         @pointerdown=${this._onPointerDown}
         @pointerup=${this._onPointerUp}
-        @pointerleave=${this._onPointerUp}
+        @pointercancel=${this._onPointerUp}
+        @lostpointercapture=${this._onLostCapture}
       ></div>
     `;
   }

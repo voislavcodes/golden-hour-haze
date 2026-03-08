@@ -3,15 +3,15 @@ import { customElement, property } from 'lit/decorators.js';
 import { BaseControl } from './base-control.js';
 import { sceneStore } from '../state/scene-state.js';
 
-@customElement('ghz-velvet-slider')
-export class VelvetSlider extends BaseControl {
+@customElement('ghz-scatter-slider')
+export class ScatterSlider extends BaseControl {
   static styles = [
     BaseControl.baseStyles,
     css`
       :host {
         position: fixed;
         bottom: 80px;
-        left: 115px;
+        right: 115px;
         z-index: 100;
         pointer-events: auto;
       }
@@ -76,16 +76,16 @@ export class VelvetSlider extends BaseControl {
   ];
 
   @property({ type: Number })
-  value: number = 0.6;
+  value: number = 0.3;
 
   private _unsub?: () => void;
   private _dragging = false;
 
   connectedCallback() {
     super.connectedCallback();
-    this.value = sceneStore.get().velvet;
+    this.value = sceneStore.get().scatter;
     this._unsub = sceneStore.select(
-      (s) => s.velvet,
+      (s) => s.scatter,
       (v) => { this.value = v; }
     );
   }
@@ -116,14 +116,14 @@ export class VelvetSlider extends BaseControl {
     const rect = track.getBoundingClientRect();
     const y = 1.0 - this.clamp((e.clientY - rect.top) / rect.height, 0, 1);
     this.value = y;
-    sceneStore.set({ velvet: y });
+    sceneStore.set({ scatter: y });
   }
 
   render() {
     const fillPercent = this.value * 100;
     return html`
       <div class="slider-container glass">
-        <span class="slider-label">velvet</span>
+        <span class="slider-label">sctr</span>
         <div
           class="slider-track"
           @pointerdown=${this._onPointerDown}
@@ -142,6 +142,6 @@ export class VelvetSlider extends BaseControl {
 
 declare global {
   interface HTMLElementTagNameMap {
-    'ghz-velvet-slider': VelvetSlider;
+    'ghz-scatter-slider': ScatterSlider;
   }
 }

@@ -13,6 +13,8 @@ export interface SceneState {
   tonalMap: TonalMapParams;
   anchor: AnchorPoint | null;
   velvet: number; // 0-1, surface smoothness
+  scatter: number; // 0-1, form brush scatter (0=smooth strokes, 1=cloudy)
+  fusion: number; // 0-1, merge overlapping same-color forms (0=distinct, 1=smooth)
   tonalSort: boolean; // sort forms dark-to-light for K-M mixing
   shadowChroma: number; // 0-1, color-in-shadow intensity
 }
@@ -57,6 +59,8 @@ export const sceneStore = createStore<SceneState>({
   tonalMap: { enabled: true, valueRange: 0.8, keyValue: 0.5, contrast: 0.6 },
   anchor: null,
   velvet: 0.6,
+  scatter: 0.3,
+  fusion: 0.5,
   tonalSort: true,
   shadowChroma: 0.4,
 });
