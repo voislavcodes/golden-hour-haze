@@ -51,11 +51,24 @@ export class CanvasOverlay extends BaseControl {
     this._unsubscribe?.();
   }
 
+  private _normalizeCoords(e: PointerEvent): { x: number; y: number } {
+    return {
+      x: e.clientX / window.innerWidth,
+      y: e.clientY / window.innerHeight,
+    };
+  }
+
+  // Trackpads on Mac report pressure 0; default to 0.5 for usable form sizes
+  private _normalizePressure(e: PointerEvent): number {
+    return e.pressure > 0 ? e.pressure : 0.5;
+  }
+
   private _onPointerMove(e: PointerEvent) {
+    const { x, y } = this._normalizeCoords(e);
     uiStore.set({
-      mouseX: e.clientX,
-      mouseY: e.clientY,
-      pressure: e.pressure,
+      mouseX: x,
+      mouseY: y,
+      pressure: this._normalizePressure(e),
       tiltX: e.tiltX,
       tiltY: e.tiltY,
       pointerType: e.pointerType,
@@ -63,12 +76,27 @@ export class CanvasOverlay extends BaseControl {
   }
 
   private _onPointerDown(e: PointerEvent) {
-    uiStore.set({ mouseDown: true, pressure: e.pressure });
+    const { x, y } = this._normalizeCoords(e);
+    uiStore.set({
+      mouseX: x,
+      mouseY: y,
+      mouseDown: true,
+      pressure: this._normalizePressure(e),
+      tiltX: e.tiltX,
+      tiltY: e.tiltY,
+      pointerType: e.pointerType,
+    });
     (e.target as HTMLElement).setPointerCapture(e.pointerId);
   }
 
-  private _onPointerUp(_e: PointerEvent) {
-    uiStore.set({ mouseDown: false, pressure: 0 });
+  private _onPointerUp(e: PointerEvent) {
+    const { x, y } = this._normalizeCoords(e);
+    uiStore.set({
+      mouseX: x,
+      mouseY: y,
+      mouseDown: false,
+      pressure: 0,
+    });
   }
 
   render() {

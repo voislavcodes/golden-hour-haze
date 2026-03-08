@@ -5,10 +5,14 @@ let canvas: HTMLCanvasElement;
 export function initPointerInput(c: HTMLCanvasElement) {
   canvas = c;
 
-  canvas.addEventListener('pointerdown', onPointerDown);
-  canvas.addEventListener('pointermove', onPointerMove);
-  canvas.addEventListener('pointerup', onPointerUp);
-  canvas.addEventListener('pointercancel', onPointerUp);
+  // If canvas-overlay component exists, it handles pointer events instead
+  // Only attach canvas listeners as fallback
+  if (!document.querySelector('ghz-canvas-overlay')) {
+    canvas.addEventListener('pointerdown', onPointerDown);
+    canvas.addEventListener('pointermove', onPointerMove);
+    canvas.addEventListener('pointerup', onPointerUp);
+    canvas.addEventListener('pointercancel', onPointerUp);
+  }
   canvas.addEventListener('contextmenu', (e) => e.preventDefault());
 }
 

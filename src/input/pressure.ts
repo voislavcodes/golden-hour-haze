@@ -85,8 +85,9 @@ export function metricsToModifiers(metrics: StrokeMetrics): FormModifiers {
       : 0;
   const rotation = pressureDelta * -0.5; // lean into pressure release
 
-  // Size modulated by pressure
-  const size = 0.02 + pressure * 0.08;
+  // Size modulated by pressure (min 0.04 so forms are visible on trackpads)
+  const effectivePressure = pressure > 0 ? pressure : 0.5;
+  const size = 0.04 + effectivePressure * 0.08;
 
   return { softness, rotation, size };
 }
