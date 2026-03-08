@@ -88,7 +88,7 @@ export interface PaletteState {
   activeIndex: number;
 }
 
-export const MAX_FORMS = 64;
+export const MAX_FORMS = 1024;
 export const MAX_LIGHTS = 16;
 export const MAX_PALETTE_COLORS = 8;
 

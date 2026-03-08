@@ -170,9 +170,10 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
   let atmo = textureLoad(density_tex, vec2i(gid.xy), 0);
   let sun_dir = vec2f(cos(params.sun_angle), sin(params.sun_angle));
 
-  // Premultiplied RGBA accumulator — each form composites onto previous layers
-  var accum = vec3f(0.0);
-  var accum_a = 0.0;
+  // K/S pigment accumulator — overlapping forms mix subtractively
+  var ks_accum = vec3f(0.0);
+  var weight_accum = 0.0;
+  var opacity_accum = 0.0;
 
   let grav_probe = 0.06;
   let velvet_exp = mix(1.5, 0.7, params.velvet);
@@ -232,12 +233,22 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
     // Velvet-shaped alpha
     let alpha = pow(edge * f.opacity, velvet_exp);
 
-    // Over-composite: each stroke layers onto what's already painted
-    accum = form_color * alpha + accum * (1.0 - alpha);
-    accum_a = alpha + accum_a * (1.0 - alpha);
+    // Accumulate pigment in K/S space — colors mix subtractively
+    let refl = rgb_to_reflectance(form_color);
+    let ks = (1.0 - refl) * (1.0 - refl) / (2.0 * refl);
+    ks_accum += ks * alpha;
+    weight_accum += alpha;
+    // Union of independent coverages
+    opacity_accum = alpha + opacity_accum * (1.0 - alpha);
   }
 
-  // Convert premultiplied accumulation to straight color for compositor
-  let out_color = select(vec3f(0.0), accum / accum_a, accum_a > 0.001);
-  textureStore(output_tex, vec2i(gid.xy), vec4f(out_color, accum_a));
+  // Convert mixed K/S back to RGB
+  if (weight_accum > 0.001) {
+    let ks_mixed = ks_accum / weight_accum;
+    let r_mixed = 1.0 + ks_mixed - sqrt(ks_mixed * ks_mixed + 2.0 * ks_mixed);
+    let out_color = reflectance_to_rgb(r_mixed);
+    textureStore(output_tex, vec2i(gid.xy), vec4f(out_color, opacity_accum));
+  } else {
+    textureStore(output_tex, vec2i(gid.xy), vec4f(0.0));
+  }
 }
