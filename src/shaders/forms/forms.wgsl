@@ -170,89 +170,46 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
   let atmo = textureLoad(density_tex, vec2i(gid.xy), 0);
   let sun_dir = vec2f(cos(params.sun_angle), sin(params.sun_angle));
 
-  var result_color = vec3f(0.0);
-  var result_alpha = 0.0;
+  // Premultiplied RGBA accumulator — each form composites onto previous layers
+  var accum = vec3f(0.0);
+  var accum_a = 0.0;
 
-  if (params.form_count > 0u) {
-    // Union SDF: all forms as a single smooth shape — no internal ridges
-    var union_d = 999.0;
-    var nearest_d = 999.0;
-    var nearest_i = 0u;
-    let blend_k = 0.035;
+  let grav_probe = 0.06;
+  let velvet_exp = mix(1.5, 0.7, params.velvet);
 
-    // Smooth depth & color reference (Gaussian weight avoids nearest-form staircase)
-    var ref_w = 0.0;
-    var ref_depth = 0.0;
-    var ref_ks = vec3f(0.0); // K-M K/S accumulator for color blending
-    // Vertical probes for gravity: SDF sampled above and below
-    let grav_probe = 0.06;
-    var sdf_up = 999.0;
-    var sdf_dn = 999.0;
+  for (var i = 0u; i < params.form_count; i++) {
+    let f = forms[i];
+    let d = eval_sdf(f, p, aspect);
 
-    for (var i = 0u; i < params.form_count; i++) {
-      let d = eval_sdf(forms[i], p, aspect);
-      union_d = smooth_union(union_d, d, blend_k);
-
-      // Vertical probes for pigment settling
-      let d_up = eval_sdf(forms[i], p - vec2f(0.0, grav_probe), aspect);
-      let d_dn = eval_sdf(forms[i], p + vec2f(0.0, grav_probe), aspect);
-      sdf_up = smooth_union(sdf_up, d_up, blend_k);
-      sdf_dn = smooth_union(sdf_dn, d_dn, blend_k);
-
-      // Gaussian weight: smooth falloff, no hard cutoff
-      let w = exp(-d * d * 100.0);
-      ref_depth += forms[i].depth * w;
-      // Accumulate color in K/S space for subtractive blending
-      let fi_col = vec3f(forms[i].color_r, forms[i].color_g, forms[i].color_b);
-      let fi_refl = rgb_to_reflectance(fi_col);
-      let fi_ks = (1.0 - fi_refl) * (1.0 - fi_refl) / (2.0 * fi_refl);
-      ref_ks += fi_ks * w;
-      ref_w += w;
-
-      if (d < nearest_d) {
-        nearest_d = d;
-        nearest_i = i;
-      }
-    }
-
-    // Shade the union shape using nearest form's properties, smoothed references
-    let nf = forms[nearest_i];
-    let smooth_depth = select(nf.depth, ref_depth / ref_w, ref_w > 0.001);
-    let depth_diss = smooth_depth * smooth_depth * 2.0;
-    let eff_soft = nf.softness
+    // Per-form softness: depth recession dissolves edges, dissolution mask adds texture
+    let depth_diss = f.depth * f.depth * 2.0;
+    let eff_soft = f.softness
       * (1.0 + depth_diss * 0.3)
       * (1.0 + dissolution_mask * 1.5);
 
-    let edge = 1.0 - smoothstep(0.0, max(eff_soft, 0.001), union_d);
-    // Blend color in K-M space using Gaussian weights (subtractive pigment mixing)
-    var form_color: vec3f;
-    if (ref_w > 0.001) {
-      let ks = ref_ks / ref_w;
-      let r = 1.0 + ks - sqrt(ks * ks + 2.0 * ks);
-      form_color = reflectance_to_rgb(r);
-    } else {
-      form_color = vec3f(nf.color_r, nf.color_g, nf.color_b);
-    }
+    let edge = 1.0 - smoothstep(0.0, max(eff_soft, 0.001), d);
+    if (edge < 0.001) { continue; } // form doesn't reach this pixel
 
-    // Gravity: pigment settling — probe SDF above & below to find vertical position
-    // sdf_up > sdf_dn → near top of form (going up exits faster) → wash thins
-    // sdf_dn > sdf_up → near bottom of form → pigment pools
-    let vert_pos = clamp((sdf_up - sdf_dn) * 8.0, -1.0, 1.0);
+    var form_color = vec3f(f.color_r, f.color_g, f.color_b);
+
+    // Gravity: per-form pigment settling via vertical SDF probes
+    let d_up = eval_sdf(f, p - vec2f(0.0, grav_probe), aspect);
+    let d_dn = eval_sdf(f, p + vec2f(0.0, grav_probe), aspect);
+    let vert_pos = clamp((d_up - d_dn) * 8.0, -1.0, 1.0);
     let settle = vert_pos * params.gravity;
-    // Top (settle>0): lighten + desaturate. Bottom (settle<0): darken + saturate
     let base_lum = lum(form_color);
     form_color *= (1.0 - settle * 0.45);
     let sat_shift = 1.0 - settle * 0.4;
     form_color = vec3f(base_lum) + (form_color - vec3f(base_lum)) * sat_shift;
 
-    // Gentle tonal variation along stroke direction
-    let sl = length(vec2f(nf.stroke_dir_x, nf.stroke_dir_y));
-    let sd = select(sun_dir, normalize(vec2f(nf.stroke_dir_x, nf.stroke_dir_y)), sl > 0.01);
+    // Stroke direction and sun interaction
+    let sl = length(vec2f(f.stroke_dir_x, f.stroke_dir_y));
+    let sd = select(sun_dir, normalize(vec2f(f.stroke_dir_x, f.stroke_dir_y)), sl > 0.01);
     let sp = vec2f(-sd.y, sd.x);
     let sun_facing = dot(sp, sun_dir) * 0.5 + 0.5;
     form_color *= mix(0.95, 1.05, sun_facing);
 
-    // Stroke texture: coarse dry-brush scrape
+    // Stroke texture: dry-brush scrape
     if (sl > 0.01) {
       let sc_along = dot(p, sd) * 4.0;
       let sc_across = dot(p, sp) * 14.0;
@@ -262,7 +219,7 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
     }
 
     // Light response
-    let highlight = max(0.0, sun_facing - 0.5) * 0.12 * (1.0 - smooth_depth * 0.5);
+    let highlight = max(0.0, sun_facing - 0.5) * 0.12 * (1.0 - f.depth * 0.5);
     form_color += vec3f(highlight * 1.1, highlight * 0.9, highlight * 0.7);
 
     // Tonal hierarchy
@@ -272,12 +229,15 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
       form_color *= clamp(lr, 0.3, 3.0);
     }
 
-    // Apply velvet and output
-    let alpha = edge * nf.opacity;
-    let velvet_exp = mix(1.5, 0.7, params.velvet);
-    result_alpha = pow(alpha, velvet_exp);
-    result_color = form_color;
+    // Velvet-shaped alpha
+    let alpha = pow(edge * f.opacity, velvet_exp);
+
+    // Over-composite: each stroke layers onto what's already painted
+    accum = form_color * alpha + accum * (1.0 - alpha);
+    accum_a = alpha + accum_a * (1.0 - alpha);
   }
 
-  textureStore(output_tex, vec2i(gid.xy), vec4f(result_color, result_alpha));
+  // Convert premultiplied accumulation to straight color for compositor
+  let out_color = select(vec3f(0.0), accum / accum_a, accum_a > 0.001);
+  textureStore(output_tex, vec2i(gid.xy), vec4f(out_color, accum_a));
 }
