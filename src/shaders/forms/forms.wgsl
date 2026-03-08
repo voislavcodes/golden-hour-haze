@@ -144,8 +144,6 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
   var result_color = vec3f(0.0);
   var result_alpha = 0.0;
 
-  let edge_noise = hash2(pixel + vec2f(globals.time * 3.7));
-
   for (var i = 0u; i < params.form_count; i++) {
     let f = forms[i];
     let center = vec2f(f.x * aspect, f.y);
@@ -181,8 +179,7 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
     let eff_soft = f.softness
       * (1.0 + depth_diss)
       * (1.0 - hold * 0.7)
-      * (1.0 + dissolution_mask * 3.0)
-      + edge_noise * 0.01;
+      * (1.0 + dissolution_mask * 3.0);
 
     let edge = 1.0 - smoothstep(0.0, max(eff_soft, 0.001), d);
     let alpha = edge * f.opacity;
@@ -193,7 +190,8 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
     let to_center_n = select(vec2f(0.0), to_center / tc_len, tc_len > 0.001);
     let sun_facing = dot(to_center_n, sun_dir) * 0.5 + 0.5;
     let tonal_shift = mix(0.85, 1.15, sun_facing);
-    form_color *= tonal_shift;
+    // Attenuate tonal shift at edges to prevent dark fringe per-form
+    form_color *= mix(1.0, tonal_shift, edge);
 
     // --- A4: Stroke direction texture ---
     let stroke_len = length(vec2f(f.stroke_dir_x, f.stroke_dir_y));
@@ -221,18 +219,22 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
 
     // --- B2: K-M color bleeding at edges ---
     let edge_zone = smoothstep(0.0, 0.3, alpha) * smoothstep(1.0, 0.7, alpha);
-    if (edge_zone > 0.01 && result_alpha > 0.01) {
-      let km_blended = km_mix(result_color / result_alpha, form_color, alpha);
+    if (edge_zone > 0.01 && result_alpha > 0.1) {
+      let bg = clamp(result_color / result_alpha, vec3f(0.0), vec3f(1.0));
+      let km_blended = km_mix(bg, form_color, alpha);
       form_color = mix(form_color, km_blended, edge_zone);
     }
 
     // K-M subtractive front-to-back composite
     if (result_alpha < 0.999) {
       let contrib = alpha * (1.0 - result_alpha);
-      let velvet_contrib = pow(contrib, mix(2.0, 0.5, params.velvet));
-      let t = velvet_contrib / max(velvet_contrib + result_alpha, 0.001);
+      let velvet_exp = mix(1.5, 0.7, params.velvet);
+      let eff_contrib = pow(contrib, velvet_exp);
+      // Skip negligible contributions — avoids km_mix against uninitialized black
+      if (eff_contrib < 0.002) { continue; }
+      let t = eff_contrib / (eff_contrib + result_alpha);
       result_color = km_mix(result_color, form_color, t);
-      result_alpha += contrib;
+      result_alpha += eff_contrib;
     }
   }
 
