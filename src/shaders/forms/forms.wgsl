@@ -180,17 +180,19 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
     var nearest_i = 0u;
     let blend_k = 0.035;
 
-    // Smooth Y reference for gravity (weighted by proximity, avoids nearest-form staircase)
+    // Smooth references for gravity + depth (Gaussian weight avoids nearest-form staircase)
     var ref_y = 0.0;
     var ref_w = 0.0;
+    var ref_depth = 0.0;
 
     for (var i = 0u; i < params.form_count; i++) {
       let d = eval_sdf(forms[i], p, aspect);
       union_d = smooth_union(union_d, d, blend_k);
 
-      // Accumulate weighted Y for smooth gravity reference
-      let w = max(0.0, 1.0 - abs(d) * 15.0);
+      // Gaussian weight: smooth falloff, no hard cutoff
+      let w = exp(-d * d * 100.0);
       ref_y += forms[i].y * w;
+      ref_depth += forms[i].depth * w;
       ref_w += w;
 
       if (d < nearest_d) {
@@ -199,17 +201,18 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
       }
     }
 
-    // Shade the union shape using nearest form's properties
+    // Shade the union shape using nearest form's properties, smoothed references
     let nf = forms[nearest_i];
     let smooth_y = select(nf.y, ref_y / ref_w, ref_w > 0.001);
-    let depth_diss = nf.depth * nf.depth * 2.0;
+    let smooth_depth = select(nf.depth, ref_depth / ref_w, ref_w > 0.001);
+    let depth_diss = smooth_depth * smooth_depth * 2.0;
     let eff_soft = nf.softness
       * (1.0 + depth_diss * 0.3)
       * (1.0 + dissolution_mask * 1.5);
 
     // Gravity: asymmetric softness — bottom edges dissolve, top stays defined
     let below = max(0.0, p.y - smooth_y);
-    let grav = smoothstep(0.0, 0.15, below) * params.gravity;
+    let grav = smoothstep(0.0, 0.25, below) * params.gravity;
     let gravity_pull = grav * 0.04;
     let gravity_soft = grav * 1.5;
     var final_d = union_d - gravity_pull;
@@ -246,7 +249,7 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
     }
 
     // Light response
-    let highlight = max(0.0, sun_facing - 0.5) * 0.12 * (1.0 - nf.depth * 0.5);
+    let highlight = max(0.0, sun_facing - 0.5) * 0.12 * (1.0 - smooth_depth * 0.5);
     form_color += vec3f(highlight * 1.1, highlight * 0.9, highlight * 0.7);
 
     // Tonal hierarchy
