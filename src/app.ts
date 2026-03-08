@@ -241,7 +241,7 @@ function setupFormPlacement(_canvas: HTMLCanvasElement) {
   uiStore.subscribe((ui) => {
     if (ui.activeTool === 'form' && ui.mouseDown) {
       const scene = sceneStore.get();
-      const spacing = 0.012; // decisive marks, wider than cloud
+      const spacing = 0.012;
 
       const dx = ui.mouseX - lastFormX;
       const dy = ui.mouseY - lastFormY;
@@ -308,84 +308,6 @@ function setupFormPlacement(_canvas: HTMLCanvasElement) {
             taper,
           };
           lastFormSize = endR;
-        }
-
-        sceneStore.set({ forms: [...scene.forms, newForm] });
-        lastFormX = ui.mouseX;
-        lastFormY = ui.mouseY;
-      }
-    }
-
-    if (ui.activeTool === 'cloud' && ui.mouseDown) {
-      const scene = sceneStore.get();
-      const spacing = 0.004;
-      const sizeBoost = 1.3;
-
-      const dx = ui.mouseX - lastFormX;
-      const dy = ui.mouseY - lastFormY;
-      // Use aspect-corrected distance so spacing is uniform in all directions
-      const aspect = window.innerWidth / window.innerHeight;
-      const adx = dx * aspect;
-      const ady = dy;
-      const aDist = Math.sqrt(adx * adx + ady * ady);
-
-      // Place on initial click or when dragged far enough
-      if (!wasDown || aDist >= spacing) {
-        const metrics = updateStrokeMetrics(ui.mouseX, ui.mouseY, ui.pressure, performance.now());
-        const mods = metricsToModifiers(metrics, ui.brushSize);
-
-        // Echo controls form opacity and softness coherence
-        const echo = scene.echo;
-        const opacity = 0.3 + echo * 0.7; // echo 0→faint, echo 1→solid
-        const softMod = 1.0 + (1.0 - echo) * 0.5; // low echo = softer edges
-        // Cloud brush: softness capped proportional to form size
-        const formRadius = mods.size * sizeBoost;
-        const rawSoft = mods.softness * softMod;
-        const softness = Math.max(formRadius * 0.3, Math.min(rawSoft, formRadius * 1.5));
-
-        if (!wasDown) pushHistory(); // save state before first form in stroke
-
-        let newForm: FormDef;
-
-        if (!wasDown || aDist < 0.001) {
-          // Initial click: circle stamp at start point
-          newForm = {
-            type: 0,
-            x: ui.mouseX,
-            y: ui.mouseY,
-            sizeX: mods.size * sizeBoost,
-            sizeY: mods.size * sizeBoost,
-            rotation: mods.rotation,
-            softness,
-            depth: ui.mouseY,
-            colorIndex: scene.palette.activeIndex,
-            opacity,
-            dissolution: 0,
-            strokeDirX: metrics.dirX,
-            strokeDirY: metrics.dirY,
-            taper: 0,
-          };
-        } else {
-          // Drag: capsule (line segment) from previous point to current point
-          const angle = Math.atan2(ady, adx);
-          const dist = Math.sqrt(dx * dx + dy * dy);
-
-          newForm = {
-            type: 2, // line segment → capsule SDF
-            x: lastFormX,
-            y: lastFormY,
-            sizeX: aDist,
-            sizeY: mods.size * sizeBoost, // capsule half-thickness
-            rotation: angle,
-            softness,
-            depth: (lastFormY + ui.mouseY) / 2,
-            colorIndex: scene.palette.activeIndex,
-            opacity,
-            dissolution: 0,
-            strokeDirX: dx / dist,
-            strokeDirY: dy / dist,
-            taper: 0,
-          };
         }
 
         sceneStore.set({ forms: [...scene.forms, newForm] });

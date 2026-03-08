@@ -234,18 +234,13 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
     let sun_facing = dot(sp, sun_dir) * 0.5 + 0.5;
     form_color *= mix(0.95, 1.05, sun_facing);
 
-    // Stroke texture (type-branched)
-    if (nf.type_id > 2.5) {
-      // Coarse dry-brush scrape for form brush
+    // Stroke texture: coarse dry-brush scrape
+    if (sl > 0.01) {
       let sc_along = dot(p, sd) * 4.0;
       let sc_across = dot(p, sp) * 14.0;
       let scrape = snoise2d(vec2f(sc_along, sc_across)) * 0.5
                  + snoise2d(vec2f(sc_along * 0.5, sc_across * 0.5)) * 0.3;
       form_color *= (1.0 + scrape * 0.10);
-    } else if (sl > 0.01) {
-      // Original fine texture for cloud brush
-      let st_uv = vec2f(dot(p, sd) * 8.0, dot(p, sp) * 24.0);
-      form_color *= (1.0 + snoise2d(st_uv) * 0.04);
     }
 
     // Light response

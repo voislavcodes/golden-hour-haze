@@ -1,6 +1,6 @@
 import { createStore } from './store.js';
 
-export type Tool = 'select' | 'cloud' | 'form' | 'light' | 'dissolve' | 'drift' | 'palette' | 'depth' | 'anchor';
+export type Tool = 'select' | 'form' | 'light' | 'dissolve' | 'drift' | 'palette' | 'depth' | 'anchor';
 
 export interface UIState {
   activeTool: Tool;
@@ -17,7 +17,7 @@ export interface UIState {
 }
 
 export const uiStore = createStore<UIState>({
-  activeTool: 'cloud',
+  activeTool: 'form',
   mouseX: 0,
   mouseY: 0,
   mouseDown: false,

@@ -3,11 +3,10 @@ import { customElement, state } from 'lit/decorators.js';
 import { BaseControl } from './base-control.js';
 import { uiStore, type Tool } from '../state/ui-state.js';
 
-const BRUSH_TOOLS = new Set<Tool>(['cloud', 'form']);
+const BRUSH_TOOLS = new Set<Tool>(['form']);
 
 const TOOL_CURSORS: Record<Tool, string> = {
   select:   'default',
-  cloud:    'none',
   form:     'none',
   light:    'cell',
   dissolve: 'pointer',
@@ -62,7 +61,7 @@ export class CanvasOverlay extends BaseControl {
   private _brushDiameter = 0;
 
   private _unsubscribe?: () => void;
-  private _activeTool: Tool = 'cloud';
+  private _activeTool: Tool = 'form';
 
   connectedCallback() {
     super.connectedCallback();

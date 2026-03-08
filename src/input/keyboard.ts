@@ -3,7 +3,6 @@ import { undo, redo } from '../state/history.js';
 
 const toolKeys: Record<string, Tool> = {
   v: 'select',
-  c: 'cloud',
   f: 'form',
   l: 'light',
   d: 'dissolve',
