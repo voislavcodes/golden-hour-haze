@@ -1,4 +1,10 @@
 import { sceneStore, type SceneState } from './scene-state.js';
+import {
+  snapshotDissolution,
+  restoreDissolution,
+  isDissolutionModified,
+  resetDissolutionModified,
+} from '../layers/dissolution-buffer.js';
 
 const MAX_ENTRIES = 50;
 
@@ -12,6 +18,10 @@ type Snapshot = Diff[];
 
 const undoStack: Snapshot[] = [];
 const redoStack: Snapshot[] = [];
+
+// Parallel dissolution snapshot stacks
+const dissUndoStack: (Float32Array | null)[] = [];
+const dissRedoStack: (Float32Array | null)[] = [];
 
 /** Deep-compare two values and collect changed paths. */
 function computeDiffs(
@@ -96,15 +106,21 @@ export function pushHistory(): void {
   const diffs: Diff[] = [];
   computeDiffs(lastSnapshot, current, '', diffs);
 
-  if (diffs.length === 0) return;
+  const dissChanged = isDissolutionModified();
+
+  if (diffs.length === 0 && !dissChanged) return;
 
   undoStack.push(diffs);
+  dissUndoStack.push(dissChanged ? snapshotDissolution() : null);
   if (undoStack.length > MAX_ENTRIES) {
     undoStack.shift();
+    dissUndoStack.shift();
   }
   // Any new action clears the redo stack
   redoStack.length = 0;
+  dissRedoStack.length = 0;
 
+  if (dissChanged) resetDissolutionModified();
   lastSnapshot = current;
 }
 
@@ -112,6 +128,8 @@ export function pushHistory(): void {
 export function undo(): void {
   const snapshot = undoStack.pop();
   if (!snapshot) return;
+
+  const dissSnap = dissUndoStack.pop() ?? null;
 
   const state = cloneState(sceneStore.get()) as Record<string, unknown>;
   const reverseDiffs: Diff[] = [];
@@ -122,6 +140,15 @@ export function undo(): void {
   }
 
   redoStack.push(reverseDiffs);
+
+  // Save current dissolution state before restoring
+  if (dissSnap) {
+    dissRedoStack.push(snapshotDissolution());
+    restoreDissolution(dissSnap);
+  } else {
+    dissRedoStack.push(null);
+  }
+
   sceneStore.set(state as unknown as Partial<SceneState>);
   lastSnapshot = cloneState(sceneStore.get());
 }
@@ -130,6 +157,8 @@ export function undo(): void {
 export function redo(): void {
   const snapshot = redoStack.pop();
   if (!snapshot) return;
+
+  const dissSnap = dissRedoStack.pop() ?? null;
 
   const state = cloneState(sceneStore.get()) as Record<string, unknown>;
   const reverseDiffs: Diff[] = [];
@@ -140,6 +169,14 @@ export function redo(): void {
   }
 
   undoStack.push(reverseDiffs);
+
+  if (dissSnap) {
+    dissUndoStack.push(snapshotDissolution());
+    restoreDissolution(dissSnap);
+  } else {
+    dissUndoStack.push(null);
+  }
+
   sceneStore.set(state as unknown as Partial<SceneState>);
   lastSnapshot = cloneState(sceneStore.get());
 }

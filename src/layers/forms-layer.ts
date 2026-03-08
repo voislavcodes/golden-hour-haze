@@ -24,6 +24,9 @@ let pendingFullRebake = false;
 let currentTotalFormCount = 0;
 let bakedPP: PingPongTexture;
 
+// Dissolution active — forces baked_count=0 to recompute all forms with dissolution mask
+let dissolutionActive = false;
+
 // Tonal accumulation — tracks paint density for diminishing returns
 let accumPP: PingPongTexture;
 let liveTex: GPUTexture;
@@ -145,9 +148,9 @@ export function updateFormsTextures(width: number, height: number) {
   const formsTex = allocTexture('forms', 'rgba16float', width, height,
     GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_SRC | GPUTextureUsage.COPY_DST);
 
-  // Ensure dissolution mask exists
+  // Ensure dissolution mask exists (COPY_DST for CPU writeTexture)
   allocTexture('dissolution', 'r32float', width, height,
-    GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING);
+    GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST);
 
   const depthTex = allocTexture('depth', 'r32float', width, height,
     GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING);
@@ -173,7 +176,7 @@ export function updateFormsTextures(width: number, height: number) {
     entries: [
       { binding: 0, resource: depthTex.createView() },
       { binding: 1, resource: allocTexture('dissolution', 'r32float', width, height,
-        GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING).createView() },
+        GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST).createView() },
       { binding: 2, resource: densityPP.createView() },
       { binding: 3, resource: formsTex.createView() },
       { binding: 4, resource: bakedPP.readView },
@@ -231,7 +234,7 @@ export function writeFormsData(
   headerF32[7] = tonalMap.enabled ? 1.0 : 0.0;
   headerF32[8] = baseOpacity;
   headerF32[9] = gravity;
-  headerU32[10] = pendingFullRebake ? 0 : bakedFormCount;
+  headerU32[10] = (pendingFullRebake || dissolutionActive) ? 0 : bakedFormCount;
   headerF32[11] = falloff;
   device.queue.writeBuffer(paramBuffer, 0, headerData);
 
@@ -248,7 +251,7 @@ export function writeFormsData(
     data[off + 3] = f.sizeX;
     data[off + 4] = f.sizeY;
     data[off + 5] = f.rotation;
-    data[off + 6] = f.softness * (1.0 + f.dissolution * 3.0); // dissolution scales softness relative to form size
+    data[off + 6] = f.softness;
     data[off + 7] = f.depth;
     data[off + 8] = color.r;
     data[off + 9] = color.g;
@@ -278,7 +281,7 @@ function rebuildFormsTextureBG() {
     entries: [
       { binding: 0, resource: depthTex.createView() },
       { binding: 1, resource: allocTexture('dissolution', 'r32float', currentWidth, currentHeight,
-        GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING).createView() },
+        GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST).createView() },
       { binding: 2, resource: densityPP.createView() },
       { binding: 3, resource: formsTex.createView() },
       { binding: 4, resource: bakedPP.readView },
@@ -337,6 +340,10 @@ export function requestFullRebake() {
   pendingFullRebake = true;
 }
 
+export function setDissolutionActive(active: boolean) {
+  dissolutionActive = active;
+}
+
 export function getBakedFormCount() {
   return bakedFormCount;
 }
@@ -355,7 +362,7 @@ export function handlePendingBakes(encoder: GPUCommandEncoder) {
 export function dispatchForms(encoder: GPUCommandEncoder, globalBG: GPUBindGroup) {
   // When no live forms and no pending rebake, copy baked→output instead of dispatching compute
   const liveCount = currentTotalFormCount - bakedFormCount;
-  if (liveCount === 0 && !pendingFullRebake && !pendingBake && bakedFormCount > 0) {
+  if (liveCount === 0 && !pendingFullRebake && !pendingBake && !dissolutionActive && bakedFormCount > 0) {
     const formsTex = allocTexture('forms', 'rgba16float', currentWidth, currentHeight,
       GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_SRC | GPUTextureUsage.COPY_DST);
     encoder.copyTextureToTexture(

@@ -32,7 +32,7 @@ export interface FormDef {
   depth: number;         // 0-1
   colorIndex: number;    // palette index
   opacity: number;
-  dissolution: number;   // 0-1
+  dissolution?: number;  // legacy, now handled by dissolution texture
   strokeDirX: number;    // normalized stroke direction
   strokeDirY: number;
   taper: number;         // end/start radius ratio for type=3 (0=needle, 1=uniform, >1=flaring)

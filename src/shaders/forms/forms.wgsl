@@ -208,11 +208,11 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
     let f = forms[i];
     let d = eval_sdf(f, p, aspect);
 
-    // Per-form softness: depth recession dissolves edges, dissolution mask adds texture
+    // Per-form softness: depth recession dissolves edges, dissolution widens them
     let depth_diss = f.depth * f.depth * 2.0;
     let eff_soft = f.softness
       * (1.0 + depth_diss * 0.3)
-      * (1.0 + dissolution_mask * 1.5);
+      * (1.0 + dissolution_mask * 3.0);
 
     let edge = 1.0 - smoothstep(0.0, max(eff_soft, 0.001), d);
     if (edge < 0.001) { continue; } // form doesn't reach this pixel
@@ -290,7 +290,9 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
     let ks_mixed = ks_accum / weight_accum;
     let r_mixed = 1.0 + ks_mixed - sqrt(ks_mixed * ks_mixed + 2.0 * ks_mixed);
     let out_color = reflectance_to_rgb(r_mixed);
-    textureStore(output_tex, vec2i(gid.xy), vec4f(out_color, opacity_accum));
+    // Dissolution fades interior pixels (edges handled by softness widening above)
+    let final_alpha = opacity_accum * (1.0 - dissolution_mask * dissolution_mask * 0.85);
+    textureStore(output_tex, vec2i(gid.xy), vec4f(out_color, final_alpha));
   } else {
     textureStore(output_tex, vec2i(gid.xy), vec4f(0.0));
   }

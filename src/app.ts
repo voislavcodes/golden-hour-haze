@@ -23,6 +23,7 @@ import {
   requestBake,
   requestFullRebake,
   handlePendingBakes,
+  setDissolutionActive,
 } from './layers/forms-layer.js';
 import {
   initLightLayer,
@@ -65,8 +66,14 @@ import {
   metricsToModifiers,
   resetStrokeTracking,
 } from './input/pressure.js';
+import { getTexture } from './gpu/texture-pool.js';
 import type { FormDef } from './layers/layer-types.js';
 import { pushHistory } from './state/history.js';
+import {
+  resizeDissolutionBuffer,
+  stampDissolve,
+  flushDissolution,
+} from './layers/dissolution-buffer.js';
 
 let globalUniformBuffer: GPUBuffer;
 let globalBindGroup: GPUBindGroup;
@@ -128,29 +135,30 @@ export function initApp() {
   // Handle form placement on click
   setupFormPlacement(canvas);
 
-  // Wire dissolve brush — apply dissolution to nearby forms
+  // Wire dissolve brush — stamp into per-pixel dissolution buffer
+  let dissolving = false;
   document.addEventListener('dissolve-stroke', ((e: CustomEvent) => {
     const stroke = e.detail as { x: number; y: number; radius: number; pressure: number };
-    const scene = sceneStore.get();
     const ds = uiStore.get().dissolveStrength;
-    let changed = false;
-    const updatedForms = scene.forms.map((f) => {
-      const dx = f.x - stroke.x;
-      const dy = f.y - stroke.y;
-      const dist = Math.sqrt(dx * dx + dy * dy);
-      if (dist < stroke.radius + f.sizeX) {
-        changed = true;
-        const influence = Math.max(0, 1 - dist / (stroke.radius + f.sizeX));
-        return { ...f, dissolution: Math.min(1, f.dissolution + influence * stroke.pressure * 0.1 * ds) };
-      }
-      return f;
-    });
-    if (changed) {
-      sceneStore.set({ forms: updatedForms });
+    if (!dissolving) {
+      dissolving = true;
+      setDissolutionActive(true);
+      // Force re-write so baked_count=0 reaches the GPU
+      const s = sceneStore.get();
+      writeFormsData(s.forms, s.palette.colors, s.sunAngle, s.tonalMap, s.velvet, s.tonalSort, s.gravity, s.baseOpacity, s.falloff);
     }
+    stampDissolve(stroke.x, stroke.y, stroke.radius, stroke.pressure, ds);
   }) as EventListener);
 
   document.addEventListener('dissolve-stroke-end', () => {
+    if (!dissolving) return;
+    dissolving = false;
+    setDissolutionActive(false);
+    // Full rebake captures dissolution into baked texture; future rebakes
+    // also use baked_count=0 so dissolution_mask is always applied from scratch
+    requestFullRebake();
+    const s = sceneStore.get();
+    writeFormsData(s.forms, s.palette.colors, s.sunAngle, s.tonalMap, s.velvet, s.tonalSort, s.gravity, s.baseOpacity, s.falloff);
     pushHistory();
   });
 
@@ -250,6 +258,7 @@ function allocateAllTextures(width: number, height: number) {
   updateFormsTextures(width, height);
   updateLightTextures(width, height);
   updateCompositorTextures(width, height);
+  resizeDissolutionBuffer(width, height);
 }
 
 function renderFrame(dt: number, elapsed: number) {
@@ -266,6 +275,10 @@ function renderFrame(dt: number, elapsed: number) {
 
   // Create command encoder — all passes in one encoder
   const encoder = device.createCommandEncoder({ label: 'frame-encoder' });
+
+  // Flush dissolution buffer to GPU before forms dispatch
+  const dissolveTex = getTexture('dissolution');
+  if (dissolveTex) flushDissolution(device, dissolveTex);
 
   // Pass order: depth → atmosphere → forms → light → bloom → composite
   dispatchDepth(encoder, globalBindGroup);
