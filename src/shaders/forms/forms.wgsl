@@ -180,18 +180,26 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
     var nearest_i = 0u;
     let blend_k = 0.035;
 
-    // Smooth references for gravity + depth (Gaussian weight avoids nearest-form staircase)
-    var ref_y = 0.0;
+    // Smooth depth reference (Gaussian weight avoids nearest-form staircase)
     var ref_w = 0.0;
     var ref_depth = 0.0;
+    // Vertical probes for gravity: SDF sampled above and below
+    let grav_probe = 0.06;
+    var sdf_up = 999.0;
+    var sdf_dn = 999.0;
 
     for (var i = 0u; i < params.form_count; i++) {
       let d = eval_sdf(forms[i], p, aspect);
       union_d = smooth_union(union_d, d, blend_k);
 
+      // Vertical probes for pigment settling
+      let d_up = eval_sdf(forms[i], p - vec2f(0.0, grav_probe), aspect);
+      let d_dn = eval_sdf(forms[i], p + vec2f(0.0, grav_probe), aspect);
+      sdf_up = smooth_union(sdf_up, d_up, blend_k);
+      sdf_dn = smooth_union(sdf_dn, d_dn, blend_k);
+
       // Gaussian weight: smooth falloff, no hard cutoff
       let w = exp(-d * d * 100.0);
-      ref_y += forms[i].y * w;
       ref_depth += forms[i].depth * w;
       ref_w += w;
 
@@ -203,29 +211,25 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
 
     // Shade the union shape using nearest form's properties, smoothed references
     let nf = forms[nearest_i];
-    let smooth_y = select(nf.y, ref_y / ref_w, ref_w > 0.001);
     let smooth_depth = select(nf.depth, ref_depth / ref_w, ref_w > 0.001);
     let depth_diss = smooth_depth * smooth_depth * 2.0;
     let eff_soft = nf.softness
       * (1.0 + depth_diss * 0.3)
       * (1.0 + dissolution_mask * 1.5);
 
-    // Gravity: asymmetric softness — bottom edges dissolve, top stays defined
-    let below = max(0.0, p.y - smooth_y);
-    let grav = smoothstep(0.0, 0.25, below) * params.gravity;
-    let gravity_pull = grav * 0.04;
-    let gravity_soft = grav * 1.5;
-    var final_d = union_d - gravity_pull;
-    var final_soft = eff_soft * (1.0 + gravity_soft);
-
-    // Form brush (type=3): inherent asymmetric softness even at gravity=0
-    if (nf.type_id > 2.5) {
-      let asym = smoothstep(0.0, 0.12, below);
-      final_soft *= (1.0 + asym * 1.2);
-    }
-
-    let edge = 1.0 - smoothstep(0.0, max(final_soft, 0.001), final_d);
+    let edge = 1.0 - smoothstep(0.0, max(eff_soft, 0.001), union_d);
     var form_color = vec3f(nf.color_r, nf.color_g, nf.color_b);
+
+    // Gravity: pigment settling — probe SDF above & below to find vertical position
+    // sdf_up > sdf_dn → near top of form (going up exits faster) → wash thins
+    // sdf_dn > sdf_up → near bottom of form → pigment pools
+    let vert_pos = clamp((sdf_up - sdf_dn) * 8.0, -1.0, 1.0);
+    let settle = vert_pos * params.gravity;
+    // Top (settle>0): lighten + desaturate. Bottom (settle<0): darken + saturate
+    let base_lum = lum(form_color);
+    form_color *= (1.0 - settle * 0.45);
+    let sat_shift = 1.0 - settle * 0.4;
+    form_color = vec3f(base_lum) + (form_color - vec3f(base_lum)) * sat_shift;
 
     // Gentle tonal variation along stroke direction
     let sl = length(vec2f(nf.stroke_dir_x, nf.stroke_dir_y));
