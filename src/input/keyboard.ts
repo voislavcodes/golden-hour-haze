@@ -22,6 +22,16 @@ export function initKeyboardInput() {
       }
     }
 
+    // Brush size shortcuts
+    if (e.key === '[') {
+      uiStore.update((s) => ({ brushSize: Math.max(0.01, s.brushSize * 0.8) }));
+      return;
+    }
+    if (e.key === ']') {
+      uiStore.update((s) => ({ brushSize: Math.min(0.25, s.brushSize * 1.25) }));
+      return;
+    }
+
     // Toggle UI
     if (e.key === 'Tab') {
       e.preventDefault();

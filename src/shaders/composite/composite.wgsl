@@ -89,10 +89,12 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4f {
   let atmo_contribution = scatter * density * 1.5;
   sky += atmo_contribution;
 
-  // Composite forms over sky with depth-based atmosphere
-  let atmosphere_fog = vec3f(0.75, 0.60, 0.50) * density * 0.5;
-  let form_color = mix(forms.rgb, forms.rgb + atmosphere_fog, depth * forms.a);
-  var color = mix(sky, form_color, forms.a);
+  // Composite forms over sky with depth-aware atmospheric opacity
+  let depth2 = depth * depth; // quadratic — distant forms dissolve faster
+  let haze_color = sky * 0.5 + scatter * 0.3; // haze tinted by sky + scatter
+  let atmo_opacity = clamp(depth2 * density * 2.0, 0.0, 0.85); // cap at 85%
+  let form_through_atmo = mix(forms.rgb, haze_color, atmo_opacity);
+  var color = mix(sky, form_through_atmo, forms.a * (1.0 - atmo_opacity * 0.5));
 
   // Add light scatter and bloom
   color += light * 0.5;

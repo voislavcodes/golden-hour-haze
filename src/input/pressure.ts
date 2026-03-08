@@ -8,6 +8,8 @@ export interface StrokeMetrics {
   pressure: number;
   variance: number;  // how much the stroke wavers
   duration: number;
+  dirX: number;      // normalized stroke direction
+  dirY: number;
 }
 
 export interface FormModifiers {
@@ -59,15 +61,22 @@ export function updateStrokeMetrics(
     velocityHistory.reduce((sum, v) => sum + (v - avgVel) ** 2, 0) /
     velocityHistory.length;
 
+  // Normalized stroke direction
+  const len = Math.sqrt(dx * dx + dy * dy);
+  const dirX = len > 0.001 ? dx / len : 0;
+  const dirY = len > 0.001 ? dy / len : 0;
+
   return {
     velocity: avgVel,
     pressure,
     variance,
     duration: velocityHistory.length * 16,
+    dirX,
+    dirY,
   };
 }
 
-export function metricsToModifiers(metrics: StrokeMetrics): FormModifiers {
+export function metricsToModifiers(metrics: StrokeMetrics, baseBrushSize = 0.06): FormModifiers {
   const { velocity, pressure, variance } = metrics;
 
   // Fast + confident → sharp (low softness)
@@ -85,9 +94,9 @@ export function metricsToModifiers(metrics: StrokeMetrics): FormModifiers {
       : 0;
   const rotation = pressureDelta * -0.5; // lean into pressure release
 
-  // Size modulated by pressure (min 0.04 so forms are visible on trackpads)
+  // Size modulated by pressure around user-set brush size
   const effectivePressure = pressure > 0 ? pressure : 0.5;
-  const size = 0.04 + effectivePressure * 0.08;
+  const size = baseBrushSize * (0.5 + effectivePressure);
 
   return { softness, rotation, size };
 }

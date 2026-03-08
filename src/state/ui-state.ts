@@ -12,6 +12,7 @@ export interface UIState {
   tiltY: number;
   pointerType: string;
   showUI: boolean;
+  brushSize: number;
 }
 
 export const uiStore = createStore<UIState>({
@@ -24,4 +25,5 @@ export const uiStore = createStore<UIState>({
   tiltY: 0,
   pointerType: 'mouse',
   showUI: true,
+  brushSize: 0.06,
 });

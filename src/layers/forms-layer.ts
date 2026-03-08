@@ -54,7 +54,7 @@ export function initFormsLayer() {
     usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
   });
 
-  // 12 floats * 4 bytes = 48 bytes per form
+  // 16 floats * 4 bytes = 64 bytes per form
   formStorageBuffer = device.createBuffer({
     label: 'forms-storage',
     size: MAX_FORMS * FORM_STRIDE,
@@ -104,22 +104,22 @@ export function updateFormsTextures(width: number, height: number) {
   });
 }
 
-export function writeFormsData(forms: FormDef[], palette: { r: number; g: number; b: number }[]) {
+export function writeFormsData(forms: FormDef[], palette: { r: number; g: number; b: number }[], sunAngle = 0.8) {
   const { device } = getGPU();
 
   const count = Math.min(forms.length, MAX_FORMS);
-  new Uint32Array(new Float32Array([0, 0, 0, 0]).buffer)[0] = count;
   const headerData = new ArrayBuffer(16);
   new Uint32Array(headerData)[0] = count;
+  new Float32Array(headerData, 4)[0] = sunAngle;
   device.queue.writeBuffer(paramBuffer, 0, headerData);
 
   if (count === 0) return;
 
-  const data = new Float32Array(count * 12);
+  const data = new Float32Array(count * 16);
   for (let i = 0; i < count; i++) {
     const f = forms[i];
     const color = palette[Math.min(f.colorIndex, palette.length - 1)] ?? { r: 0.5, g: 0.5, b: 0.5 };
-    const off = i * 12;
+    const off = i * 16;
     data[off] = f.type;
     data[off + 1] = f.x;
     data[off + 2] = f.y;
@@ -132,6 +132,11 @@ export function writeFormsData(forms: FormDef[], palette: { r: number; g: number
     data[off + 9] = color.g;
     data[off + 10] = color.b;
     data[off + 11] = f.opacity;
+    data[off + 12] = f.strokeDirX ?? 0;
+    data[off + 13] = f.strokeDirY ?? 0;
+    // edge_seed: unique per-form hash based on position
+    data[off + 14] = ((f.x * 127.1 + f.y * 311.7) % 1.0 + 1.0) % 1.0;
+    data[off + 15] = 0; // _pad
   }
   device.queue.writeBuffer(formStorageBuffer, 0, data);
 }

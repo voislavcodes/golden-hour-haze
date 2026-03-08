@@ -32,7 +32,8 @@ export interface FormDef {
   colorIndex: number;    // palette index
   opacity: number;
   dissolution: number;   // 0-1
-  // Padding to align to 16 bytes
+  strokeDirX: number;    // normalized stroke direction
+  strokeDirY: number;
 }
 
 export interface LightDef {
@@ -64,7 +65,7 @@ export const MAX_LIGHTS = 16;
 export const MAX_PALETTE_COLORS = 8;
 
 // GPU buffer sizes (bytes)
-export const FORM_STRIDE = 48; // 12 floats
+export const FORM_STRIDE = 64; // 16 floats
 export const LIGHT_STRIDE = 36; // 9 floats padded to 40
 export const FORM_BUFFER_SIZE = MAX_FORMS * FORM_STRIDE;
 export const LIGHT_BUFFER_SIZE = MAX_LIGHTS * 48; // padded

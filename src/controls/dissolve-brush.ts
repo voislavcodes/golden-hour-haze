@@ -106,7 +106,7 @@ export class DissolveBrush extends BaseControl {
       x: (e.clientX - rect.left) / rect.width,
       y: (e.clientY - rect.top) / rect.height,
       pressure: e.pressure || 0.5,
-      radius: 0.02 + (e.pressure || 0.5) * 0.04,
+      radius: uiStore.get().brushSize * (0.5 + (e.pressure || 0.5)),
       timestamp: performance.now(),
     };
 

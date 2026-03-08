@@ -1,5 +1,6 @@
 // Forms compute shader
-// Evaluates SDF forms, writes color via palette, depth-modulated dissolution
+// Evaluates SDF forms with painterly edge irregularity, interior tonal variation,
+// stroke texture, K-M color bleeding, and directional light response
 
 struct Globals {
   resolution: vec2f,
@@ -23,11 +24,15 @@ struct FormData {
   color_g: f32,
   color_b: f32,
   opacity: f32,
+  stroke_dir_x: f32,
+  stroke_dir_y: f32,
+  edge_seed: f32,
+  _pad: f32,
 };
 
 struct FormsParams {
   form_count: u32,
-  _pad1: f32,
+  sun_angle: f32,
   _pad2: f32,
   _pad3: f32,
 };
@@ -40,7 +45,56 @@ struct FormsParams {
 @group(2) @binding(2) var density_tex: texture_2d<f32>;
 @group(2) @binding(3) var output_tex: texture_storage_2d<rgba16float, write>;
 
-// Inline SDF
+// --- Inline simplex noise (same as depth-field.wgsl) ---
+fn mod289v3(x: vec3f) -> vec3f { return x - floor(x * (1.0 / 289.0)) * 289.0; }
+fn mod289v2(x: vec2f) -> vec2f { return x - floor(x * (1.0 / 289.0)) * 289.0; }
+fn permuteV3(x: vec3f) -> vec3f { return mod289v3((x * 34.0 + 10.0) * x); }
+
+fn snoise2d(v: vec2f) -> f32 {
+  let C = vec4f(0.211324865405187, 0.366025403784439,
+                -0.577350269189626, 0.024390243902439);
+  var i = floor(v + dot(v, C.yy));
+  let x0 = v - i + dot(i, C.xx);
+  var i1: vec2f;
+  if (x0.x > x0.y) { i1 = vec2f(1.0, 0.0); } else { i1 = vec2f(0.0, 1.0); }
+  var x12 = vec4f(x0.x + C.x, x0.y + C.x, x0.x + C.z, x0.y + C.z);
+  x12 = vec4f(x12.xy - i1, x12.zw);
+  i = mod289v2(i);
+  let p = permuteV3(permuteV3(vec3f(i.y, i.y + i1.y, i.y + 1.0)) +
+                     vec3f(i.x, i.x + i1.x, i.x + 1.0));
+  var m = max(vec3f(0.5) - vec3f(dot(x0, x0), dot(x12.xy, x12.xy), dot(x12.zw, x12.zw)), vec3f(0.0));
+  m = m * m; m = m * m;
+  let x = 2.0 * fract(p * C.www) - 1.0;
+  let h = abs(x) - 0.5;
+  let ox = floor(x + 0.5);
+  let a0 = x - ox;
+  m *= vec3f(1.79284291400159) - 0.85373472095314 * (a0 * a0 + h * h);
+  return 130.0 * dot(m, vec3f(a0.x * x0.x + h.x * x0.y,
+                               a0.y * x12.x + h.y * x12.y,
+                               a0.z * x12.z + h.z * x12.w));
+}
+
+// --- Inline K-M pigment mixing (same as kubelka-munk.wgsl) ---
+fn rgb_to_reflectance(c: vec3f) -> vec3f {
+  let r = clamp(c, vec3f(0.001), vec3f(0.999));
+  return r * r;
+}
+
+fn reflectance_to_rgb(r: vec3f) -> vec3f {
+  return sqrt(clamp(r, vec3f(0.0), vec3f(1.0)));
+}
+
+fn km_mix(c1: vec3f, c2: vec3f, t: f32) -> vec3f {
+  let r1 = rgb_to_reflectance(c1);
+  let r2 = rgb_to_reflectance(c2);
+  let ks1 = (1.0 - r1) * (1.0 - r1) / (2.0 * r1);
+  let ks2 = (1.0 - r2) * (1.0 - r2) / (2.0 * r2);
+  let ks_mixed = mix(ks1, ks2, t);
+  let r = 1.0 + ks_mixed - sqrt(ks_mixed * ks_mixed + 2.0 * ks_mixed);
+  return reflectance_to_rgb(r);
+}
+
+// --- SDF primitives ---
 fn sdf_circle(p: vec2f, center: vec2f, radius: f32) -> f32 {
   return length(p - center) - radius;
 }
@@ -90,6 +144,9 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
   let dissolution_mask = textureLoad(dissolution_tex, vec2i(gid.xy), 0).r;
   let atmo = textureLoad(density_tex, vec2i(gid.xy), 0);
 
+  // Sun direction for interior tonal variation and light response
+  let sun_dir = vec2f(cos(params.sun_angle), sin(params.sun_angle));
+
   // Evaluate all forms, compositing front to back
   var result_color = vec3f(0.0);
   var result_alpha = 0.0;
@@ -110,8 +167,18 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
       d = sdf_line_seg(p, center, end, f.size_y);
     }
 
+    // Early-out: skip noise evaluation for pixels far from this form
+    let max_soft = f.softness * 3.0;
+    if (d > max_soft) { continue; }
+
+    // --- A2: Edge irregularity via FBM noise displacing the SDF ---
+    let edge_uv = (p - center) * 12.0 + vec2f(f.edge_seed * 100.0);
+    let edge_fbm = snoise2d(edge_uv) * 0.6 + snoise2d(edge_uv * 2.3) * 0.3;
+    let irregularity = edge_fbm * f.softness * 0.15;
+    d += irregularity;
+
     // Perceptual edge dissolution
-    let form_color = vec3f(f.color_r, f.color_g, f.color_b);
+    var form_color = vec3f(f.color_r, f.color_g, f.color_b);
     let bg_color = result_color;
 
     let lum_contrast = abs(lum(form_color) - lum(bg_color));
@@ -126,6 +193,37 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
 
     let edge = 1.0 - smoothstep(0.0, max(eff_soft, 0.001), d);
     let alpha = edge * f.opacity;
+
+    // --- A3: Interior tonal variation based on sun direction ---
+    let to_center = center - p;
+    let tc_len = length(to_center);
+    let to_center_n = select(vec2f(0.0), to_center / tc_len, tc_len > 0.001);
+    let sun_facing = dot(to_center_n, sun_dir) * 0.5 + 0.5;
+    let tonal_shift = mix(0.85, 1.15, sun_facing);
+    form_color *= tonal_shift;
+
+    // --- A4: Stroke direction texture ---
+    let stroke_len = length(vec2f(f.stroke_dir_x, f.stroke_dir_y));
+    if (stroke_len > 0.01) {
+      let sdir = vec2f(f.stroke_dir_x, f.stroke_dir_y) / stroke_len;
+      let perp = vec2f(-sdir.y, sdir.x);
+      // Anisotropic UV: 3:1 aspect ratio creates elongated brush marks
+      let stroke_uv = vec2f(dot(p - center, sdir) * 8.0, dot(p - center, perp) * 24.0);
+      let stroke_tex = snoise2d(stroke_uv + vec2f(f.edge_seed * 50.0)) * 0.08;
+      form_color *= (1.0 + stroke_tex);
+    }
+
+    // --- C1: Directional light response ---
+    let light_response = sun_facing * (1.0 - f.depth * 0.5);
+    let highlight = max(0.0, light_response - 0.5) * 0.2;
+    form_color += vec3f(highlight * 1.1, highlight * 0.9, highlight * 0.7);
+
+    // --- B2: K-M color bleeding at edges ---
+    let edge_zone = smoothstep(0.0, 0.3, alpha) * smoothstep(1.0, 0.7, alpha);
+    if (edge_zone > 0.01 && result_alpha > 0.01) {
+      let km_blended = km_mix(result_color / result_alpha, form_color, alpha);
+      form_color = mix(form_color, km_blended, edge_zone);
+    }
 
     // Front-to-back composite
     if (result_alpha < 0.999) {

@@ -91,7 +91,7 @@ export function initApp() {
   writePaletteData(scene.palette);
   writeAtmosphereParams(scene.atmosphere);
   writeScatterParams(scene.sunAngle, scene.sunElevation);
-  writeFormsData(scene.forms, scene.palette.colors);
+  writeFormsData(scene.forms, scene.palette.colors, scene.sunAngle);
   writeLightData(scene.lights, 32);
 
   // Input
@@ -143,7 +143,7 @@ export function initApp() {
     writeAtmosphereParams(state.atmosphere);
     writeScatterParams(state.sunAngle, state.sunElevation);
     writePaletteData(state.palette);
-    writeFormsData(state.forms, state.palette.colors);
+    writeFormsData(state.forms, state.palette.colors, state.sunAngle);
     writeLightData(state.lights, 32);
   });
 
@@ -214,7 +214,7 @@ function setupFormPlacement(_canvas: HTMLCanvasElement) {
       if (!wasDown || dist >= MIN_SPACING) {
         const scene = sceneStore.get();
         const metrics = updateStrokeMetrics(ui.mouseX, ui.mouseY, ui.pressure, performance.now());
-        const mods = metricsToModifiers(metrics);
+        const mods = metricsToModifiers(metrics, ui.brushSize);
 
         // Echo controls form opacity and softness coherence
         const echo = scene.echo;
@@ -233,6 +233,8 @@ function setupFormPlacement(_canvas: HTMLCanvasElement) {
           colorIndex: scene.palette.activeIndex,
           opacity,
           dissolution: 0,
+          strokeDirX: metrics.dirX,
+          strokeDirY: metrics.dirY,
         };
 
         if (!wasDown) pushHistory(); // save state before first form in stroke
@@ -257,7 +259,7 @@ function setupFormPlacement(_canvas: HTMLCanvasElement) {
             y: ui.mouseY,
             depth: ui.mouseY * 0.5,
             intensity: 1.5,
-            radius: 0.3,
+            radius: ui.brushSize * 5,
             colorR: 1.0,
             colorG: 0.85,
             colorB: 0.6,
