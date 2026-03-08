@@ -83,7 +83,7 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
   let center_dist = length(uv - vec2f(0.5, 0.5));
   depth += center_dist * 0.1;
 
-  // Influence from control points
+  // Influence from control points — wide Gaussian, strong pull
   for (var i = 0u; i < params.control_count; i++) {
     let pack_idx = i / 2u;
     var cp: vec2f;
@@ -93,8 +93,9 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
       cp = params.control_points[pack_idx].zw;
     }
     let d = length(uv - cp);
-    let influence = exp(-d * d * 20.0);
-    depth = mix(depth, cp.y, influence * 0.5); // pull depth toward point's y
+    // Wide influence radius (~0.3 of screen), strong blend
+    let influence = exp(-d * d * 5.0);
+    depth = mix(depth, cp.y, influence * 0.85);
   }
 
   // Noise-based terrain variation
