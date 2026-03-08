@@ -1,5 +1,6 @@
 import { uiStore, type Tool } from '../state/ui-state.js';
 import { undo, redo } from '../state/history.js';
+import { sceneStore } from '../state/scene-state.js';
 
 const toolKeys: Record<string, Tool> = {
   v: 'select',
@@ -23,21 +24,24 @@ export function initKeyboardInput() {
       }
     }
 
-    // Brush size / dissolve strength shortcuts (context-aware)
-    if (e.key === '[') {
-      if (uiStore.get().activeTool === 'dissolve') {
-        uiStore.update((s) => ({ dissolveStrength: Math.max(0.1, s.dissolveStrength * 0.8) }));
-      } else {
-        uiStore.update((s) => ({ brushSize: Math.max(0.01, s.brushSize * 0.8) }));
+    // Atmosphere preset recall (1-4)
+    const digit = parseInt(e.key, 10);
+    if (digit >= 1 && digit <= 4) {
+      const presets = sceneStore.get().orbPresets;
+      const preset = presets[digit - 1];
+      if (preset) {
+        sceneStore.update(() => ({ atmosphere: { ...preset } }));
       }
       return;
     }
+
+    // Brush size shortcuts — always controls circle size for all tools
+    if (e.key === '[') {
+      uiStore.update((s) => ({ brushSize: Math.max(0.01, s.brushSize * 0.8) }));
+      return;
+    }
     if (e.key === ']') {
-      if (uiStore.get().activeTool === 'dissolve') {
-        uiStore.update((s) => ({ dissolveStrength: Math.min(1.0, s.dissolveStrength * 1.25) }));
-      } else {
-        uiStore.update((s) => ({ brushSize: Math.min(0.25, s.brushSize * 1.25) }));
-      }
+      uiStore.update((s) => ({ brushSize: Math.min(0.25, s.brushSize * 1.25) }));
       return;
     }
 

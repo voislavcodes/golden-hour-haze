@@ -5,6 +5,8 @@ struct BloomParams {
   texel_size: vec2f,
   threshold: f32,
   pass_type: f32, // 0 = threshold, 1 = downsample, 2 = upsample
+  warmth: vec3f,
+  intensity: f32,
 };
 
 @group(0) @binding(0) var<uniform> params: BloomParams;
@@ -32,12 +34,12 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4f {
   let ts = params.texel_size;
 
   if (params.pass_type < 0.5) {
-    // Threshold pass
+    // Threshold pass — apply warmth tint and intensity
     let color = textureSample(input_tex, tex_sampler, uv);
     let brightness = dot(color.rgb, vec3f(0.2126, 0.7152, 0.0722));
     let contrib = max(brightness - params.threshold, 0.0);
     let soft = contrib * contrib / (contrib + 0.001);
-    return vec4f(color.rgb * soft, 1.0);
+    return vec4f(color.rgb * soft * params.warmth * params.intensity, 1.0);
   } else if (params.pass_type < 1.5) {
     // Dual Kawase downsample
     let c = textureSample(input_tex, tex_sampler, uv) * 4.0;
@@ -47,7 +49,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4f {
     let br = textureSample(input_tex, tex_sampler, uv + vec2f(ts.x, ts.y));
     return (c + tl + tr + bl + br) / 8.0;
   } else {
-    // Dual Kawase upsample
+    // Dual Kawase upsample — subtle warmth blend
     let tl = textureSample(input_tex, tex_sampler, uv + vec2f(-ts.x, -ts.y) * 2.0);
     let t = textureSample(input_tex, tex_sampler, uv + vec2f(0.0, -ts.y) * 2.0);
     let tr = textureSample(input_tex, tex_sampler, uv + vec2f(ts.x, -ts.y) * 2.0);
@@ -57,6 +59,8 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4f {
     let b = textureSample(input_tex, tex_sampler, uv + vec2f(0.0, ts.y) * 2.0);
     let br_ = textureSample(input_tex, tex_sampler, uv + vec2f(ts.x, ts.y) * 2.0);
 
-    return (tl + tr + bl_ + br_) / 12.0 + (t + l + r + b) / 6.0;
+    var result = (tl + tr + bl_ + br_) / 12.0 + (t + l + r + b) / 6.0;
+    result = vec4f(result.rgb * mix(vec3f(1.0), params.warmth, 0.3), result.a);
+    return result;
   }
 }

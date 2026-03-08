@@ -14,7 +14,11 @@ struct GrainParams {
   intensity: f32,
   scale: f32,
   angle: f32,
+  grain_depth: f32,
+  _pad1: f32,
   _pad2: f32,
+  _pad3: f32,
+  _pad4: f32,
 };
 
 @group(0) @binding(0) var<uniform> globals: Globals;
@@ -35,9 +39,9 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
 
   let uv = vec2f(f32(gid.x), f32(gid.y)) / vec2f(f32(dims.x), f32(dims.y));
 
-  // Read depth — grain scale inversely proportional to depth
+  // Read depth — grain_depth controls how much grain persists at depth
   let depth = textureLoad(depth_tex, vec2i(gid.xy), 0).r;
-  let depth_scale = 1.0 - depth * 0.7; // near = full grain, far = reduced
+  let depth_scale = 1.0 - depth * (1.0 - params.grain_depth);
 
   // Rotate noise sampling coordinates by grain angle
   let ca = cos(params.angle);

@@ -31,6 +31,11 @@ let bloomParamBuffers: GPUBuffer[] = [];
 let currentWidth = 0;
 let currentHeight = 0;
 
+// Sun-driven bloom params (updated by writeLightData)
+let bloomThreshold = 0.8;
+let bloomWarmth = [1.0, 1.0, 1.0];
+let bloomIntensity = 1.0;
+
 export function initLightLayer() {
   const { device } = getGPU();
 
@@ -71,7 +76,7 @@ export function initLightLayer() {
 
   lightParamBuffer = device.createBuffer({
     label: 'light-params',
-    size: 16,
+    size: 32,
     usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
   });
 
@@ -115,11 +120,11 @@ export function initLightLayer() {
     primitive: { topology: 'triangle-list' },
   });
 
-  // Create bloom param buffers
+  // Create bloom param buffers (32 bytes each for warmth + intensity)
   for (let i = 0; i < BLOOM_MIPS * 2 + 1; i++) {
     bloomParamBuffers.push(device.createBuffer({
       label: `bloom-params-${i}`,
-      size: 16,
+      size: 32,
       usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
     }));
   }
@@ -177,13 +182,27 @@ export function updateLightTextures(width: number, height: number) {
   }
 }
 
-export function writeLightData(lights: LightDef[], maxSteps: number) {
+export function writeLightData(lights: LightDef[], maxSteps: number, sunElevation = 0.15) {
   const { device } = getGPU();
   const count = Math.min(lights.length, MAX_LIGHTS);
 
-  const header = new ArrayBuffer(16);
-  new Uint32Array(header)[0] = count;
-  new Uint32Array(header)[1] = maxSteps;
+  // Compute sun scatter boost from elevation
+  const gf = Math.max(0, 1.0 - Math.min(1.0, Math.max(0, sunElevation) * 2.5));
+  const sunScatterBoost = 1.0 + gf * 0.5;
+
+  // Derive bloom character from golden factor
+  bloomThreshold = 0.8 - gf * 0.3;
+  bloomWarmth = [1.0 + gf * 0.2, 1.0 - gf * 0.1, 1.0 - gf * 0.3];
+  bloomIntensity = 1.0 + gf * 0.3;
+
+  const header = new ArrayBuffer(32);
+  const u32 = new Uint32Array(header);
+  const f32 = new Float32Array(header);
+  u32[0] = count;
+  u32[1] = maxSteps;
+  f32[2] = sunElevation;
+  f32[3] = sunScatterBoost;
+  // f32[4..7] = padding (already 0)
   device.queue.writeBuffer(lightParamBuffer, 0, header);
 
   if (count === 0) return;
@@ -249,7 +268,7 @@ export function dispatchLight(encoder: GPUCommandEncoder, globalBG: GPUBindGroup
     const th = 1.0 / prevTex.height;
 
     device.queue.writeBuffer(bloomParamBuffers[bufIdx], 0,
-      new Float32Array([tw, th, 0.8, passType]));
+      new Float32Array([tw, th, bloomThreshold, passType, bloomWarmth[0], bloomWarmth[1], bloomWarmth[2], bloomIntensity]));
 
     const bg = createBloomBG(device, prevTex, bloomParamBuffers[bufIdx]);
 
@@ -279,7 +298,7 @@ export function dispatchLight(encoder: GPUCommandEncoder, globalBG: GPUBindGroup
     const th = 1.0 / source.height;
 
     device.queue.writeBuffer(bloomParamBuffers[bufIdx], 0,
-      new Float32Array([tw, th, 0, 2.0]));
+      new Float32Array([tw, th, 0, 2.0, bloomWarmth[0], bloomWarmth[1], bloomWarmth[2], bloomIntensity]));
 
     const bg = createBloomBG(device, source, bloomParamBuffers[bufIdx]);
 

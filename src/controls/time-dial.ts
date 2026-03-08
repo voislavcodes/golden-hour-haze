@@ -1,7 +1,7 @@
 import { html, css } from 'lit';
 import { customElement, state } from 'lit/decorators.js';
 import { BaseControl } from './base-control.js';
-import { sceneStore } from '../state/scene-state.js';
+import { sceneStore, sunElevationFromAngle } from '../state/scene-state.js';
 
 @customElement('ghz-time-dial')
 export class TimeDial extends BaseControl {
@@ -40,6 +40,7 @@ export class TimeDial extends BaseControl {
         inset: 0;
         border-radius: 50%;
         border: 2px solid var(--ghz-glass-border);
+        transition: border-color 0.2s;
         background: conic-gradient(
           from 0deg,
           var(--ghz-glass-bg) 0deg,
@@ -101,9 +102,12 @@ export class TimeDial extends BaseControl {
   ];
 
   @state() private _angle: number = 0.8;
+  @state() private _azimuth: number = 0.5;
   @state() private _dragging: boolean = false;
+  @state() private _shiftHeld: boolean = false;
 
   private _unsubscribe?: () => void;
+  private _unsubAzimuth?: () => void;
   private _angleLUT: Float32Array = new Float32Array(256);
 
   private _buildAngleLUT() {
@@ -117,7 +121,7 @@ export class TimeDial extends BaseControl {
       // Gaussian weight centered on golden hour and blue hour
       const gd = angle - 0.75;
       const bd = angle - 5.5;
-      const w = 1.0 + 9.0 * (Math.exp(-gd * gd * 4) + Math.exp(-bd * bd * 4));
+      const w = 1.0 + 15.0 * (Math.exp(-gd * gd * 3) + Math.exp(-bd * bd * 3));
       weights[i] = w;
       total += w;
     }
@@ -133,25 +137,49 @@ export class TimeDial extends BaseControl {
   connectedCallback() {
     super.connectedCallback();
     this._buildAngleLUT();
-    this._angle = sceneStore.get().sunAngle;
+    const s = sceneStore.get();
+    this._angle = s.sunAngle;
+    this._azimuth = s.sunAzimuth;
     this._unsubscribe = sceneStore.select(
       (s) => s.sunAngle,
       (angle) => { this._angle = angle; }
+    );
+    this._unsubAzimuth = sceneStore.select(
+      (s) => s.sunAzimuth,
+      (az) => { this._azimuth = az; }
     );
   }
 
   disconnectedCallback() {
     super.disconnectedCallback();
     this._unsubscribe?.();
+    this._unsubAzimuth?.();
   }
+
+  private _lastClientX = 0;
 
   private _onPointerDown(e: PointerEvent) {
     this._dragging = true;
+    this._shiftHeld = e.shiftKey;
+    this._lastClientX = e.clientX;
     (e.target as HTMLElement).setPointerCapture(e.pointerId);
   }
 
   private _onPointerMove(e: PointerEvent) {
     if (!this._dragging) return;
+
+    // Shift+drag: horizontal azimuth control
+    if (e.shiftKey) {
+      this._shiftHeld = true;
+      const dx = e.clientX - this._lastClientX;
+      this._lastClientX = e.clientX;
+      const newAz = Math.max(0, Math.min(1, this._azimuth + dx * 0.003));
+      this._azimuth = newAz;
+      sceneStore.set({ sunAzimuth: newAz });
+      return;
+    }
+    this._shiftHeld = false;
+    this._lastClientX = e.clientX;
 
     const dial = this.shadowRoot!.querySelector('.dial') as HTMLElement;
     const rect = dial.getBoundingClientRect();
@@ -170,11 +198,12 @@ export class TimeDial extends BaseControl {
     const angle = this._angleLUT[idx];
 
     this._angle = angle;
-    sceneStore.set({ sunAngle: angle });
+    sceneStore.set({ sunAngle: angle, sunElevation: sunElevationFromAngle(angle) });
   }
 
   private _onPointerUp(_e: PointerEvent) {
     this._dragging = false;
+    this._shiftHeld = false;
   }
 
   /** Convert radians to a human-readable time string (golden hour = ~6pm feel) */
@@ -201,7 +230,7 @@ export class TimeDial extends BaseControl {
           @pointerup=${this._onPointerUp}
           @pointerleave=${this._onPointerUp}
         >
-          <div class="dial-ring"></div>
+          <div class="dial-ring" style="border-color: ${this._shiftHeld ? 'rgba(100, 180, 255, 0.6)' : ''}"></div>
           <div
             class="dial-indicator"
             style="transform: translateX(-50%) rotate(${this._indicatorRotation}deg)"

@@ -43,6 +43,10 @@ struct FormsParams {
   gravity: f32,    // downward dissolution amount
   baked_count: u32,
   falloff: f32,
+  edge_atmosphere: f32,
+  _pad1: f32,
+  _pad2: f32,
+  _pad3: f32,
 };
 
 @group(0) @binding(0) var<uniform> globals: Globals;
@@ -209,12 +213,19 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
     let d = eval_sdf(f, p, aspect);
 
     // Per-form softness: depth recession dissolves edges, dissolution widens them
+    // edge_atmosphere: sun elevation modulates global edge softness
     let depth_diss = f.depth * f.depth * 2.0;
+    let local_density = textureLoad(density_tex, vec2i(gid.xy), 0).r;
     let eff_soft = f.softness
       * (1.0 + depth_diss * 0.3)
+      * params.edge_atmosphere
+      * (1.0 + local_density * 0.15)
       * (1.0 + dissolution_mask * 3.0);
 
-    let edge = 1.0 - smoothstep(0.0, max(eff_soft, 0.001), d);
+    // Dissolution erodes form boundaries inward — shifts the SDF zero-edge
+    // so interior pixels enter the transition zone and fade
+    let diss_erode = dissolution_mask * eff_soft * 2.0;
+    let edge = 1.0 - smoothstep(-diss_erode, max(eff_soft, 0.001), d);
     if (edge < 0.001) { continue; } // form doesn't reach this pixel
 
     var form_color = vec3f(f.color_r, f.color_g, f.color_b);
@@ -290,9 +301,7 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
     let ks_mixed = ks_accum / weight_accum;
     let r_mixed = 1.0 + ks_mixed - sqrt(ks_mixed * ks_mixed + 2.0 * ks_mixed);
     let out_color = reflectance_to_rgb(r_mixed);
-    // Dissolution fades interior pixels (edges handled by softness widening above)
-    let final_alpha = opacity_accum * (1.0 - dissolution_mask * dissolution_mask * 0.85);
-    textureStore(output_tex, vec2i(gid.xy), vec4f(out_color, final_alpha));
+    textureStore(output_tex, vec2i(gid.xy), vec4f(out_color, opacity_accum));
   } else {
     textureStore(output_tex, vec2i(gid.xy), vec4f(0.0));
   }

@@ -19,6 +19,7 @@ export interface AtmosphereParams {
   driftSpeed: number;
   turbulence: number;    // 0-1
   grainAngle: number;    // radians, rotates grain texture
+  grainDepth: number;    // 0-1, grain persistence with depth
 }
 
 export interface FormDef {
@@ -74,6 +75,9 @@ export interface CompositorParams {
   anchorY: number;
   anchorBoost: number;
   anchorFalloff: number;
+  sunGradeWarmth: number;    // -1 cool to 1 warm
+  sunGradeIntensity: number; // 0 to 1
+  sunAzimuthBias: number;    // -1 to 1
 }
 
 export interface PaletteColor {

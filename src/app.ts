@@ -39,7 +39,7 @@ import {
   writeCompositorParams,
 } from './layers/compositor.js';
 import { initUILayer, renderUI } from './layers/ui-layer.js';
-import { sceneStore } from './state/scene-state.js';
+import { sceneStore, goldenFactor } from './state/scene-state.js';
 import { uiStore } from './state/ui-state.js';
 
 // Register web components (side-effect imports)
@@ -104,9 +104,10 @@ export function initApp() {
   writeDepthParams(scene.depth);
   writePaletteData(scene.palette);
   writeAtmosphereParams(scene.atmosphere);
-  writeScatterParams(scene.sunAngle, scene.sunElevation);
-  writeFormsData(scene.forms, scene.palette.colors, scene.sunAngle, scene.tonalMap, scene.velvet, scene.tonalSort, scene.gravity, scene.baseOpacity, scene.falloff);
-  writeLightData(scene.lights, 32);
+  writeScatterParams(scene.sunAngle, scene.sunElevation, scene.sunAzimuth);
+  writeFormsData(scene.forms, scene.palette.colors, scene.sunAngle, scene.tonalMap, scene.velvet, scene.tonalSort, scene.gravity, scene.baseOpacity, scene.falloff, scene.sunElevation);
+  writeLightData(scene.lights, 32, scene.sunElevation);
+  const gf = goldenFactor(scene.sunElevation);
   writeCompositorParams({
     shadowChroma: scene.shadowChroma,
     grayscale: uiStore.get().grayscalePreview ? 1.0 : 0.0,
@@ -114,6 +115,9 @@ export function initApp() {
     anchorY: scene.anchor?.y ?? 0.5,
     anchorBoost: scene.anchor?.chromaBoost ?? 0,
     anchorFalloff: scene.anchor ? scene.anchor.muteFalloff : 999.0,
+    sunGradeWarmth: gf * 0.8 - 0.1,
+    sunGradeIntensity: 0.3 + gf * 0.4,
+    sunAzimuthBias: (scene.sunAzimuth - 0.5) * 2.0,
   });
 
   // Input
@@ -145,7 +149,7 @@ export function initApp() {
       setDissolutionActive(true);
       // Force re-write so baked_count=0 reaches the GPU
       const s = sceneStore.get();
-      writeFormsData(s.forms, s.palette.colors, s.sunAngle, s.tonalMap, s.velvet, s.tonalSort, s.gravity, s.baseOpacity, s.falloff);
+      writeFormsData(s.forms, s.palette.colors, s.sunAngle, s.tonalMap, s.velvet, s.tonalSort, s.gravity, s.baseOpacity, s.falloff, s.sunElevation);
     }
     stampDissolve(stroke.x, stroke.y, stroke.radius, stroke.pressure, ds);
   }) as EventListener);
@@ -164,6 +168,8 @@ export function initApp() {
 
   // Track previous state for detecting global param changes / undo
   let prevSunAngle = scene.sunAngle;
+  let prevSunElevation = scene.sunElevation;
+  let prevSunAzimuth = scene.sunAzimuth;
   let prevTonalMap = scene.tonalMap;
   let prevVelvet = scene.velvet;
   let prevGravity = scene.gravity;
@@ -179,10 +185,11 @@ export function initApp() {
   sceneStore.subscribe((state) => {
     writeDepthParams(state.depth);
     writeAtmosphereParams(state.atmosphere);
-    writeScatterParams(state.sunAngle, state.sunElevation);
+    writeScatterParams(state.sunAngle, state.sunElevation, state.sunAzimuth);
     writePaletteData(state.palette);
-    writeFormsData(state.forms, state.palette.colors, state.sunAngle, state.tonalMap, state.velvet, state.tonalSort, state.gravity, state.baseOpacity, state.falloff);
-    writeLightData(state.lights, 32);
+    writeFormsData(state.forms, state.palette.colors, state.sunAngle, state.tonalMap, state.velvet, state.tonalSort, state.gravity, state.baseOpacity, state.falloff, state.sunElevation);
+    writeLightData(state.lights, 32, state.sunElevation);
+    const gf = goldenFactor(state.sunElevation);
     writeCompositorParams({
       shadowChroma: state.shadowChroma,
       grayscale: uiStore.get().grayscalePreview ? 1.0 : 0.0,
@@ -190,10 +197,15 @@ export function initApp() {
       anchorY: state.anchor?.y ?? 0.5,
       anchorBoost: state.anchor?.chromaBoost ?? 0,
       anchorFalloff: state.anchor ? state.anchor.muteFalloff : 999.0,
+      sunGradeWarmth: gf * 0.8 - 0.1,
+      sunGradeIntensity: 0.3 + gf * 0.4,
+      sunAzimuthBias: (state.sunAzimuth - 0.5) * 2.0,
     });
 
     // Detect global param changes → full rebake
     if (state.sunAngle !== prevSunAngle ||
+        state.sunElevation !== prevSunElevation ||
+        state.sunAzimuth !== prevSunAzimuth ||
         state.tonalMap !== prevTonalMap ||
         state.velvet !== prevVelvet ||
         state.gravity !== prevGravity ||
@@ -216,6 +228,8 @@ export function initApp() {
     }
 
     prevSunAngle = state.sunAngle;
+    prevSunElevation = state.sunElevation;
+    prevSunAzimuth = state.sunAzimuth;
     prevTonalMap = state.tonalMap;
     prevVelvet = state.velvet;
     prevGravity = state.gravity;
@@ -231,6 +245,7 @@ export function initApp() {
   // Also react to UI state changes (grayscale toggle)
   uiStore.subscribe((ui) => {
     const state = sceneStore.get();
+    const gf = goldenFactor(state.sunElevation);
     writeCompositorParams({
       shadowChroma: state.shadowChroma,
       grayscale: ui.grayscalePreview ? 1.0 : 0.0,
@@ -238,6 +253,9 @@ export function initApp() {
       anchorY: state.anchor?.y ?? 0.5,
       anchorBoost: state.anchor?.chromaBoost ?? 0,
       anchorFalloff: state.anchor ? state.anchor.muteFalloff : 999.0,
+      sunGradeWarmth: gf * 0.8 - 0.1,
+      sunGradeIntensity: 0.3 + gf * 0.4,
+      sunAzimuthBias: (state.sunAzimuth - 0.5) * 2.0,
     });
   });
 

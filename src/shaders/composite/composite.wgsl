@@ -18,8 +18,12 @@ struct CompositorParams {
   anchor_y: f32,
   anchor_boost: f32,
   anchor_falloff: f32,
+  sun_grade_warmth: f32,
+  sun_grade_intensity: f32,
+  sun_azimuth_bias: f32,
   _pad1: f32,
   _pad2: f32,
+  _pad3: f32,
 };
 
 @group(0) @binding(0) var<uniform> globals: Globals;
@@ -72,36 +76,15 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4f {
   // Sample all layers
   let depth = textureSample(depth_tex, tex_sampler, uv).r;
   let density_data = textureSample(density_tex, tex_sampler, uv);
-  let scatter = textureSample(scatter_tex, tex_sampler, uv).rgb;
   let grain = textureSample(grain_tex, tex_sampler, uv).r;
   let forms = textureLoad(forms_tex, vec2i(uv * vec2f(textureDimensions(forms_tex))), 0);
   let light = textureSample(light_tex, tex_sampler, uv).rgb;
   let bloom = textureSample(bloom_tex, tex_sampler, uv).rgb;
 
   let density = density_data.r;
-  let warmth = density_data.g;
 
-  // Base sky gradient — warm golden hour colors
-  let sky_top = vec3f(0.15, 0.20, 0.45); // deep blue
-  let sky_mid = vec3f(0.85, 0.55, 0.30); // warm orange
-  let sky_bot = vec3f(0.95, 0.80, 0.50); // golden
-
-  var sky: vec3f;
-  if (uv.y < 0.5) {
-    sky = mix(sky_bot, sky_mid, uv.y * 2.0);
-  } else {
-    sky = mix(sky_mid, sky_top, (uv.y - 0.5) * 2.0);
-  }
-
-  // Warmth shift
-  let warm_tint = vec3f(1.1, 0.9, 0.7);
-  let cool_tint = vec3f(0.8, 0.9, 1.1);
-  let tint = mix(cool_tint, warm_tint, warmth * 0.5 + 0.5);
-  sky *= tint;
-
-  // Apply atmospheric scatter to sky
-  let atmo_contribution = scatter * density * 1.5;
-  sky += atmo_contribution;
+  // Sky from scatter texture (sky gradient + atmospheric scatter baked together)
+  var sky = textureSample(scatter_tex, tex_sampler, uv).rgb;
 
   // Color-in-shadow: darken forms with their own hue, not neutral gray
   let shadow_depth = density * depth;
@@ -110,7 +93,6 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4f {
   let shadowed = km_mix(forms.rgb, form_hue_shadow, shadow_amount * comp_params.shadow_chroma);
 
   // Composite forms over sky with depth-aware atmospheric opacity
-  let depth2 = depth * depth;
   let atmosphere_fog = vec3f(0.75, 0.60, 0.50) * density * 0.2;
   let form_color = shadowed + atmosphere_fog * (1.0 - shadow_amount);
   var color = mix(sky, form_color, forms.a);
@@ -133,6 +115,15 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4f {
 
   // Tonemapping
   color = aces_tonemap(color);
+
+  // Sun-driven color grade (after tonemap, before sRGB)
+  let grade = mix(vec3f(0.85, 0.92, 1.15), vec3f(1.1, 0.95, 0.8),
+                  comp_params.sun_grade_warmth * 0.5 + 0.5);
+  color *= mix(vec3f(1.0), grade, comp_params.sun_grade_intensity);
+
+  // Horizontal azimuth bias
+  let h_bias = (uv.x - 0.5) * comp_params.sun_azimuth_bias * 0.1;
+  color *= vec3f(1.0 + h_bias, 1.0, 1.0 - h_bias);
 
   // sRGB output
   color = linear_to_srgb(color);

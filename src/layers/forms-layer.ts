@@ -75,7 +75,7 @@ export function initFormsLayer() {
 
   paramBuffer = device.createBuffer({
     label: 'forms-params',
-    size: 48, // form_count, sun_angle, key_value, value_range, contrast, velvet, tonal_sort, tonal_enabled, base_opacity, gravity, baked_count, falloff
+    size: 64, // 16 floats: form_count, sun_angle, key_value, value_range, contrast, velvet, tonal_sort, tonal_enabled, base_opacity, gravity, baked_count, falloff, edge_atmosphere, pad*3
     usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
   });
 
@@ -200,6 +200,7 @@ export function writeFormsData(
   gravity = 0.4,
   baseOpacity = 0.5,
   falloff = 0.7,
+  sunElevation = 0.15,
 ) {
   const { device } = getGPU();
 
@@ -221,7 +222,9 @@ export function writeFormsData(
 
   const count = Math.min(toRender.length, MAX_FORMS);
   currentTotalFormCount = count;
-  const headerData = new ArrayBuffer(48);
+  // edge_atmosphere: golden hour (low elev) = soft, midday (high elev) = crisp
+  const edgeAtmo = 1.5 - Math.min(sunElevation, 1.0) * 0.8;
+  const headerData = new ArrayBuffer(64);
   const headerU32 = new Uint32Array(headerData);
   const headerF32 = new Float32Array(headerData);
   headerU32[0] = count;
@@ -236,6 +239,8 @@ export function writeFormsData(
   headerF32[9] = gravity;
   headerU32[10] = (pendingFullRebake || dissolutionActive) ? 0 : bakedFormCount;
   headerF32[11] = falloff;
+  headerF32[12] = edgeAtmo;
+  // 13, 14, 15 = padding (already 0)
   device.queue.writeBuffer(paramBuffer, 0, headerData);
 
   if (count === 0) return;

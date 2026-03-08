@@ -28,8 +28,12 @@ struct LightData {
 struct LightParams {
   light_count: u32,
   max_steps: u32,
+  sun_elevation: f32,
+  sun_scatter_boost: f32,
   _pad1: f32,
   _pad2: f32,
+  _pad3: f32,
+  _pad4: f32,
 };
 
 @group(0) @binding(0) var<uniform> globals: Globals;
@@ -102,7 +106,7 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
     // Combine direct + scattered
     let transmission = exp(-accumulated_density);
     let direct = light_color * light.intensity * falloff * transmission * occlusion;
-    total_light += direct + scatter_contrib * light.intensity;
+    total_light += direct + scatter_contrib * light.intensity * params.sun_scatter_boost;
   }
 
   textureStore(output_tex, vec2i(gid.xy), vec4f(total_light, 1.0));

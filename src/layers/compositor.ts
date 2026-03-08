@@ -47,7 +47,7 @@ export function initCompositor() {
 
   compositorParamBuffer = device.createBuffer({
     label: 'compositor-params',
-    size: 32, // 8 floats
+    size: 48, // 12 floats
     usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
   });
 
@@ -134,8 +134,12 @@ export function writeCompositorParams(params: CompositorParams) {
     params.anchorY,
     params.anchorBoost,
     params.anchorFalloff,
+    params.sunGradeWarmth,
+    params.sunGradeIntensity,
+    params.sunAzimuthBias,
     0, // _pad1
     0, // _pad2
+    0, // _pad3
   ]));
 }
 

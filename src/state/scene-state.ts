@@ -9,6 +9,7 @@ export interface SceneState {
   palette: PaletteState;
   sunAngle: number; // radians, drives time-of-day
   sunElevation: number;
+  sunAzimuth: number; // 0-1, horizontal sun position (0=left, 0.5=center, 1=right)
   echo: number; // 0-1, stroke coherence (controls form opacity/softness)
   tonalMap: TonalMapParams;
   anchor: AnchorPoint | null;
@@ -18,6 +19,17 @@ export interface SceneState {
   shadowChroma: number; // 0-1, color-in-shadow intensity
   baseOpacity: number; // 0.1-1.0, glazing base opacity per stroke (default 0.5)
   falloff: number; // 0.5-0.9, diminishing returns per accumulated layer (default 0.7)
+  orbPresets: (AtmosphereParams | null)[];
+}
+
+/** Derive sun elevation from dial angle. Shaped sine: golden hour → low, noon → high, night → negative */
+export function sunElevationFromAngle(angle: number): number {
+  return Math.sin(angle - Math.PI / 2) * 0.75 + 0.15;
+}
+
+/** Compute golden hour factor from sun elevation (0 at noon, 1 at golden hour, clamped for night) */
+export function goldenFactor(sunElevation: number): number {
+  return Math.max(0, 1.0 - Math.min(1.0, Math.max(0, sunElevation) * 2.5));
 }
 
 const defaultPalette: PaletteState = {
@@ -50,12 +62,14 @@ export const sceneStore = createStore<SceneState>({
     driftSpeed: 0.3,
     turbulence: 0.4,
     grainAngle: 0,
+    grainDepth: 0.5,
   },
   forms: [],
   lights: [],
   palette: defaultPalette,
   sunAngle: 0.8, // ~golden hour angle
-  sunElevation: 0.15,
+  sunElevation: sunElevationFromAngle(0.8),
+  sunAzimuth: 0.5,
   echo: 0.5,
   tonalMap: { enabled: true, valueRange: 0.8, keyValue: 0.5, contrast: 0.6 },
   anchor: null,
@@ -65,4 +79,5 @@ export const sceneStore = createStore<SceneState>({
   shadowChroma: 0.4,
   baseOpacity: 0.5,
   falloff: 0.7,
+  orbPresets: [null, null, null, null],
 });

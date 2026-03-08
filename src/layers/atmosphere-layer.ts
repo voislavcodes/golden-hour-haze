@@ -76,7 +76,7 @@ export function initAtmosphereLayer() {
 
   atmosphereParamBuffer = device.createBuffer({
     label: 'atmo-params',
-    size: 32,
+    size: 48,
     usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
   });
 
@@ -115,7 +115,7 @@ export function initAtmosphereLayer() {
 
   grainParamBuffer = device.createBuffer({
     label: 'grain-params',
-    size: 16,
+    size: 32,
     usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
   });
 
@@ -159,7 +159,7 @@ export function initAtmosphereLayer() {
 
   scatterParamBuffer = device.createBuffer({
     label: 'scatter-params',
-    size: 16,
+    size: 32,
     usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
   });
 
@@ -251,22 +251,26 @@ export function rebuildDensityBindGroup() {
 
 export function writeAtmosphereParams(params: AtmosphereParams) {
   const { device } = getGPU();
+  const humidity = params.density * (1 - Math.abs(params.warmth)) * 0.8;
   const data = new Float32Array([
     params.density, params.warmth, params.grain, params.scatter,
     params.driftX, params.driftY, params.driftSpeed, params.turbulence,
+    humidity, params.grainDepth, 0, 0,
   ]);
   device.queue.writeBuffer(atmosphereParamBuffer, 0, data);
 
-  // Grain params
+  // Grain params (32 bytes = 8 floats)
   device.queue.writeBuffer(grainParamBuffer, 0, new Float32Array([
-    params.grain, 1.0 + params.grain * 3.0, params.grainAngle, 0,
+    params.grain, 1.0 + params.grain * 3.0, params.grainAngle, params.grainDepth,
+    0, 0, 0, 0,
   ]));
 }
 
-export function writeScatterParams(sunAngle: number, sunElevation: number) {
+export function writeScatterParams(sunAngle: number, sunElevation: number, sunAzimuth: number) {
   const { device } = getGPU();
   device.queue.writeBuffer(scatterParamBuffer, 0, new Float32Array([
-    sunAngle, sunElevation, 1.0, 0,
+    sunAngle, sunElevation, 1.0, sunAzimuth,
+    0, 0, 0, 0,
   ]));
 }
 

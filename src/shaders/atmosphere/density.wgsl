@@ -20,6 +20,10 @@ struct AtmosphereParams {
   drift_y: f32,
   drift_speed: f32,
   turbulence: f32,
+  humidity: f32,
+  grain_depth: f32,
+  _pad1: f32,
+  _pad2: f32,
 };
 
 @group(0) @binding(0) var<uniform> globals: Globals;
@@ -87,11 +91,14 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
   let depth = textureSampleLevel(depth_tex, density_sampler, uv, 0.0).r;
 
   // Base density from depth (deeper = more atmosphere)
-  let depth_density = depth * params.density;
+  // Humidity amplifies density ceiling
+  var depth_density = depth * params.density;
+  depth_density *= 1.0 + params.humidity * 0.5;
 
-  // FBM noise for turbulence
+  // FBM noise for turbulence — humidity dampens turbulence slightly
+  let effective_turb = params.turbulence * (1.0 - params.humidity * 0.3);
   let noise_pos = uv * 4.0 + vec2f(globals.time * 0.05, globals.time * 0.03);
-  let turb = fbm_noise(noise_pos, 4) * params.turbulence;
+  let turb = fbm_noise(noise_pos, 4) * effective_turb;
 
   // Evolve density: blend previous with new computation
   let new_density = mix(depth_density + turb * 0.3, prev.r, 0.85);
@@ -99,9 +106,10 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
   // Warmth: based on depth and global warmth param
   let warmth = mix(params.warmth, params.warmth * (1.0 - depth * 0.5), 0.5);
 
-  // Local grain variation
+  // Local grain variation — grain_depth controls depth falloff
   let grain_noise = snoise(uv * 50.0 + vec2f(globals.time * 0.1)) * 0.5 + 0.5;
-  let grain_val = grain_noise * params.grain * (1.0 - depth * 0.5); // grain diminishes with depth
+  let grain_depth_scale = 1.0 - depth * (1.0 - params.grain_depth);
+  let grain_val = grain_noise * params.grain * grain_depth_scale;
 
   // Local scatter based on density and depth
   let scatter_val = new_density * params.scatter * (0.5 + depth * 0.5);
