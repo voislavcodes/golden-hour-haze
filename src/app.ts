@@ -174,28 +174,43 @@ function renderFrame(dt: number, elapsed: number) {
 
 function setupFormPlacement(_canvas: HTMLCanvasElement) {
   let wasDown = false;
+  let lastFormX = 0;
+  let lastFormY = 0;
+  const MIN_SPACING = 0.015; // minimum distance between forms during drag
 
   uiStore.subscribe((ui) => {
-    if (ui.mouseDown && !wasDown && ui.activeTool === 'form') {
-      const scene = sceneStore.get();
-      const metrics = updateStrokeMetrics(ui.mouseX, ui.mouseY, ui.pressure, performance.now());
-      const mods = metricsToModifiers(metrics);
+    if (ui.activeTool === 'form' && ui.mouseDown) {
+      const dx = ui.mouseX - lastFormX;
+      const dy = ui.mouseY - lastFormY;
+      const dist = Math.sqrt(dx * dx + dy * dy);
 
-      const newForm: FormDef = {
-        type: 0, // circle
-        x: ui.mouseX,
-        y: ui.mouseY,
-        sizeX: mods.size,
-        sizeY: mods.size,
-        rotation: mods.rotation,
-        softness: mods.softness,
-        depth: ui.mouseY, // depth from vertical position
-        colorIndex: scene.palette.activeIndex,
-        opacity: 0.8,
-        dissolution: 0,
-      };
+      // Place on initial click or when dragged far enough
+      if (!wasDown || dist >= MIN_SPACING) {
+        const scene = sceneStore.get();
+        const metrics = updateStrokeMetrics(ui.mouseX, ui.mouseY, ui.pressure, performance.now());
+        const mods = metricsToModifiers(metrics);
 
-      sceneStore.set({ forms: [...scene.forms, newForm] });
+        const newForm: FormDef = {
+          type: 0, // circle
+          x: ui.mouseX,
+          y: ui.mouseY,
+          sizeX: mods.size,
+          sizeY: mods.size,
+          rotation: mods.rotation,
+          softness: mods.softness,
+          depth: ui.mouseY, // depth from vertical position
+          colorIndex: scene.palette.activeIndex,
+          opacity: 0.8,
+          dissolution: 0,
+        };
+
+        sceneStore.set({ forms: [...scene.forms, newForm] });
+        lastFormX = ui.mouseX;
+        lastFormY = ui.mouseY;
+      }
+    }
+
+    if (!ui.mouseDown && wasDown) {
       resetStrokeTracking();
     }
 
