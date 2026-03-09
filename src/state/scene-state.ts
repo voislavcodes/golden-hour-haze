@@ -80,7 +80,7 @@ export const sceneStore = createStore<SceneState>({
   sunElevation: sunElevationFromAngle(1.28),
   horizonY: 0.5,
   echo: 0.5,
-  tonalMap: { enabled: true, valueRange: 0.8, keyValue: 0.5, contrast: 0.6 },
+  tonalMap: { enabled: false, valueRange: 0.8, keyValue: 0.5, contrast: 0.6 },
   anchor: null,
   velvet: 0.6,
   tonalSort: true,
