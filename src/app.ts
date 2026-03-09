@@ -15,7 +15,7 @@ import { initSurface, resizeSurface } from './painting/surface.js';
 import { initBrushEngine, beginStroke, endStroke, dispatchBrushDabs, reloadBrush } from './painting/brush-engine.js';
 import { initScrapeEngine, beginScrape, endScrape, dispatchScrapeDabs } from './painting/scrape-engine.js';
 import { initWipeEngine, beginWipe, endWipe, dispatchWipeDabs } from './painting/wipe-engine.js';
-import { pushSnapshot, undo, redo } from './painting/undo.js';
+import { pushSnapshot, undo, redo, destroyUndoSystem } from './painting/undo.js';
 
 // Surface texture
 import { initSurfaceGrainLut, updateSurfaceGrainParams, generateSurfaceGrainIfDirty } from './surface/surface-grain-lut.js';
@@ -262,6 +262,7 @@ export function initApp() {
   onResize((w, h) => {
     allocateAllTextures(w, h);
     resizeSurface(w, h);
+    destroyUndoSystem(); // old snapshots are wrong size
     markAllDirty();
     compositorBGDirty = true;
   });
