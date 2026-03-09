@@ -83,7 +83,7 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
   let uv = vec2f(f32(gid.x) + 0.5, f32(gid.y) + 0.5) / vec2f(f32(dims.x), f32(dims.y));
 
   // Dense fog suppression: kills all spatial variation by density ~0.8
-  let fog_suppress = smoothstep(0.4, 0.85, params.density);
+  let fog_suppress = smoothstep(0.2, 0.7, params.density);
 
   // Read previous density via sampler for drift advection
   let drift = vec2f(params.drift_x, params.drift_y) * params.drift_speed * globals.dt * (1.0 - fog_suppress);

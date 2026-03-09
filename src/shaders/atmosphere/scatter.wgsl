@@ -47,6 +47,14 @@ fn compute_sky(uv: vec2f, elevation: f32, density: f32, warmth: f32) -> vec3f {
   let horizon_base = mix(NIGHT_HORIZON, day_horizon, smoothstep(0.0, 0.7, elev_norm));
   let horizon = mix(horizon_base, GOLDEN_HORIZON, golden_t);
 
+  // Dusk compresses the gradient — less difference between zenith and horizon
+  let time_contrast = 0.4 + saturate(elevation * 2.0) * 0.6;
+  let compressed_zenith = mix(horizon, zenith, time_contrast);
+
+  // Horizon warmth fades at dusk
+  let horizon_warmth = saturate(elevation * 3.0 + 0.3);
+  let effective_horizon = mix(compressed_zenith, horizon, horizon_warmth);
+
   // Vertical gradient — v=0 bottom, v=1 top (matches horizon_y convention)
   let horizon_width = mix(0.35, 0.6, elev_norm);
   let v = 1.0 - uv.y; // flip: 0=bottom, 1=top
@@ -58,16 +66,16 @@ fn compute_sky(uv: vec2f, elevation: f32, density: f32, warmth: f32) -> vec3f {
     if (v <= h) {
       // Below horizon: dark ground up to horizon color
       let t = v / max(h, 0.01);
-      sky = mix(mix(horizon, zenith, 0.5) * 0.25, horizon, pow(t, 0.8));
+      sky = mix(mix(effective_horizon, compressed_zenith, 0.5) * 0.25, effective_horizon, pow(t, 0.8));
     } else {
       // Above horizon: horizon → zenith
       let t = (v - h) / max(1.0 - h, 0.01);
-      sky = mix(horizon, zenith, pow(t, 1.5 + (1.0 - horizon_width) * 2.0));
+      sky = mix(effective_horizon, compressed_zenith, pow(t, 1.5 + (1.0 - horizon_width) * 2.0));
     }
   } else {
     // Horizon off: simple vertical blend without horizon pivot
     let sky_factor = pow(v, 1.5 + elev_norm * 2.0);
-    sky = mix(horizon, zenith, sky_factor);
+    sky = mix(effective_horizon, compressed_zenith, sky_factor);
   }
 
   // Night mode: below-horizon darkening
@@ -78,7 +86,7 @@ fn compute_sky(uv: vec2f, elevation: f32, density: f32, warmth: f32) -> vec3f {
 
   // Dense atmosphere flattens the sky gradient toward uniform fog
   let temp_darkness = mix(0.35, 0.65, saturate(warmth * 0.5 + 0.5));
-  let fog_color = mix(zenith, horizon, 0.5) * temp_darkness;
+  let fog_color = mix(compressed_zenith, effective_horizon, 0.5) * temp_darkness;
   let gradient_strength = max(1.0 - pow(density, 1.5) * 0.9, 0.0);
   sky = mix(fog_color, sky, gradient_strength);
 
