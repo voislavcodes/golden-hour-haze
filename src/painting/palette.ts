@@ -1,5 +1,7 @@
-// CPU-side Kubelka-Munk mixing + tonal column sampling
-// Mirrors src/shaders/common/kubelka-munk.wgsl km_mix
+// Palette + tonal column sampling
+// Each palette swatch is a tonal column: scroll to set value, brush receives K-M coefficients
+
+import { sceneStore } from '../state/scene-state.js';
 
 interface RGB {
   r: number;
@@ -46,16 +48,14 @@ export function kmMixCPU(c1: RGB, c2: RGB, t: number): RGB {
 
 const WARM_WHITE: RGB = { r: 0.95, g: 0.93, b: 0.88 };
 
-/** Rich dark version of a hue — boosted saturation, reduced lightness */
+/** Rich dark version of a hue */
 function richDark(base: RGB): RGB {
-  // RGB → HSL
   const max = Math.max(base.r, base.g, base.b);
   const min = Math.min(base.r, base.g, base.b);
   const l = (max + min) / 2;
   const d = max - min;
 
   if (d < 0.001) {
-    // Near-achromatic: just darken
     const dark = clamp(l * 0.3, 0.08, 1);
     return { r: dark, g: dark, b: dark };
   }
@@ -68,11 +68,9 @@ function richDark(base: RGB): RGB {
   else h = (base.r - base.g) / d + 4;
   h /= 6;
 
-  // Boost saturation ~30%, reduce lightness to ~30% of original
   const newS = clamp(s * 1.3, 0, 1);
   const newL = clamp(l * 0.3, 0.08, 0.4);
 
-  // HSL → RGB
   const c = (1 - Math.abs(2 * newL - 1)) * newS;
   const x = c * (1 - Math.abs((h * 6) % 2 - 1));
   const m = newL - c / 2;
@@ -103,4 +101,31 @@ export function sampleTonalColumn(base: RGB, value: number): RGB {
     return kmMixCPU(WARM_WHITE, base, v * 2);
   }
   return kmMixCPU(base, richDark(base), (v - 0.5) * 2);
+}
+
+/**
+ * Convert an RGB color to K-M coefficients (simplified single-constant model)
+ * Returns K (absorption) and S (scattering) as single floats for the simplified model
+ */
+export function rgbToKS(color: RGB): { K: number; S: number } {
+  // Average reflectance
+  const R = (color.r * color.r + color.g * color.g + color.b * color.b) / 3;
+  const clamped = Math.max(R, 0.001);
+  const K = (1 - clamped) * (1 - clamped) / (2 * clamped);
+  const S = 1.0; // single-constant K-M: S=1
+  return { K, S };
+}
+
+/**
+ * Get active palette K-M coefficients for the brush shader.
+ * Reads scene state, samples tonal column, converts to K/S.
+ */
+export function getActiveKS(): { K: number; S: number; color: RGB } {
+  const scene = sceneStore.get();
+  const { palette } = scene;
+  const baseColor = palette.colors[palette.activeIndex];
+  const value = palette.tonalValues[palette.activeIndex];
+  const color = sampleTonalColumn(baseColor, value);
+  const ks = rgbToKS(color);
+  return { ...ks, color };
 }

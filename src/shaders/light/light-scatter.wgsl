@@ -1,5 +1,5 @@
-// Gaussian core + density-modulated bloom light model
-// No ray march — single density texel read per pixel
+// V2 Light wells — Gaussian core + density-modulated bloom
+// Occlusion reads accumulation surface weight (not forms alpha)
 
 struct Globals {
   resolution: vec2f,
@@ -40,11 +40,9 @@ struct LightParams {
 @group(1) @binding(0) var<uniform> params: LightParams;
 @group(1) @binding(1) var<storage, read> lights: array<LightData>;
 @group(2) @binding(0) var density_tex: texture_2d<f32>;
-@group(2) @binding(1) var depth_tex: texture_2d<f32>;
-@group(2) @binding(2) var forms_tex: texture_2d<f32>;
-@group(2) @binding(3) var output_tex: texture_storage_2d<rgba16float, write>;
+@group(2) @binding(1) var accum_tex: texture_2d<f32>;
+@group(2) @binding(2) var output_tex: texture_storage_2d<rgba16float, write>;
 
-// Elliptical distance: transform point by inverse rotation + aspect ratio
 fn elliptical_dist(p: vec2f, center: vec2f, aspect: f32, rot: f32) -> f32 {
   let d = p - center;
   let cr = cos(-rot);
@@ -60,12 +58,16 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
   if (gid.x >= dims.x || gid.y >= dims.y) { return; }
 
   let uv = vec2f(f32(gid.x) + 0.5, f32(gid.y) + 0.5) / vec2f(f32(dims.x), f32(dims.y));
-  // Density may be half-res — map UV to density texture dimensions
+
   let density_dims = vec2f(textureDimensions(density_tex));
   let density_coord = vec2i(uv * density_dims);
   let density = textureLoad(density_tex, density_coord, 0).r;
-  let pixel_depth = textureLoad(depth_tex, vec2i(gid.xy), 0).r;
-  let form_alpha = textureLoad(forms_tex, vec2i(gid.xy), 0).a;
+
+  // V2: Read paint weight from accumulation surface for occlusion
+  let accum_dims = textureDimensions(accum_tex);
+  let accum_coord = vec2i(uv * vec2f(accum_dims));
+  let paint_weight = textureLoad(accum_tex, accum_coord, 0).b;
+  let paint_opacity = clamp(paint_weight * 2.0, 0.0, 1.0);
 
   var total_light = vec3f(0.0);
   var accumulated_brightness = 0.0;
@@ -75,28 +77,23 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
     let light_pos = vec2f(light.x, light.y);
     let light_color = vec3f(light.color_r, light.color_g, light.color_b);
 
-    // Elliptical distance from pixel to light center
     let edist = elliptical_dist(uv, light_pos, light.aspect_ratio, light.rotation);
 
-    // Gaussian core — tight bright center
     let core_sigma = max(light.core_radius, 0.001);
     let core = exp(-edist * edist / (2.0 * core_sigma * core_sigma));
 
-    // Gaussian bloom — wider soft glow, widened by density
     let density_widen = 1.0 + density * 2.0;
     let bloom_sigma = max(light.bloom_radius * density_widen, 0.001);
     let bloom = exp(-edist * edist / (2.0 * bloom_sigma * bloom_sigma));
 
-    // Form occlusion: core mostly blocked, bloom wraps around
-    let core_occlusion = 1.0 - form_alpha * 0.8;
-    let bloom_occlusion = 1.0 - form_alpha * 0.3;
+    // V2: Occlusion from painting surface weight
+    let core_occlusion = 1.0 - paint_opacity * 0.8;
+    let bloom_occlusion = 1.0 - paint_opacity * 0.3;
 
-    // Combine core and bloom
     let core_contrib = core * core_occlusion;
     let bloom_contrib = bloom * bloom_occlusion * 0.4;
     let combined = (core_contrib + bloom_contrib) * light.intensity;
 
-    // Diminishing returns: each additional light adds less
     let diminish = 1.0 / (1.0 + accumulated_brightness * 0.5);
     total_light += light_color * combined * diminish;
     accumulated_brightness += combined;

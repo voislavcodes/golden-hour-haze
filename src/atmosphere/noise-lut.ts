@@ -2,7 +2,7 @@
 // Replaces per-frame FBM in density + per-frame hash noise in grain
 
 import { getGPU } from '../gpu/context.js';
-import { createComputePipeline } from '../gpu/pipeline-manager.js';
+import { createComputePipeline } from '../gpu/pipeline-cache.js';
 import noiseLutShader from '../shaders/atmosphere/noise-lut-gen.wgsl';
 import grainLutShader from '../shaders/atmosphere/grain-lut-gen.wgsl';
 
@@ -33,7 +33,6 @@ let grainLutDirty = true;
 export function initNoiseLut() {
   const { device } = getGPU();
 
-  // Noise LUT pipeline
   noiseLutLayout = device.createBindGroupLayout({
     label: 'noise-lut-layout',
     entries: [
@@ -64,7 +63,6 @@ export function initNoiseLut() {
     usage: GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING,
   });
 
-  // Grain LUT pipeline
   grainLutLayout = device.createBindGroupLayout({
     label: 'grain-lut-layout',
     entries: [
@@ -95,7 +93,6 @@ export function initNoiseLut() {
     usage: GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING,
   });
 
-  // Repeat-mode sampler for LUT sampling
   noiseLutSampler = device.createSampler({
     label: 'noise-lut-sampler',
     magFilter: 'linear',

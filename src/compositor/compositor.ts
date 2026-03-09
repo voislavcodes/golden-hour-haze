@@ -1,11 +1,15 @@
+// V2 Compositor — reads sky, paint surface, lights, outputs final frame
+// Adapted from V1 compositor.ts — V2 binds accum_tex instead of forms_tex
+
 import { getGPU } from '../gpu/context.js';
 import { allocTexture, allocPingPong } from '../gpu/texture-pool.js';
-import { createRenderPipeline } from '../gpu/pipeline-manager.js';
+import { createRenderPipeline } from '../gpu/pipeline-cache.js';
 import { getGlobalBindGroupLayout } from '../gpu/bind-groups.js';
+import { getReadTexture } from '../painting/surface.js';
+import { getBloomTexture } from '../light/light-layer.js';
+import { getGrainLutTexture, getNoiseLutSampler } from '../atmosphere/noise-lut.js';
+import type { CompositorParams } from '../state/scene-state.js';
 import compositeShader from '../shaders/composite/composite.wgsl';
-import { getBloomTexture } from './light-layer.js';
-import { getGrainLutTexture, getNoiseLutSampler } from './noise-lut.js';
-import type { CompositorParams } from './layer-types.js';
 
 let pipeline: GPURenderPipeline;
 let textureLayout: GPUBindGroupLayout;
@@ -25,18 +29,18 @@ export function initCompositor() {
     minFilter: 'linear',
   });
 
+  // V2 texture layout: density, scatter, grain_lut, accum, light, bloom, sampler, grain_sampler
   textureLayout = device.createBindGroupLayout({
     label: 'composite-tex-layout',
     entries: [
-      { binding: 0, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: 'unfilterable-float' } }, // depth
-      { binding: 1, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: 'float' } },  // density
-      { binding: 2, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: 'float' } },  // scatter
-      { binding: 3, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: 'float' } },  // grain LUT (was grain compute texture)
-      { binding: 4, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: 'float' } },  // forms
-      { binding: 5, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: 'float' } },  // light
-      { binding: 6, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: 'float' } },  // bloom
-      { binding: 7, visibility: GPUShaderStage.FRAGMENT, sampler: { type: 'filtering' } },
-      { binding: 8, visibility: GPUShaderStage.FRAGMENT, sampler: { type: 'filtering' } },     // grain repeat sampler
+      { binding: 0, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: 'float' } },  // density
+      { binding: 1, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: 'float' } },  // scatter
+      { binding: 2, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: 'float' } },  // grain LUT
+      { binding: 3, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: 'float' } },  // accum (paint surface)
+      { binding: 4, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: 'float' } },  // light
+      { binding: 5, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: 'float' } },  // bloom
+      { binding: 6, visibility: GPUShaderStage.FRAGMENT, sampler: { type: 'filtering' } },     // tex sampler
+      { binding: 7, visibility: GPUShaderStage.FRAGMENT, sampler: { type: 'filtering' } },     // grain repeat sampler
     ],
   });
 
@@ -49,7 +53,7 @@ export function initCompositor() {
 
   compositorParamBuffer = device.createBuffer({
     label: 'compositor-params',
-    size: 48, // 12 floats
+    size: 48,
     usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
   });
 
@@ -81,17 +85,12 @@ export function updateCompositorTextures(width: number, height: number) {
   if (width === currentWidth && height === currentHeight) return;
   currentWidth = width;
   currentHeight = height;
-
   rebuildCompositorBindGroup();
 }
 
 export function rebuildCompositorBindGroup() {
   const { device } = getGPU();
 
-  const depthTex = allocTexture('depth', 'r32float', currentWidth, currentHeight,
-    GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING);
-
-  // Density is half-res — allocPingPong returns existing at half dimensions
   const densityW = Math.ceil(currentWidth / 2);
   const densityH = Math.ceil(currentHeight / 2);
   const densityPP = allocPingPong('atmosphere-density', 'rgba16float', densityW, densityH);
@@ -99,12 +98,14 @@ export function rebuildCompositorBindGroup() {
   const scatterTex = allocTexture('scatter', 'rgba16float', currentWidth, currentHeight,
     GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.RENDER_ATTACHMENT);
 
-  const formsTex = allocTexture('forms', 'rgba16float', currentWidth, currentHeight,
-    GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING);
+  const grainLut = getGrainLutTexture();
+  const grainSampler = getNoiseLutSampler();
+
+  const accumTex = getReadTexture();
+
   const lightTex = allocTexture('light-scatter', 'rgba16float', currentWidth, currentHeight,
     GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.RENDER_ATTACHMENT);
 
-  // Bloom may not exist yet — use a fallback 1x1 texture
   let bloomTex = getBloomTexture();
   if (!bloomTex) {
     bloomTex = device.createTexture({
@@ -115,24 +116,18 @@ export function rebuildCompositorBindGroup() {
     });
   }
 
-  // Grain LUT texture (pre-baked tiling grain)
-  const grainLut = getGrainLutTexture();
-  // Repeat sampler for grain LUT
-  const grainSampler = getNoiseLutSampler();
-
   textureBG = device.createBindGroup({
     label: 'composite-tex-bg',
     layout: textureLayout,
     entries: [
-      { binding: 0, resource: depthTex.createView() },
-      { binding: 1, resource: densityPP.readView },
-      { binding: 2, resource: scatterTex.createView() },
-      { binding: 3, resource: grainLut.createView() },
-      { binding: 4, resource: formsTex.createView() },
-      { binding: 5, resource: lightTex.createView() },
-      { binding: 6, resource: bloomTex.createView() },
-      { binding: 7, resource: sampler },
-      { binding: 8, resource: grainSampler },
+      { binding: 0, resource: densityPP.readView },
+      { binding: 1, resource: scatterTex.createView() },
+      { binding: 2, resource: grainLut.createView() },
+      { binding: 3, resource: accumTex.createView() },
+      { binding: 4, resource: lightTex.createView() },
+      { binding: 5, resource: bloomTex.createView() },
+      { binding: 6, resource: sampler },
+      { binding: 7, resource: grainSampler },
     ],
   });
 }

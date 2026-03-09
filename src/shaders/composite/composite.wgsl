@@ -1,5 +1,5 @@
-// Final compositor — samples all layer outputs, depth-aware blending, ACES tonemapping
-// Grain sampled directly from pre-baked LUT (no separate grain pass)
+// V2 Final compositor — sky + paint surface + lights + full pipeline
+// 11-step: sky -> paint -> lights -> conformance -> desat -> bleed -> grade -> grain -> tonemap -> sRGB
 
 struct Globals {
   resolution: vec2f,
@@ -26,15 +26,14 @@ struct CompositorParams {
 };
 
 @group(0) @binding(0) var<uniform> globals: Globals;
-@group(1) @binding(0) var depth_tex: texture_2d<f32>;
-@group(1) @binding(1) var density_tex: texture_2d<f32>;
-@group(1) @binding(2) var scatter_tex: texture_2d<f32>;
-@group(1) @binding(3) var grain_lut: texture_2d<f32>;
-@group(1) @binding(4) var forms_tex: texture_2d<f32>;
-@group(1) @binding(5) var light_tex: texture_2d<f32>;
-@group(1) @binding(6) var bloom_tex: texture_2d<f32>;
-@group(1) @binding(7) var tex_sampler: sampler;
-@group(1) @binding(8) var grain_sampler: sampler;
+@group(1) @binding(0) var density_tex: texture_2d<f32>;
+@group(1) @binding(1) var scatter_tex: texture_2d<f32>;
+@group(1) @binding(2) var grain_lut: texture_2d<f32>;
+@group(1) @binding(3) var accum_tex: texture_2d<f32>;
+@group(1) @binding(4) var light_tex: texture_2d<f32>;
+@group(1) @binding(5) var bloom_tex: texture_2d<f32>;
+@group(1) @binding(6) var tex_sampler: sampler;
+@group(1) @binding(7) var grain_sampler: sampler;
 @group(2) @binding(0) var<uniform> comp_params: CompositorParams;
 
 struct VertexOutput {
@@ -52,14 +51,10 @@ fn vs_main(@builtin(vertex_index) vi: u32) -> VertexOutput {
   return out;
 }
 
-// ACES filmic tonemapping
 fn aces_tonemap(x: vec3f) -> vec3f {
-  let a = 2.51;
-  let b = 0.03;
-  let c = 2.43;
-  let d = 0.59;
-  let e = 0.14;
-  return clamp((x * (a * x + b)) / (x * (c * x + d) + e), vec3f(0.0), vec3f(1.0));
+  let a = x * (x * 2.51 + 0.03);
+  let b = x * (x * 2.43 + 0.59) + 0.14;
+  return clamp(a / b, vec3f(0.0), vec3f(1.0));
 }
 
 fn linear_to_srgb(c: vec3f) -> vec3f {
@@ -69,61 +64,58 @@ fn linear_to_srgb(c: vec3f) -> vec3f {
   return mix(high, low, cutoff);
 }
 
+// Convert K-M accumulation (K, S) back to reflectance then RGB
+fn km_to_rgb(K: f32, S: f32) -> vec3f {
+  let ks = K / max(S, 0.001);
+  let R = 1.0 + ks - sqrt(ks * ks + 2.0 * ks);
+  let reflectance = clamp(R, 0.0, 1.0);
+  return vec3f(sqrt(reflectance));
+}
+
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4f {
   let uv = in.uv;
 
-  // Sample all layers
-  let depth = textureSample(depth_tex, tex_sampler, uv).r;
-  let density_data = textureSample(density_tex, tex_sampler, uv);
-  let forms = textureLoad(forms_tex, vec2i(uv * vec2f(textureDimensions(forms_tex))), 0);
-  let light = textureSample(light_tex, tex_sampler, uv).rgb;
-  let bloom = textureSample(bloom_tex, tex_sampler, uv).rgb;
-
-  let density = density_data.r;
-
-  // Sky from scatter texture (sky gradient + atmospheric scatter baked together)
+  // 1. Sky — the base layer
   var sky = textureSample(scatter_tex, tex_sampler, uv).rgb;
 
-  // Color-in-shadow: darken forms with their own hue, not neutral gray
-  let shadow_depth = density * depth;
-  let shadow_amount = smoothstep(0.0, 0.8, shadow_depth);
-  let form_hue_shadow = forms.rgb * vec3f(0.3, 0.25, 0.35);
-  let shadowed = mix(forms.rgb, form_hue_shadow, shadow_amount * comp_params.shadow_chroma);
+  // 2. Paint surface — K-M pigment to RGB
+  let accum = textureSample(accum_tex, tex_sampler, uv);
+  let paint_weight = accum.b;
+  let paint_rgb = km_to_rgb(accum.r, accum.g);
 
-  // Composite forms over sky with depth-aware atmospheric opacity
-  let atmosphere_fog = vec3f(0.60, 0.53, 0.56) * density * 0.2;
-  var form_color = shadowed + atmosphere_fog * (1.0 - shadow_amount);
-
-  // --- Atmospheric Brightness Conformance ---
-  let atmo_lum = dot(sky, vec3f(0.2126, 0.7152, 0.0722));
+  // 3. Lights
+  let light = textureSample(light_tex, tex_sampler, uv).rgb;
+  let bloom = textureSample(bloom_tex, tex_sampler, uv).rgb;
   let light_boost = dot(light, vec3f(0.2126, 0.7152, 0.0722));
 
-  // (a) Value clamp: atmosphere is the brightness ceiling, light wells raise it
-  let form_lum = dot(form_color, vec3f(0.2126, 0.7152, 0.0722));
-  let ceiling = atmo_lum + light_boost * 1.5;
-  form_color *= min(1.0, ceiling / max(form_lum, 0.001));
+  // 4. Blend paint over sky based on weight
+  let paint_opacity = clamp(paint_weight * 2.0, 0.0, 1.0);
+  var color = mix(sky, paint_rgb, paint_opacity);
 
-  // (b) Desaturation: darkness kills chroma, light wells resist
-  let darkness = 1.0 - saturate(atmo_lum * 2.0);
-  let effective_darkness = darkness * (1.0 - saturate(light_boost * 2.0));
-  let dimmed_lum = dot(form_color, vec3f(0.2126, 0.7152, 0.0722));
-  form_color = mix(form_color, vec3f(dimmed_lum), effective_darkness * 0.7);
-
-  var color = mix(sky, form_color, forms.a);
-
-  // Add light scatter and bloom
+  // 5. Add lights (additive)
   color += light * 0.5;
   color += bloom * 0.3;
 
-  // Grain overlay — sampled directly from pre-baked LUT with time offset for animation
-  let grain_depth_scale = 1.0 - depth * (1.0 - comp_params.grain_depth);
-  let grain_uv = uv * comp_params.grain_scale + vec2f(globals.time * 0.37, globals.time * 0.53);
-  let grain = textureSample(grain_lut, grain_sampler, grain_uv).r;
-  let grain_amount = grain * comp_params.grain_intensity * grain_depth_scale * 0.08;
-  color += vec3f(grain_amount - comp_params.grain_intensity * grain_depth_scale * 0.04);
+  // 6. Atmospheric brightness conformance
+  let atmo_lum = dot(sky, vec3f(0.2126, 0.7152, 0.0722));
+  let form_lum = dot(color, vec3f(0.2126, 0.7152, 0.0722));
+  let ceiling = atmo_lum + light_boost * 1.5;
+  color *= min(1.0, ceiling / max(form_lum, 0.001));
 
-  // Anchor chroma focus point
+  // 7. Desaturation — darkness + density kill chroma
+  let density_data = textureSample(density_tex, tex_sampler, uv);
+  let density = density_data.r;
+  let darkness = 1.0 - clamp(atmo_lum * 2.0, 0.0, 1.0);
+  let desat = max(darkness * 0.7, density * 0.35) * (1.0 - clamp(light_boost * 2.0, 0.0, 1.0));
+  let grey = dot(color, vec3f(0.2126, 0.7152, 0.0722));
+  color = mix(color, vec3f(grey), desat);
+
+  // 8. Color bleed — atmosphere tints paint
+  let density_bleed = density * 0.35 * (1.0 - clamp(light_boost, 0.0, 1.0));
+  color = mix(color, sky * (grey / max(atmo_lum, 0.01)), density_bleed);
+
+  // 9. Anchor chroma focus point
   let anchor_pos = vec2f(comp_params.anchor_x, comp_params.anchor_y);
   let dist_to_anchor = length(uv - anchor_pos);
   let anchor_influence = 1.0 - smoothstep(0.0, comp_params.anchor_falloff, dist_to_anchor);
@@ -131,15 +123,19 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4f {
   let sat_scale = mix(1.0 - comp_params.anchor_boost * 0.4, 1.0 + comp_params.anchor_boost * 0.3, anchor_influence);
   color = mix(vec3f(gray_for_anchor), color, sat_scale);
 
-  // Tonemapping
-  color = aces_tonemap(color);
-
-  // Sun-driven color grade (after tonemap, before sRGB)
+  // 10. TIME color grade
   let grade = mix(vec3f(0.90, 0.88, 1.08), vec3f(1.06, 0.93, 0.88),
                   comp_params.sun_grade_warmth * 0.5 + 0.5);
   color *= mix(vec3f(1.0), grade, comp_params.sun_grade_intensity);
 
-  // sRGB output
+  // 11. Grain
+  let grain_uv = uv * comp_params.grain_scale + vec2f(globals.time * 0.37, globals.time * 0.53);
+  let grain = textureSample(grain_lut, grain_sampler, grain_uv).r;
+  let grain_amount = grain * comp_params.grain_intensity * 0.08;
+  color += vec3f(grain_amount - comp_params.grain_intensity * 0.04);
+
+  // 12. ACES tonemap + sRGB
+  color = aces_tonemap(color);
   color = linear_to_srgb(color);
 
   // Grayscale preview toggle

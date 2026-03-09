@@ -1,11 +1,14 @@
+// V2 Atmosphere — density compute (half-res) + scatter render (full-res)
+// Adapted from V1 atmosphere-layer.ts
+
 import { getGPU } from '../gpu/context.js';
 import { allocTexture, allocPingPong } from '../gpu/texture-pool.js';
-import { createComputePipeline, createRenderPipeline } from '../gpu/pipeline-manager.js';
+import { createComputePipeline, createRenderPipeline } from '../gpu/pipeline-cache.js';
 import { getGlobalBindGroupLayout } from '../gpu/bind-groups.js';
 import densityShader from '../shaders/atmosphere/density.wgsl';
 import scatterShader from '../shaders/atmosphere/scatter.wgsl';
 import { getNoiseLutTexture, getNoiseLutSampler } from './noise-lut.js';
-import type { AtmosphereParams } from './layer-types.js';
+import type { AtmosphereParams } from '../state/scene-state.js';
 
 let densityPipeline: GPUComputePipeline;
 let scatterPipeline: GPURenderPipeline;
@@ -27,11 +30,13 @@ let scatterTextureBG: GPUBindGroup;
 let sampler: GPUSampler;
 let currentWidth = 0;
 let currentHeight = 0;
-// Half-res density dimensions
 let densityWidth = 0;
 let densityHeight = 0;
 
-export function initAtmosphereLayer() {
+// V2: Simple depth texture (uniform gradient based on horizon)
+let depthTexture: GPUTexture;
+
+export function initAtmosphere() {
   const { device } = getGPU();
 
   sampler = device.createSampler({
@@ -42,7 +47,7 @@ export function initAtmosphereLayer() {
     addressModeV: 'clamp-to-edge',
   });
 
-  // --- Density compute ---
+  // Density compute
   atmosphereParamLayout = device.createBindGroupLayout({
     label: 'atmo-param-layout',
     entries: [
@@ -57,8 +62,8 @@ export function initAtmosphereLayer() {
       { binding: 1, visibility: GPUShaderStage.COMPUTE, texture: { sampleType: 'unfilterable-float' } },
       { binding: 2, visibility: GPUShaderStage.COMPUTE, sampler: { type: 'filtering' } },
       { binding: 3, visibility: GPUShaderStage.COMPUTE, storageTexture: { access: 'write-only', format: 'rgba16float' } },
-      { binding: 4, visibility: GPUShaderStage.COMPUTE, texture: { sampleType: 'float' } },       // noise LUT
-      { binding: 5, visibility: GPUShaderStage.COMPUTE, sampler: { type: 'filtering' } },          // noise repeat sampler
+      { binding: 4, visibility: GPUShaderStage.COMPUTE, texture: { sampleType: 'float' } },
+      { binding: 5, visibility: GPUShaderStage.COMPUTE, sampler: { type: 'filtering' } },
     ],
   });
 
@@ -85,7 +90,7 @@ export function initAtmosphereLayer() {
     entries: [{ binding: 0, resource: { buffer: atmosphereParamBuffer } }],
   });
 
-  // --- Scatter render ---
+  // Scatter render
   scatterParamLayout = device.createBindGroupLayout({
     label: 'scatter-param-layout',
     entries: [
@@ -130,62 +135,61 @@ export function initAtmosphereLayer() {
   });
 }
 
+function createDepthTexture(width: number, height: number) {
+  const { device } = getGPU();
+  if (depthTexture) depthTexture.destroy();
+  depthTexture = device.createTexture({
+    label: 'depth-simple',
+    size: { width, height },
+    format: 'r32float',
+    usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.COPY_DST,
+  });
+
+  // Fill with simple vertical gradient (bottom=near, top=far)
+  const data = new Float32Array(width * height);
+  for (let y = 0; y < height; y++) {
+    const depth = y / height; // 0=top(far), 1=bottom(near) → we want v for depth
+    for (let x = 0; x < width; x++) {
+      data[y * width + x] = depth;
+    }
+  }
+  device.queue.writeTexture(
+    { texture: depthTexture },
+    data,
+    { bytesPerRow: width * 4 },
+    { width, height }
+  );
+}
+
 export function updateAtmosphereTextures(width: number, height: number) {
   if (width === currentWidth && height === currentHeight) return;
   currentWidth = width;
   currentHeight = height;
 
-  // Half-res density
   densityWidth = Math.ceil(width / 2);
   densityHeight = Math.ceil(height / 2);
 
-  const { device } = getGPU();
+  createDepthTexture(width, height);
 
-  const pp = allocPingPong('atmosphere-density', 'rgba16float', densityWidth, densityHeight,
+  allocPingPong('atmosphere-density', 'rgba16float', densityWidth, densityHeight,
     GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.RENDER_ATTACHMENT);
-
-  const depthTex = allocTexture('depth', 'r32float', width, height,
-    GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING);
 
   allocTexture('scatter', 'rgba16float', width, height,
     GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.RENDER_ATTACHMENT);
 
-  densityTextureBG = device.createBindGroup({
-    label: 'density-tex-bg',
-    layout: densityTextureLayout,
-    entries: [
-      { binding: 0, resource: pp.readView },
-      { binding: 1, resource: depthTex.createView() },
-      { binding: 2, resource: sampler },
-      { binding: 3, resource: pp.writeView },
-      { binding: 4, resource: getNoiseLutTexture().createView() },
-      { binding: 5, resource: getNoiseLutSampler() },
-    ],
-  });
-
-  scatterTextureBG = device.createBindGroup({
-    label: 'scatter-tex-bg',
-    layout: scatterTextureLayout,
-    entries: [
-      { binding: 0, resource: pp.readView },
-      { binding: 1, resource: depthTex.createView() },
-      { binding: 2, resource: sampler },
-    ],
-  });
+  rebuildDensityBindGroup();
 }
 
-export function rebuildDensityBindGroup() {
+function rebuildDensityBindGroup() {
   const { device } = getGPU();
   const pp = allocPingPong('atmosphere-density', 'rgba16float', densityWidth, densityHeight);
-  const depthTex = allocTexture('depth', 'r32float', currentWidth, currentHeight,
-    GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING);
 
   densityTextureBG = device.createBindGroup({
     label: 'density-tex-bg',
     layout: densityTextureLayout,
     entries: [
       { binding: 0, resource: pp.readView },
-      { binding: 1, resource: depthTex.createView() },
+      { binding: 1, resource: depthTexture.createView() },
       { binding: 2, resource: sampler },
       { binding: 3, resource: pp.writeView },
       { binding: 4, resource: getNoiseLutTexture().createView() },
@@ -193,13 +197,12 @@ export function rebuildDensityBindGroup() {
     ],
   });
 
-  // Update scatter to read from new ping texture
   scatterTextureBG = device.createBindGroup({
     label: 'scatter-tex-bg',
     layout: scatterTextureLayout,
     entries: [
       { binding: 0, resource: pp.readView },
-      { binding: 1, resource: depthTex.createView() },
+      { binding: 1, resource: depthTexture.createView() },
       { binding: 2, resource: sampler },
     ],
   });
@@ -233,7 +236,6 @@ export function dispatchDensity(encoder: GPUCommandEncoder, globalBG: GPUBindGro
   densityPass.dispatchWorkgroups(Math.ceil(densityWidth / 8), Math.ceil(densityHeight / 8));
   densityPass.end();
 
-  // Swap ping-pong after density write
   const pp = allocPingPong('atmosphere-density', 'rgba16float', densityWidth, densityHeight);
   pp.swap();
   rebuildDensityBindGroup();
@@ -260,8 +262,5 @@ export function dispatchScatter(encoder: GPUCommandEncoder, globalBG: GPUBindGro
   scatterPass.end();
 }
 
-/** Legacy combined dispatch */
-export function dispatchAtmosphere(encoder: GPUCommandEncoder, globalBG: GPUBindGroup) {
-  dispatchDensity(encoder, globalBG);
-  dispatchScatter(encoder, globalBG);
-}
+export function getDensityWidth(): number { return densityWidth; }
+export function getDensityHeight(): number { return densityHeight; }

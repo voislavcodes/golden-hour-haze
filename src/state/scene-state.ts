@@ -1,37 +1,100 @@
 import { createStore } from './store.js';
-import type { AtmosphereParams, DepthFieldParams, FormDef, LightDef, PaletteState, TonalMapParams, AnchorPoint } from '../layers/layer-types.js';
 
-export interface SceneState {
-  depth: DepthFieldParams;
-  atmosphere: AtmosphereParams;
-  forms: FormDef[];
-  lights: LightDef[];
-  palette: PaletteState;
-  sunAngle: number; // radians, drives time-of-day
-  sunElevation: number;
-  horizonY: number; // 0-1, vertical horizon position (0=top, 1=bottom)
-  echo: number; // 0-1, stroke coherence (controls form opacity/softness)
-  tonalMap: TonalMapParams;
-  anchor: AnchorPoint | null;
-  velvet: number; // 0-1, surface smoothness
-  tonalSort: boolean; // sort forms dark-to-light for K-M mixing
-  shadowChroma: number; // 0-1, color-in-shadow intensity
-  baseOpacity: number; // 0.1-1.0, glazing base opacity per stroke (default 0.5)
-  falloff: number; // 0.5-0.9, diminishing returns per accumulated layer (default 0.7)
-  orbPresets: (AtmosphereParams | null)[];
+// --- V2 Type Definitions ---
+
+export interface AtmosphereParams {
+  density: number;       // 0-1
+  warmth: number;        // -1 to 1 (cool to warm)
+  grain: number;         // 0-1 grain intensity
+  scatter: number;       // 0-1 scatter amount
+  driftX: number;        // drift field direction
+  driftY: number;
+  driftSpeed: number;
+  turbulence: number;    // 0-1
+  grainAngle: number;    // radians, rotates grain texture
+  grainDepth: number;    // 0-1, grain persistence with depth
 }
 
-/** Derive sun elevation from dial angle. Shaped sine: golden hour → low, noon → high, night → negative */
+export interface LightDef {
+  x: number;             // 0-1
+  y: number;             // 0-1
+  coreRadius: number;    // default 0.02
+  bloomRadius: number;   // default 0.08
+  intensity: number;     // 0.05-1.0, default 0.6
+  aspectRatio: number;   // 1.0=circle, >1=tall, <1=wide
+  rotation: number;      // radians
+  paletteSlot: number;   // -1=auto from TIME, 0-4=locked
+  colorR: number;        // resolved color (computed before GPU upload)
+  colorG: number;
+  colorB: number;
+  depth: number;         // 0.5 default
+}
+
+export interface AnchorPoint {
+  x: number;
+  y: number;
+  chromaBoost: number;
+  muteFalloff: number;
+}
+
+export interface PaletteColor {
+  r: number;
+  g: number;
+  b: number;
+  a: number;
+}
+
+export interface PaletteState {
+  colors: PaletteColor[];
+  activeIndex: number;
+  tonalValues: number[];  // per-swatch value, 0=light 1=dark, default 0.5
+}
+
+export interface CompositorParams {
+  shadowChroma: number;
+  grayscale: number;
+  anchorX: number;
+  anchorY: number;
+  anchorBoost: number;
+  anchorFalloff: number;
+  sunGradeWarmth: number;
+  sunGradeIntensity: number;
+  grainIntensity?: number;
+  grainAngle?: number;
+  grainDepth?: number;
+  grainScale?: number;
+}
+
+export const MAX_LIGHTS = 16;
+
+// --- V2 Scene State ---
+
+export interface SceneState {
+  sunAngle: number;
+  sunElevation: number;
+  atmosphere: AtmosphereParams;
+  horizonY: number;
+  palette: PaletteState;
+  lights: LightDef[];
+  velvet: number;       // 0-1, brush edge softness
+  echo: number;         // 0-1, surface color pickup
+  baseOpacity: number;  // 0.1-1.0, default 0.5
+  falloff: number;      // 0.5-0.9, diminishing returns per layer (default 0.7)
+  anchor: AnchorPoint | null;
+  shadowChroma: number; // 0-1, color-in-shadow intensity
+}
+
+/** Derive sun elevation from dial angle */
 export function sunElevationFromAngle(angle: number): number {
   return Math.sin(angle - Math.PI / 2) * 0.35 + 0.25;
 }
 
-/** Compute golden hour factor from sun elevation (0 at noon, 1 at golden hour, clamped for night) */
+/** Golden hour factor: 0 at noon, 1 at golden hour */
 export function goldenFactor(sunElevation: number): number {
   return Math.max(0, 1.0 - Math.min(1.0, Math.max(0, sunElevation) * 2.5));
 }
 
-/** Derive auto light color from TIME (sun elevation). Golden → warm amber, blue hour → cool blue. */
+/** Auto light color from TIME (sun elevation) */
 export function autoColorFromTime(sunElevation: number): { r: number; g: number; b: number } {
   const gf = goldenFactor(sunElevation);
   return {
@@ -54,14 +117,6 @@ const defaultPalette: PaletteState = {
 };
 
 export const sceneStore = createStore<SceneState>({
-  depth: {
-    nearPlane: 0.0,
-    farPlane: 1.0,
-    noiseScale: 2.0,
-    noiseStrength: 0.3,
-    controlPoints: new Float32Array(32), // 16 xy pairs
-    controlCount: 0,
-  },
   atmosphere: {
     density: 0.5,
     warmth: 0.3,
@@ -74,19 +129,15 @@ export const sceneStore = createStore<SceneState>({
     grainAngle: 0,
     grainDepth: 0.5,
   },
-  forms: [],
   lights: [],
   palette: defaultPalette,
-  sunAngle: 1.28, // ~golden hour angle
+  sunAngle: 1.28,
   sunElevation: sunElevationFromAngle(1.28),
   horizonY: 0.5,
-  echo: 0.5,
-  tonalMap: { enabled: false, valueRange: 0.8, keyValue: 0.5, contrast: 0.6 },
+  echo: 0.0,
   anchor: null,
-  velvet: 0.6,
-  tonalSort: true,
+  velvet: 0.5,
   shadowChroma: 0.4,
   baseOpacity: 0.5,
   falloff: 0.7,
-  orbPresets: [null, null, null, null],
 });

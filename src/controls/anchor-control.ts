@@ -3,7 +3,7 @@ import { customElement, state } from 'lit/decorators.js';
 import { BaseControl } from './base-control.js';
 import { sceneStore } from '../state/scene-state.js';
 import { uiStore } from '../state/ui-state.js';
-import type { AnchorPoint } from '../layers/layer-types.js';
+import type { AnchorPoint } from '../state/scene-state.js';
 
 @customElement('ghz-anchor-control')
 export class AnchorControl extends BaseControl {

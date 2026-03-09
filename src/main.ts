@@ -2,7 +2,6 @@ import { initGPU, showFallback } from './gpu/context.js';
 import { initApp } from './app.js';
 
 async function main() {
-  // Check for WebGPU support
   if (!navigator.gpu) {
     showFallback();
     return;
@@ -17,7 +16,7 @@ async function main() {
   try {
     await initGPU(canvas);
     initApp();
-    console.log('Golden Hour Haze initialized');
+    console.log('Golden Hour Haze V2 initialized');
   } catch (err) {
     console.error('Failed to initialize:', err);
     showFallback((err as Error).message);

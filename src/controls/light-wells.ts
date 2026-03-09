@@ -3,8 +3,7 @@ import { customElement, state } from 'lit/decorators.js';
 import { BaseControl } from './base-control.js';
 import { sceneStore } from '../state/scene-state.js';
 import { uiStore } from '../state/ui-state.js';
-import type { LightDef } from '../layers/layer-types.js';
-import { pushHistory } from '../state/history.js';
+import type { LightDef } from '../state/scene-state.js';
 
 @customElement('ghz-light-wells')
 export class LightWells extends BaseControl {
@@ -158,7 +157,6 @@ export class LightWells extends BaseControl {
   }
 
   private _deleteLight(index: number) {
-    pushHistory();
     sceneStore.update((s) => ({
       lights: s.lights.filter((_, i) => i !== index),
     }));
@@ -200,7 +198,6 @@ export class LightWells extends BaseControl {
     (e.target as HTMLElement).setPointerCapture(e.pointerId);
     const paletteSlot = (e.metaKey || e.ctrlKey) ? sceneStore.get().palette.activeIndex : -1;
 
-    pushHistory();
     const newLight: LightDef = {
       x: nx,
       y: ny,

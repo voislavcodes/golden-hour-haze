@@ -1,5 +1,4 @@
 import { uiStore, type Tool } from '../state/ui-state.js';
-import { undo, redo } from '../state/history.js';
 import { sceneStore } from '../state/scene-state.js';
 
 const toolKeys: Record<string, Tool> = {
@@ -9,7 +8,6 @@ const toolKeys: Record<string, Tool> = {
   d: 'dissolve',
   r: 'drift',
   p: 'palette',
-  z: 'depth',
   a: 'anchor',
 };
 
@@ -59,14 +57,6 @@ export function initKeyboardInput() {
       uiStore.update((s) => ({ showUI: !s.showUI }));
     }
 
-    // Undo/Redo
-    if ((e.metaKey || e.ctrlKey) && e.key === 'z') {
-      e.preventDefault();
-      if (e.shiftKey) {
-        redo();
-      } else {
-        undo();
-      }
-    }
+    // Undo/Redo handled in app.ts (requires GPU encoder)
   });
 }

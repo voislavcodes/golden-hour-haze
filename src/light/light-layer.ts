@@ -1,12 +1,15 @@
+// V2 Light layer — light wells with occlusion from accumulation surface
+// Adapted from V1 light-layer.ts
+
 import { getGPU } from '../gpu/context.js';
 import { allocTexture, allocPingPong } from '../gpu/texture-pool.js';
-import { createComputePipeline, createRenderPipeline } from '../gpu/pipeline-manager.js';
+import { createComputePipeline, createRenderPipeline } from '../gpu/pipeline-cache.js';
 import { getGlobalBindGroupLayout } from '../gpu/bind-groups.js';
+import { getReadTexture } from '../painting/surface.js';
 import lightScatterShader from '../shaders/light/light-scatter.wgsl';
 import bloomShader from '../shaders/light/bloom.wgsl';
-import type { LightDef, PaletteColor } from './layer-types.js';
-import { MAX_LIGHTS } from './layer-types.js';
-import { autoColorFromTime } from '../state/scene-state.js';
+import type { LightDef, PaletteColor } from '../state/scene-state.js';
+import { MAX_LIGHTS, autoColorFromTime } from '../state/scene-state.js';
 
 let scatterPipeline: GPUComputePipeline;
 let bloomPipeline: GPURenderPipeline;
@@ -23,16 +26,13 @@ let scatterTextureBG: GPUBindGroup;
 
 let bloomSampler: GPUSampler;
 
-// Bloom mip chain
 const BLOOM_MIPS = 3;
 let bloomTextures: GPUTexture[] = [];
-// bloomBindGroups created dynamically per-frame
 let bloomParamBuffers: GPUBuffer[] = [];
 
 let currentWidth = 0;
 let currentHeight = 0;
 
-// Sun-driven bloom params (updated by writeLightData)
 let bloomThreshold = 0.8;
 let bloomWarmth = [1.0, 1.0, 1.0];
 let bloomIntensity = 1.0;
@@ -45,7 +45,7 @@ export function initLightLayer() {
     minFilter: 'linear',
   });
 
-  // --- Scatter compute ---
+  // Scatter compute — V2: reads density + accum (not depth + forms)
   scatterParamLayout = device.createBindGroupLayout({
     label: 'light-param-layout',
     entries: [
@@ -57,10 +57,9 @@ export function initLightLayer() {
   scatterTextureLayout = device.createBindGroupLayout({
     label: 'light-tex-layout',
     entries: [
-      { binding: 0, visibility: GPUShaderStage.COMPUTE, texture: { sampleType: 'unfilterable-float' } },
-      { binding: 1, visibility: GPUShaderStage.COMPUTE, texture: { sampleType: 'unfilterable-float' } },
-      { binding: 2, visibility: GPUShaderStage.COMPUTE, texture: { sampleType: 'unfilterable-float' } },
-      { binding: 3, visibility: GPUShaderStage.COMPUTE, storageTexture: { access: 'write-only', format: 'rgba16float' } },
+      { binding: 0, visibility: GPUShaderStage.COMPUTE, texture: { sampleType: 'unfilterable-float' } }, // density
+      { binding: 1, visibility: GPUShaderStage.COMPUTE, texture: { sampleType: 'unfilterable-float' } }, // accum (paint surface)
+      { binding: 2, visibility: GPUShaderStage.COMPUTE, storageTexture: { access: 'write-only', format: 'rgba16float' } }, // output
     ],
   });
 
@@ -83,7 +82,7 @@ export function initLightLayer() {
 
   lightStorageBuffer = device.createBuffer({
     label: 'light-storage',
-    size: MAX_LIGHTS * 48, // 12 floats * 4 bytes
+    size: MAX_LIGHTS * 48,
     usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
   });
 
@@ -96,7 +95,7 @@ export function initLightLayer() {
     ],
   });
 
-  // --- Bloom render ---
+  // Bloom render
   bloomLayout = device.createBindGroupLayout({
     label: 'bloom-layout',
     entries: [
@@ -121,7 +120,6 @@ export function initLightLayer() {
     primitive: { topology: 'triangle-list' },
   });
 
-  // Create bloom param buffers (32 bytes each for warmth + intensity)
   for (let i = 0; i < BLOOM_MIPS * 2 + 1; i++) {
     bloomParamBuffers.push(device.createBuffer({
       label: `bloom-params-${i}`,
@@ -138,50 +136,51 @@ export function updateLightTextures(width: number, height: number) {
 
   const { device } = getGPU();
 
-  // Light scatter output
-  const scatterTex = allocTexture('light-scatter', 'rgba16float', width, height,
+  allocTexture('light-scatter', 'rgba16float', width, height,
     GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.RENDER_ATTACHMENT);
 
-  const depthTex = allocTexture('depth', 'r32float', width, height,
-    GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING);
-  const formsTex = allocTexture('forms', 'rgba16float', width, height,
-    GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING);
+  rebuildLightBindGroup();
 
-  // Reference to atmosphere density (half-res) for scatter read
-  const densityW = Math.ceil(width / 2);
-  const densityH = Math.ceil(height / 2);
+  // Create bloom mip chain
+  for (const tex of bloomTextures) tex.destroy();
+  bloomTextures = [];
+
+  let mipW = Math.max(1, Math.floor(width / 2));
+  let mipH = Math.max(1, Math.floor(height / 2));
+
+  for (let i = 0; i < BLOOM_MIPS; i++) {
+    bloomTextures.push(device.createTexture({
+      label: `bloom-mip-${i}`,
+      size: { width: mipW, height: mipH },
+      format: 'rgba16float',
+      usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.RENDER_ATTACHMENT,
+    }));
+    mipW = Math.max(1, Math.floor(mipW / 2));
+    mipH = Math.max(1, Math.floor(mipH / 2));
+  }
+}
+
+export function rebuildLightBindGroup() {
+  const { device } = getGPU();
+
+  const densityW = Math.ceil(currentWidth / 2);
+  const densityH = Math.ceil(currentHeight / 2);
   const densityPP = allocPingPong('atmosphere-density', 'rgba16float', densityW, densityH);
+
+  const scatterTex = allocTexture('light-scatter', 'rgba16float', currentWidth, currentHeight,
+    GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.RENDER_ATTACHMENT);
+
+  const accumTex = getReadTexture();
 
   scatterTextureBG = device.createBindGroup({
     label: 'light-tex-bg',
     layout: scatterTextureLayout,
     entries: [
       { binding: 0, resource: densityPP.readView },
-      { binding: 1, resource: depthTex.createView() },
-      { binding: 2, resource: formsTex.createView() },
-      { binding: 3, resource: scatterTex.createView() },
+      { binding: 1, resource: accumTex.createView() },
+      { binding: 2, resource: scatterTex.createView() },
     ],
   });
-
-  // Create bloom mip chain
-  for (const tex of bloomTextures) tex.destroy();
-  bloomTextures = [];
-  // bind groups recreated per-frame
-
-  let mipW = Math.max(1, Math.floor(width / 2));
-  let mipH = Math.max(1, Math.floor(height / 2));
-
-  for (let i = 0; i < BLOOM_MIPS; i++) {
-    const tex = device.createTexture({
-      label: `bloom-mip-${i}`,
-      size: { width: mipW, height: mipH },
-      format: 'rgba16float',
-      usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.RENDER_ATTACHMENT,
-    });
-    bloomTextures.push(tex);
-    mipW = Math.max(1, Math.floor(mipW / 2));
-    mipH = Math.max(1, Math.floor(mipH / 2));
-  }
 }
 
 export function writeLightData(lights: LightDef[], sunElevation = 0.15, paletteColors?: PaletteColor[]) {
@@ -190,7 +189,6 @@ export function writeLightData(lights: LightDef[], sunElevation = 0.15, paletteC
 
   const gf = Math.max(0, 1.0 - Math.min(1.0, Math.max(0, sunElevation) * 2.5));
 
-  // Derive bloom character from golden factor
   bloomThreshold = 0.8 - gf * 0.3;
   bloomWarmth = [1.0 + gf * 0.2, 1.0 - gf * 0.1, 1.0 - gf * 0.3];
   bloomIntensity = 1.0 + gf * 0.3;
@@ -200,12 +198,10 @@ export function writeLightData(lights: LightDef[], sunElevation = 0.15, paletteC
   const f32 = new Float32Array(header);
   u32[0] = count;
   f32[1] = sunElevation;
-  // f32[2..7] = padding (already 0)
   device.queue.writeBuffer(lightParamBuffer, 0, header);
 
   if (count === 0) return;
 
-  // Resolve auto color from TIME
   const autoColor = autoColorFromTime(sunElevation);
 
   const data = new Float32Array(count * 12);
@@ -213,7 +209,6 @@ export function writeLightData(lights: LightDef[], sunElevation = 0.15, paletteC
     const l = lights[i];
     const off = i * 12;
 
-    // Resolve color: auto from TIME or locked to palette slot
     let r = l.colorR, g = l.colorG, b = l.colorB;
     if (l.paletteSlot < 0) {
       r = autoColor.r;
@@ -256,7 +251,9 @@ function createBloomBG(device: GPUDevice, inputTex: GPUTexture, paramBuf: GPUBuf
 export function dispatchLight(encoder: GPUCommandEncoder, globalBG: GPUBindGroup) {
   const { device } = getGPU();
 
-  // 1. Light scatter compute
+  // Rebuild bind group every frame so it sees current accumulation texture
+  rebuildLightBindGroup();
+
   const scatterPass = encoder.beginComputePass({ label: 'light-scatter-pass' });
   scatterPass.setPipeline(scatterPipeline);
   scatterPass.setBindGroup(0, globalBG);
@@ -265,20 +262,18 @@ export function dispatchLight(encoder: GPUCommandEncoder, globalBG: GPUBindGroup
   scatterPass.dispatchWorkgroups(Math.ceil(currentWidth / 8), Math.ceil(currentHeight / 8));
   scatterPass.end();
 
-  // 2. Bloom chain
+  // Bloom chain
   if (bloomTextures.length === 0) return;
 
   const scatterTex = allocTexture('light-scatter', 'rgba16float', currentWidth, currentHeight,
     GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.RENDER_ATTACHMENT);
 
-  // Threshold + first downsample
   let prevTex = scatterTex;
   let bufIdx = 0;
 
-  // Downsample chain
   for (let i = 0; i < bloomTextures.length; i++) {
     const target = bloomTextures[i];
-    const passType = i === 0 ? 0.0 : 1.0; // threshold for first, downsample for rest
+    const passType = i === 0 ? 0.0 : 1.0;
     const tw = 1.0 / prevTex.width;
     const th = 1.0 / prevTex.height;
 
@@ -305,7 +300,6 @@ export function dispatchLight(encoder: GPUCommandEncoder, globalBG: GPUBindGroup
     bufIdx++;
   }
 
-  // Upsample chain
   for (let i = bloomTextures.length - 2; i >= 0; i--) {
     const source = bloomTextures[i + 1];
     const target = bloomTextures[i];

@@ -12,7 +12,6 @@ const TOOL_CURSORS: Record<Tool, string> = {
   dissolve: 'none',
   drift:    'grab',
   palette:  'copy',
-  depth:    'ns-resize',
   anchor:   'crosshair',
 };
 
