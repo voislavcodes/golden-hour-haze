@@ -105,9 +105,9 @@ export function initApp() {
   writeDepthParams(scene.depth);
   writePaletteData(scene.palette);
   writeAtmosphereParams(scene.atmosphere, scene.horizonY);
-  writeScatterParams(scene.sunAngle, scene.sunElevation, scene.sunAzimuth, scene.horizonY);
+  writeScatterParams(scene.sunAngle, scene.sunElevation, scene.horizonY);
   writeFormsData(scene.forms, scene.palette.colors, scene.sunAngle, scene.tonalMap, scene.velvet, scene.tonalSort, scene.gravity, scene.baseOpacity, scene.falloff, scene.sunElevation, scene.horizonY);
-  writeLightData(scene.lights, 32, scene.sunElevation);
+  writeLightData(scene.lights, scene.sunElevation, scene.palette.colors);
   const gf = goldenFactor(scene.sunElevation);
   writeCompositorParams({
     shadowChroma: scene.shadowChroma,
@@ -118,7 +118,6 @@ export function initApp() {
     anchorFalloff: scene.anchor ? scene.anchor.muteFalloff : 999.0,
     sunGradeWarmth: gf * 0.8 - 0.1,
     sunGradeIntensity: 0.3 + gf * 0.4,
-    sunAzimuthBias: (scene.sunAzimuth - 0.5) * 2.0,
   });
 
   // Input
@@ -170,7 +169,6 @@ export function initApp() {
   // Track previous state for detecting global param changes / undo
   let prevSunAngle = scene.sunAngle;
   let prevSunElevation = scene.sunElevation;
-  let prevSunAzimuth = scene.sunAzimuth;
   let prevTonalMap = scene.tonalMap;
   let prevVelvet = scene.velvet;
   let prevGravity = scene.gravity;
@@ -187,10 +185,10 @@ export function initApp() {
   sceneStore.subscribe((state) => {
     writeDepthParams(state.depth);
     writeAtmosphereParams(state.atmosphere, state.horizonY);
-    writeScatterParams(state.sunAngle, state.sunElevation, state.sunAzimuth, state.horizonY);
+    writeScatterParams(state.sunAngle, state.sunElevation, state.horizonY);
     writePaletteData(state.palette);
     writeFormsData(state.forms, state.palette.colors, state.sunAngle, state.tonalMap, state.velvet, state.tonalSort, state.gravity, state.baseOpacity, state.falloff, state.sunElevation, state.horizonY);
-    writeLightData(state.lights, 32, state.sunElevation);
+    writeLightData(state.lights, state.sunElevation, state.palette.colors);
     const gf = goldenFactor(state.sunElevation);
     writeCompositorParams({
       shadowChroma: state.shadowChroma,
@@ -201,13 +199,11 @@ export function initApp() {
       anchorFalloff: state.anchor ? state.anchor.muteFalloff : 999.0,
       sunGradeWarmth: gf * 0.8 - 0.1,
       sunGradeIntensity: 0.3 + gf * 0.4,
-      sunAzimuthBias: (state.sunAzimuth - 0.5) * 2.0,
     });
 
     // Detect global param changes → full rebake
     if (state.sunAngle !== prevSunAngle ||
         state.sunElevation !== prevSunElevation ||
-        state.sunAzimuth !== prevSunAzimuth ||
         state.tonalMap !== prevTonalMap ||
         state.velvet !== prevVelvet ||
         state.gravity !== prevGravity ||
@@ -232,7 +228,6 @@ export function initApp() {
 
     prevSunAngle = state.sunAngle;
     prevSunElevation = state.sunElevation;
-    prevSunAzimuth = state.sunAzimuth;
     prevTonalMap = state.tonalMap;
     prevVelvet = state.velvet;
     prevGravity = state.gravity;
@@ -259,7 +254,6 @@ export function initApp() {
       anchorFalloff: state.anchor ? state.anchor.muteFalloff : 999.0,
       sunGradeWarmth: gf * 0.8 - 0.1,
       sunGradeIntensity: 0.3 + gf * 0.4,
-      sunAzimuthBias: (state.sunAzimuth - 0.5) * 2.0,
     });
   });
 
@@ -409,30 +403,6 @@ function setupFormPlacement(_canvas: HTMLCanvasElement) {
       if (ui.activeTool === 'form') {
         requestBake();
       }
-    }
-
-    if (ui.mouseDown && !wasDown && ui.activeTool === 'light') {
-      pushHistory();
-      const scene = sceneStore.get();
-      sceneStore.set({
-        lights: [
-          ...scene.lights,
-          {
-            x: ui.mouseX,
-            y: ui.mouseY,
-            depth: ui.mouseY * 0.5,
-            intensity: 1.5,
-            radius: ui.brushSize * 5,
-            colorR: 1.0,
-            colorG: 0.85,
-            colorB: 0.6,
-            scatter: 0.8,
-            scaleX: 1.0,
-            scaleY: 1.0,
-            rotation: 0,
-          },
-        ],
-      });
     }
 
     wasDown = ui.mouseDown;

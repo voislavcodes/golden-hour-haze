@@ -4,8 +4,9 @@ import { createComputePipeline, createRenderPipeline } from '../gpu/pipeline-man
 import { getGlobalBindGroupLayout } from '../gpu/bind-groups.js';
 import lightScatterShader from '../shaders/light/light-scatter.wgsl';
 import bloomShader from '../shaders/light/bloom.wgsl';
-import type { LightDef } from './layer-types.js';
+import type { LightDef, PaletteColor } from './layer-types.js';
 import { MAX_LIGHTS } from './layer-types.js';
+import { autoColorFromTime } from '../state/scene-state.js';
 
 let scatterPipeline: GPUComputePipeline;
 let bloomPipeline: GPURenderPipeline;
@@ -182,13 +183,11 @@ export function updateLightTextures(width: number, height: number) {
   }
 }
 
-export function writeLightData(lights: LightDef[], maxSteps: number, sunElevation = 0.15) {
+export function writeLightData(lights: LightDef[], sunElevation = 0.15, paletteColors?: PaletteColor[]) {
   const { device } = getGPU();
   const count = Math.min(lights.length, MAX_LIGHTS);
 
-  // Compute sun scatter boost from elevation
   const gf = Math.max(0, 1.0 - Math.min(1.0, Math.max(0, sunElevation) * 2.5));
-  const sunScatterBoost = 1.0 + gf * 0.5;
 
   // Derive bloom character from golden factor
   bloomThreshold = 0.8 - gf * 0.3;
@@ -199,30 +198,45 @@ export function writeLightData(lights: LightDef[], maxSteps: number, sunElevatio
   const u32 = new Uint32Array(header);
   const f32 = new Float32Array(header);
   u32[0] = count;
-  u32[1] = maxSteps;
-  f32[2] = sunElevation;
-  f32[3] = sunScatterBoost;
-  // f32[4..7] = padding (already 0)
+  f32[1] = sunElevation;
+  // f32[2..7] = padding (already 0)
   device.queue.writeBuffer(lightParamBuffer, 0, header);
 
   if (count === 0) return;
+
+  // Resolve auto color from TIME
+  const autoColor = autoColorFromTime(sunElevation);
 
   const data = new Float32Array(count * 12);
   for (let i = 0; i < count; i++) {
     const l = lights[i];
     const off = i * 12;
+
+    // Resolve color: auto from TIME or locked to palette slot
+    let r = l.colorR, g = l.colorG, b = l.colorB;
+    if (l.paletteSlot < 0) {
+      r = autoColor.r;
+      g = autoColor.g;
+      b = autoColor.b;
+    } else if (paletteColors && l.paletteSlot < paletteColors.length) {
+      const pc = paletteColors[Math.floor(l.paletteSlot)];
+      r = pc.r;
+      g = pc.g;
+      b = pc.b;
+    }
+
     data[off] = l.x;
     data[off + 1] = l.y;
-    data[off + 2] = l.depth;
-    data[off + 3] = l.intensity;
-    data[off + 4] = l.radius;
-    data[off + 5] = l.colorR;
-    data[off + 6] = l.colorG;
-    data[off + 7] = l.colorB;
-    data[off + 8] = l.scatter;
-    data[off + 9] = l.scaleX;
-    data[off + 10] = l.scaleY;
-    data[off + 11] = l.rotation;
+    data[off + 2] = l.coreRadius;
+    data[off + 3] = l.bloomRadius;
+    data[off + 4] = l.intensity;
+    data[off + 5] = l.aspectRatio;
+    data[off + 6] = l.rotation;
+    data[off + 7] = l.paletteSlot;
+    data[off + 8] = r;
+    data[off + 9] = g;
+    data[off + 10] = b;
+    data[off + 11] = l.depth;
   }
   device.queue.writeBuffer(lightStorageBuffer, 0, data);
 }

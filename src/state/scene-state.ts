@@ -9,7 +9,6 @@ export interface SceneState {
   palette: PaletteState;
   sunAngle: number; // radians, drives time-of-day
   sunElevation: number;
-  sunAzimuth: number; // 0-1, horizontal sun position (0=left, 0.5=center, 1=right)
   horizonY: number; // 0-1, vertical horizon position (0=top, 1=bottom)
   echo: number; // 0-1, stroke coherence (controls form opacity/softness)
   tonalMap: TonalMapParams;
@@ -31,6 +30,16 @@ export function sunElevationFromAngle(angle: number): number {
 /** Compute golden hour factor from sun elevation (0 at noon, 1 at golden hour, clamped for night) */
 export function goldenFactor(sunElevation: number): number {
   return Math.max(0, 1.0 - Math.min(1.0, Math.max(0, sunElevation) * 2.5));
+}
+
+/** Derive auto light color from TIME (sun elevation). Golden → warm amber, blue hour → cool blue. */
+export function autoColorFromTime(sunElevation: number): { r: number; g: number; b: number } {
+  const gf = goldenFactor(sunElevation);
+  return {
+    r: 0.9 + gf * 0.1,
+    g: 0.75 + (1 - gf) * 0.2,
+    b: 0.5 + (1 - gf) * 0.45,
+  };
 }
 
 const defaultPalette: PaletteState = {
@@ -70,7 +79,6 @@ export const sceneStore = createStore<SceneState>({
   palette: defaultPalette,
   sunAngle: 1.28, // ~golden hour angle
   sunElevation: sunElevationFromAngle(1.28),
-  sunAzimuth: 0.5,
   horizonY: 0.5,
   echo: 0.5,
   tonalMap: { enabled: true, valueRange: 0.8, keyValue: 0.5, contrast: 0.6 },

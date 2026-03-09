@@ -14,7 +14,7 @@ struct ScatterParams {
   sun_angle: f32,
   sun_elevation: f32,
   intensity: f32,
-  sun_azimuth: f32,
+  _pad1: f32,
   horizon_y: f32,
   _pad2: f32,
   _pad3: f32,
@@ -34,7 +34,7 @@ const GOLDEN_HORIZON = vec3f(0.95, 0.65, 0.30);
 const NIGHT_HORIZON = vec3f(0.05, 0.05, 0.12);
 const GOLDEN_GLOW = vec3f(0.95, 0.80, 0.50);
 
-fn compute_sky(uv: vec2f, elevation: f32, azimuth: f32, density: f32, warmth: f32) -> vec3f {
+fn compute_sky(uv: vec2f, elevation: f32, density: f32, warmth: f32) -> vec3f {
   // Normalize elevation: -0.6 to 0.9 range
   let elev_norm = clamp((elevation + 0.6) / 1.5, 0.0, 1.0); // 0=deep night, 1=noon
 
@@ -69,19 +69,6 @@ fn compute_sky(uv: vec2f, elevation: f32, azimuth: f32, density: f32, warmth: f3
     let sky_factor = pow(v, 1.5 + elev_norm * 2.0);
     sky = mix(horizon, zenith, sky_factor);
   }
-
-  // Additive warm glow band at the horizon line — strongest at dusk/golden hour
-  if (params.horizon_y >= 0.0) {
-    let horizon_band = exp(-pow((v - params.horizon_y) * 6.0, 2.0));
-    let dusk_gate = smoothstep(0.7, 0.1, elev_norm);
-    sky += GOLDEN_GLOW * horizon_band * 0.3 * dusk_gate;
-  }
-
-  // Horizontal sun glow — directional warmth toward sun azimuth, centered on horizon
-  let sun_glow = exp(-(uv.x - azimuth) * (uv.x - azimuth) * 3.0);
-  let glow_strength = golden_t * 0.6 + smoothstep(0.0, 0.3, elev_norm) * 0.15;
-  let horizon_proximity = select(1.0 - saturate(abs(v - params.horizon_y) * 2.0), 1.0 - v * 0.8, params.horizon_y < 0.0);
-  sky += GOLDEN_GLOW * sun_glow * glow_strength * horizon_proximity;
 
   // Night mode: below-horizon darkening
   if (elevation < -0.1) {
@@ -125,7 +112,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4f {
   let warmth = density_data.g;
 
   // Compute sky gradient
-  var sky = compute_sky(in.uv, params.sun_elevation, params.sun_azimuth, density, warmth);
+  var sky = compute_sky(in.uv, params.sun_elevation, density, warmth);
 
   // Atmosphere orb influence on sky gradient:
   // Density → haze: washes out gradient contrast toward a uniform fog
@@ -137,49 +124,17 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4f {
   // Warmth → tint: shifts sky warmer (amber) or cooler (blue)
   sky *= vec3f(1.0 + warmth * 0.15, 1.0 + warmth * 0.03, 1.0 - warmth * 0.12);
 
-  // Sun direction from angle + elevation
-  let sun_dir = normalize(vec3f(
-    cos(params.sun_angle) * cos(params.sun_elevation),
-    sin(params.sun_elevation),
-    sin(params.sun_angle) * cos(params.sun_elevation)
-  ));
-
-  // View direction (simplified - camera looking forward)
-  let view_dir = normalize(vec3f(in.uv * 2.0 - 1.0, 1.0));
-
-  // Rayleigh scattering coefficients at 3 wavelengths
-  let lambda = vec3f(700.0, 546.0, 435.0);
-  let rayleigh_coeff = 1.0 / (lambda * lambda * lambda * lambda);
-  let rayleigh_norm = rayleigh_coeff / rayleigh_coeff.z;
-
-  // Scattering angle
-  let cos_theta = dot(view_dir, sun_dir);
-
-  // Rayleigh phase function
-  let rayleigh_phase = 0.75 * (1.0 + cos_theta * cos_theta);
-
-  // Mie phase function (Henyey-Greenstein, g=0.76)
-  let g = 0.76;
-  let mie_phase = (1.0 - g * g) / pow(1.0 + g * g - 2.0 * g * cos_theta, 1.5) / (4.0 * 3.14159);
-
-  // Combined scatter — use smoothed density (average of local + global)
-  // to avoid per-pixel noise turbulence creating visible moving clouds
+  // Uniform scatter tint — no directional sun, just elevation-driven temperature
   let smooth_density = mix(density, params.intensity * 0.5, 0.7);
   let optical_depth = smooth_density * depth * 3.0;
-  // Dense fog: multiple scattering equalizes wavelengths → achromatic
-  let wavelength_factor = 1.0 - saturate(pow(density, 2.0));
-  let avg_rayleigh = dot(rayleigh_norm, vec3f(0.333));
-  let effective_rayleigh = mix(vec3f(avg_rayleigh), rayleigh_norm, wavelength_factor);
-  let rayleigh = effective_rayleigh * rayleigh_phase * (1.0 - exp(-optical_depth));
-  let mie = vec3f(mie_phase) * smooth_density * 0.3;
+  let scatter_amount = (1.0 - exp(-optical_depth)) * params.intensity * 0.15;
 
-  // Dense fog absorbs scatter — no directional light variation in thick fog
+  // Dense fog suppresses scatter variation
   let scatter_suppress = max(1.0 - density * 0.8, 0.0);
-  var scatter_color = (rayleigh * 0.5 + mie) * params.intensity * 0.4 * scatter_suppress;
 
-  // Golden hour warmth shift
+  // Temperature tint from warmth (orb X-axis)
   let golden_tint = vec3f(1.2, 0.85, 0.5) * (1.0 + warmth * 0.5);
-  scatter_color *= golden_tint;
+  var scatter_color = golden_tint * scatter_amount * scatter_suppress;
 
   // Combine: sky as base, scatter tints subtly on top
   return vec4f(sky + scatter_color, density);

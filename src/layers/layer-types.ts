@@ -40,18 +40,18 @@ export interface FormDef {
 }
 
 export interface LightDef {
-  x: number;
-  y: number;
-  depth: number;
-  intensity: number;
-  radius: number;
-  colorR: number;
+  x: number;             // 0-1
+  y: number;             // 0-1
+  coreRadius: number;    // default 0.02
+  bloomRadius: number;   // default 0.08
+  intensity: number;     // 0.05-1.0, default 0.6
+  aspectRatio: number;   // 1.0=circle, >1=tall, <1=wide
+  rotation: number;      // radians
+  paletteSlot: number;   // -1=auto from TIME, 0-4=locked
+  colorR: number;        // resolved color (computed before GPU upload)
   colorG: number;
   colorB: number;
-  scatter: number;
-  scaleX: number;      // elliptical X scale (default 1)
-  scaleY: number;      // elliptical Y scale (default 1)
-  rotation: number;    // ellipse rotation in radians (default 0)
+  depth: number;         // 0.5 default
 }
 
 export interface TonalMapParams {
@@ -77,7 +77,6 @@ export interface CompositorParams {
   anchorFalloff: number;
   sunGradeWarmth: number;    // -1 cool to 1 warm
   sunGradeIntensity: number; // 0 to 1
-  sunAzimuthBias: number;    // -1 to 1
 }
 
 export interface PaletteColor {
@@ -98,6 +97,6 @@ export const MAX_PALETTE_COLORS = 8;
 
 // GPU buffer sizes (bytes)
 export const FORM_STRIDE = 64; // 16 floats
-export const LIGHT_STRIDE = 36; // 9 floats padded to 40
+export const LIGHT_STRIDE = 48; // 12 floats
 export const FORM_BUFFER_SIZE = MAX_FORMS * FORM_STRIDE;
 export const LIGHT_BUFFER_SIZE = MAX_LIGHTS * 48; // padded

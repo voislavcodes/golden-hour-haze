@@ -136,7 +136,7 @@ export function writeCompositorParams(params: CompositorParams) {
     params.anchorFalloff,
     params.sunGradeWarmth,
     params.sunGradeIntensity,
-    params.sunAzimuthBias,
+    0, // _pad0
     0, // _pad1
     0, // _pad2
     0, // _pad3

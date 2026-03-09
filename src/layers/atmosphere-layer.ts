@@ -266,10 +266,10 @@ export function writeAtmosphereParams(params: AtmosphereParams, horizonY = 0.5) 
   ]));
 }
 
-export function writeScatterParams(sunAngle: number, sunElevation: number, sunAzimuth: number, horizonY = 0.5) {
+export function writeScatterParams(sunAngle: number, sunElevation: number, horizonY = 0.5) {
   const { device } = getGPU();
   device.queue.writeBuffer(scatterParamBuffer, 0, new Float32Array([
-    sunAngle, sunElevation, 1.0, sunAzimuth,
+    sunAngle, sunElevation, 1.0, 0.0,
     horizonY, 0, 0, 0,
   ]));
 }

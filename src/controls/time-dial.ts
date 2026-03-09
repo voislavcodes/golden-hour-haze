@@ -99,12 +99,9 @@ export class TimeDial extends BaseControl {
   ];
 
   @state() private _angle: number = 1.28;
-  @state() private _azimuth: number = 0.5;
   @state() private _dragging: boolean = false;
-  @state() private _shiftHeld: boolean = false;
 
   private _unsubscribe?: () => void;
-  private _unsubAzimuth?: () => void;
   private _angleLUT: Float32Array = new Float32Array(256);
 
   private _buildAngleLUT() {
@@ -136,7 +133,6 @@ export class TimeDial extends BaseControl {
     this._buildAngleLUT();
     const s = sceneStore.get();
     this._angle = s.sunAngle;
-    this._azimuth = s.sunAzimuth;
     // Initialize _lutT from angle (reverse LUT lookup)
     const idx = this._angleLUT.findIndex((a) => a >= this._angle);
     this._lutT = idx >= 0 ? idx / 256 : 0;
@@ -144,27 +140,19 @@ export class TimeDial extends BaseControl {
       (s) => s.sunAngle,
       (angle) => { this._angle = angle; }
     );
-    this._unsubAzimuth = sceneStore.select(
-      (s) => s.sunAzimuth,
-      (az) => { this._azimuth = az; }
-    );
   }
 
   disconnectedCallback() {
     super.disconnectedCallback();
     this._unsubscribe?.();
-    this._unsubAzimuth?.();
   }
 
-  private _lastClientX = 0;
   private _lastClientY = 0;
   /** LUT position (0-1) for smooth delta-based dragging */
   private _lutT = 0;
 
   private _onPointerDown(e: PointerEvent) {
     this._dragging = true;
-    this._shiftHeld = e.shiftKey;
-    this._lastClientX = e.clientX;
     this._lastClientY = e.clientY;
     // Find current LUT position from angle (reverse lookup)
     this._lutT = this._angleLUT.findIndex((a) => a >= this._angle) / 256;
@@ -175,20 +163,8 @@ export class TimeDial extends BaseControl {
   private _onPointerMove(e: PointerEvent) {
     if (!this._dragging) return;
 
-    const dx = e.clientX - this._lastClientX;
     const dy = e.clientY - this._lastClientY;
-    this._lastClientX = e.clientX;
     this._lastClientY = e.clientY;
-
-    // Shift+drag: horizontal azimuth control
-    if (e.shiftKey) {
-      this._shiftHeld = true;
-      const newAz = Math.max(0, Math.min(1, this._azimuth + dx * 0.003));
-      this._azimuth = newAz;
-      sceneStore.set({ sunAzimuth: newAz });
-      return;
-    }
-    this._shiftHeld = false;
 
     // Vertical drag only: up = brighter (noon), down = darker (dusk)
     // ~300px drag = full sweep
@@ -203,7 +179,6 @@ export class TimeDial extends BaseControl {
 
   private _onPointerUp(_e: PointerEvent) {
     this._dragging = false;
-    this._shiftHeld = false;
   }
 
   private get _timeLabel(): string {
@@ -225,7 +200,7 @@ export class TimeDial extends BaseControl {
           @pointerup=${this._onPointerUp}
           @pointerleave=${this._onPointerUp}
         >
-          <div class="dial-ring" style="border-color: ${this._shiftHeld ? 'rgba(100, 180, 255, 0.6)' : ''}"></div>
+          <div class="dial-ring"></div>
           <div
             class="dial-indicator"
             style="transform: translateX(-50%) rotate(${this._indicatorRotation}deg)"

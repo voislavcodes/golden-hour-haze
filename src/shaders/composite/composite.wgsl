@@ -20,7 +20,7 @@ struct CompositorParams {
   anchor_falloff: f32,
   sun_grade_warmth: f32,
   sun_grade_intensity: f32,
-  sun_azimuth_bias: f32,
+  _pad0: f32,
   _pad1: f32,
   _pad2: f32,
   _pad3: f32,
@@ -140,10 +140,6 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4f {
   let grade = mix(vec3f(0.85, 0.92, 1.15), vec3f(1.1, 0.95, 0.8),
                   comp_params.sun_grade_warmth * 0.5 + 0.5);
   color *= mix(vec3f(1.0), grade, comp_params.sun_grade_intensity);
-
-  // Horizontal azimuth bias
-  let h_bias = (uv.x - 0.5) * comp_params.sun_azimuth_bias * 0.1;
-  color *= vec3f(1.0 + h_bias, 1.0, 1.0 - h_bias);
 
   // sRGB output
   color = linear_to_srgb(color);
