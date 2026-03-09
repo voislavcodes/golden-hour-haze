@@ -9,7 +9,7 @@ const TOOL_CURSORS: Record<Tool, string> = {
   select:   'default',
   form:     'none',
   light:    'cell',
-  dissolve: 'pointer',
+  dissolve: 'none',
   drift:    'grab',
   palette:  'copy',
   depth:    'ns-resize',

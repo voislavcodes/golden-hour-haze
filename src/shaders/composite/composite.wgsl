@@ -94,7 +94,27 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4f {
 
   // Composite forms over sky with depth-aware atmospheric opacity
   let atmosphere_fog = vec3f(0.75, 0.60, 0.50) * density * 0.2;
-  let form_color = shadowed + atmosphere_fog * (1.0 - shadow_amount);
+  var form_color = shadowed + atmosphere_fog * (1.0 - shadow_amount);
+
+  // --- Atmospheric Brightness Conformance ---
+  let atmo_lum = dot(sky, vec3f(0.2126, 0.7152, 0.0722));
+  let light_boost = dot(light, vec3f(0.2126, 0.7152, 0.0722));
+
+  // (a) Value clamp: atmosphere is the brightness ceiling, light wells raise it
+  let form_lum = dot(form_color, vec3f(0.2126, 0.7152, 0.0722));
+  let ceiling = atmo_lum + light_boost * 1.5;
+  form_color *= min(1.0, ceiling / max(form_lum, 0.001));
+
+  // (b) Desaturation: darkness kills chroma, light wells resist
+  let darkness = 1.0 - saturate(atmo_lum * 2.0);
+  let effective_darkness = darkness * (1.0 - saturate(light_boost * 2.0));
+  let dimmed_lum = dot(form_color, vec3f(0.2126, 0.7152, 0.0722));
+  form_color = mix(form_color, vec3f(dimmed_lum), effective_darkness * 0.6);
+
+  // (c) Color bleed: dark atmosphere tints forms toward sky hue
+  let bleed = darkness * 0.4 * (1.0 - saturate(light_boost));
+  form_color = mix(form_color, sky * (dimmed_lum / max(atmo_lum, 0.01)), bleed);
+
   var color = mix(sky, form_color, forms.a);
 
   // Add light scatter and bloom

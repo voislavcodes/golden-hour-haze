@@ -25,19 +25,17 @@ export class DissolveBrush extends BaseControl {
 
       :host(.active) {
         pointer-events: auto;
-        cursor: pointer;
+        cursor: none;
       }
 
-      .stroke-preview {
-        position: absolute;
+      .brush-cursor {
+        position: fixed;
         border-radius: 50%;
-        background: radial-gradient(
-          circle,
-          rgba(255, 200, 120, 0.3),
-          transparent
-        );
+        border: 1.5px solid rgba(255, 255, 255, 0.55);
         pointer-events: none;
         transform: translate(-50%, -50%);
+        z-index: 17;
+        box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.2);
       }
 
       .strength-hud {
@@ -56,13 +54,16 @@ export class DissolveBrush extends BaseControl {
   ];
 
   @state() private _isActive: boolean = false;
-  @state() private _recentStrokes: BrushStroke[] = [];
   @state() private _strength: number = 0.5;
+  @state() private _cx = 0;
+  @state() private _cy = 0;
+  @state() private _brushDiameter = 0;
 
   private _painting = false;
   private _strokes: BrushStroke[] = [];
   private _unsubTool?: () => void;
   private _unsubStrength?: () => void;
+  private _unsubBrushSize?: () => void;
 
   /** Access all recorded brush strokes */
   get strokes(): ReadonlyArray<BrushStroke> {
@@ -92,28 +93,52 @@ export class DissolveBrush extends BaseControl {
       (s) => s.dissolveStrength,
       (v) => { this._strength = v; }
     );
+
+    this._brushDiameter = uiStore.get().brushSize * 2 * window.innerHeight;
+    this._unsubBrushSize = uiStore.select(
+      (s) => s.brushSize,
+      (size) => { this._brushDiameter = size * 2 * window.innerHeight; }
+    );
   }
 
   disconnectedCallback() {
     super.disconnectedCallback();
     this._unsubTool?.();
     this._unsubStrength?.();
+    this._unsubBrushSize?.();
   }
 
   private _onPointerDown(e: PointerEvent) {
     if (!this._isActive) return;
     this._painting = true;
     (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
+    this._forwardPointer(e, true);
     this._recordStroke(e);
   }
 
   private _onPointerMove(e: PointerEvent) {
-    if (!this._painting || !this._isActive) return;
+    if (!this._isActive) return;
+    this._forwardPointer(e, this._painting);
+    if (!this._painting) return;
     this._recordStroke(e);
+  }
+
+  /** Forward pointer state to uiStore and update local brush cursor */
+  private _forwardPointer(e: PointerEvent, down: boolean) {
+    this._cx = e.clientX;
+    this._cy = e.clientY;
+    this._brushDiameter = uiStore.get().brushSize * 2 * window.innerHeight;
+    uiStore.set({
+      mouseX: e.clientX / window.innerWidth,
+      mouseY: e.clientY / window.innerHeight,
+      pressure: e.pressure > 0 ? e.pressure : 0.5,
+      ...(down ? { mouseDown: true } : {}),
+    });
   }
 
   private _onPointerUp(_e: PointerEvent) {
     this._painting = false;
+    uiStore.set({ mouseDown: false, pressure: 0 });
     this.dispatchEvent(
       new CustomEvent('dissolve-stroke-end', {
         detail: { strokes: [...this._strokes] },
@@ -135,9 +160,6 @@ export class DissolveBrush extends BaseControl {
 
     this._strokes.push(stroke);
 
-    // Keep recent strokes for visual feedback (last 30)
-    this._recentStrokes = this._strokes.slice(-30);
-
     this.dispatchEvent(
       new CustomEvent('dissolve-stroke', {
         detail: stroke,
@@ -150,11 +172,16 @@ export class DissolveBrush extends BaseControl {
   /** Clear all recorded strokes */
   clearStrokes() {
     this._strokes = [];
-    this._recentStrokes = [];
   }
 
   render() {
     return html`
+      ${this._isActive ? html`
+        <div
+          class="brush-cursor"
+          style="left:${this._cx}px;top:${this._cy}px;width:${this._brushDiameter}px;height:${this._brushDiameter}px"
+        ></div>
+      ` : ''}
       <div
         style="width:100%;height:100%;position:relative;"
         @pointerdown=${this._onPointerDown}
@@ -162,20 +189,6 @@ export class DissolveBrush extends BaseControl {
         @pointerup=${this._onPointerUp}
         @pointerleave=${this._onPointerUp}
       >
-        ${this._recentStrokes.map(
-          (s) => html`
-            <div
-              class="stroke-preview"
-              style="
-                left: ${s.x * 100}%;
-                top: ${s.y * 100}%;
-                width: ${s.radius * 200}%;
-                height: ${s.radius * 200}%;
-                opacity: ${s.pressure * 0.6};
-              "
-            ></div>
-          `
-        )}
         ${this._isActive ? html`<div class="strength-hud">DSLV ${this._strength.toFixed(2)}</div>` : ''}
       </div>
     `;

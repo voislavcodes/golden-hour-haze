@@ -157,44 +157,44 @@ export class TimeDial extends BaseControl {
   }
 
   private _lastClientX = 0;
+  private _lastClientY = 0;
+  /** LUT position (0-1) for smooth delta-based dragging */
+  private _lutT = 0;
 
   private _onPointerDown(e: PointerEvent) {
     this._dragging = true;
     this._shiftHeld = e.shiftKey;
     this._lastClientX = e.clientX;
+    this._lastClientY = e.clientY;
+    // Find current LUT position from angle (reverse lookup)
+    this._lutT = this._angleLUT.findIndex((a) => a >= this._angle) / 256;
+    if (this._lutT < 0) this._lutT = 0;
     (e.target as HTMLElement).setPointerCapture(e.pointerId);
   }
 
   private _onPointerMove(e: PointerEvent) {
     if (!this._dragging) return;
 
+    const dx = e.clientX - this._lastClientX;
+    const dy = e.clientY - this._lastClientY;
+    this._lastClientX = e.clientX;
+    this._lastClientY = e.clientY;
+
     // Shift+drag: horizontal azimuth control
     if (e.shiftKey) {
       this._shiftHeld = true;
-      const dx = e.clientX - this._lastClientX;
-      this._lastClientX = e.clientX;
       const newAz = Math.max(0, Math.min(1, this._azimuth + dx * 0.003));
       this._azimuth = newAz;
       sceneStore.set({ sunAzimuth: newAz });
       return;
     }
     this._shiftHeld = false;
-    this._lastClientX = e.clientX;
 
-    const dial = this.shadowRoot!.querySelector('.dial') as HTMLElement;
-    const rect = dial.getBoundingClientRect();
-    const cx = rect.left + rect.width / 2;
-    const cy = rect.top + rect.height / 2;
-
-    // Compute dial position from center to pointer
-    const dx = e.clientX - cx;
-    const dy = e.clientY - cy;
-    let dialAngle = Math.atan2(dy, dx);
-    if (dialAngle < 0) dialAngle += Math.PI * 2;
-
-    // Non-linear mapping: look up actual sun angle from LUT
-    const t = dialAngle / (Math.PI * 2);
-    const idx = Math.min(255, Math.floor(t * 256));
+    // Horizontal drag sweeps through time, vertical drag for fine-tune
+    // ~400px drag = full cycle, vertical at 1/3 sensitivity for fine control
+    const delta = (dx + dy * -0.33) * 0.0025;
+    this._lutT = ((this._lutT + delta) % 1 + 1) % 1; // wrap 0-1
+    const idx = Math.min(255, Math.floor(this._lutT * 256));
     const angle = this._angleLUT[idx];
 
     this._angle = angle;
