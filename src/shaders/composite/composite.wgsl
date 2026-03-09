@@ -135,7 +135,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4f {
   color *= mix(vec3f(1.0), grade, comp_params.sun_grade_intensity);
 
   // 11. Grain
-  let grain_uv = uv * comp_params.grain_scale + vec2f(globals.time * 0.37, globals.time * 0.53);
+  let grain_uv = uv * comp_params.grain_scale;
   let grain = textureSample(grain_lut, grain_sampler, grain_uv).r;
   let grain_amount = grain * comp_params.grain_intensity * 0.08;
   color += vec3f(grain_amount - comp_params.grain_intensity * 0.04);
