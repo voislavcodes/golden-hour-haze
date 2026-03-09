@@ -14,7 +14,6 @@ export interface SceneState {
   tonalMap: TonalMapParams;
   anchor: AnchorPoint | null;
   velvet: number; // 0-1, surface smoothness
-  gravity: number; // 0-1, downward dissolution for form brush (default 0.4)
   tonalSort: boolean; // sort forms dark-to-light for K-M mixing
   shadowChroma: number; // 0-1, color-in-shadow intensity
   baseOpacity: number; // 0.1-1.0, glazing base opacity per stroke (default 0.5)
@@ -84,7 +83,6 @@ export const sceneStore = createStore<SceneState>({
   tonalMap: { enabled: true, valueRange: 0.8, keyValue: 0.5, contrast: 0.6 },
   anchor: null,
   velvet: 0.6,
-  gravity: 0.4,
   tonalSort: true,
   shadowChroma: 0.4,
   baseOpacity: 0.5,

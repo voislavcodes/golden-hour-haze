@@ -57,7 +57,6 @@ import './controls/palette-brush.js';
 import './controls/drift-field.js';
 import './controls/anchor-control.js';
 import './controls/velvet-slider.js';
-import './controls/gravity-slider.js';
 import './controls/horizon-control.js';
 import { initPointerInput } from './input/pointer.js';
 import { initGestureInput } from './input/gesture.js';
@@ -106,7 +105,7 @@ export function initApp() {
   writePaletteData(scene.palette);
   writeAtmosphereParams(scene.atmosphere, scene.horizonY);
   writeScatterParams(scene.sunAngle, scene.sunElevation, scene.horizonY);
-  writeFormsData(scene.forms, scene.palette.colors, scene.sunAngle, scene.tonalMap, scene.velvet, scene.tonalSort, scene.gravity, scene.baseOpacity, scene.falloff, scene.sunElevation, scene.horizonY);
+  writeFormsData(scene.forms, scene.palette.colors, scene.sunAngle, scene.tonalMap, scene.velvet, scene.tonalSort, scene.baseOpacity, scene.falloff, scene.sunElevation, scene.horizonY);
   writeLightData(scene.lights, scene.sunElevation, scene.palette.colors);
   const gf = goldenFactor(scene.sunElevation);
   writeCompositorParams({
@@ -149,7 +148,7 @@ export function initApp() {
       setDissolutionActive(true);
       // Force re-write so baked_count=0 reaches the GPU
       const s = sceneStore.get();
-      writeFormsData(s.forms, s.palette.colors, s.sunAngle, s.tonalMap, s.velvet, s.tonalSort, s.gravity, s.baseOpacity, s.falloff, s.sunElevation, s.horizonY);
+      writeFormsData(s.forms, s.palette.colors, s.sunAngle, s.tonalMap, s.velvet, s.tonalSort, s.baseOpacity, s.falloff, s.sunElevation, s.horizonY);
     }
     stampDissolve(stroke.x, stroke.y, stroke.radius, stroke.pressure, ds);
   }) as EventListener);
@@ -162,7 +161,7 @@ export function initApp() {
     // also use baked_count=0 so dissolution_mask is always applied from scratch
     requestFullRebake();
     const s = sceneStore.get();
-    writeFormsData(s.forms, s.palette.colors, s.sunAngle, s.tonalMap, s.velvet, s.tonalSort, s.gravity, s.baseOpacity, s.falloff, s.sunElevation, s.horizonY);
+    writeFormsData(s.forms, s.palette.colors, s.sunAngle, s.tonalMap, s.velvet, s.tonalSort, s.baseOpacity, s.falloff, s.sunElevation, s.horizonY);
     pushHistory();
   });
 
@@ -171,7 +170,6 @@ export function initApp() {
   let prevSunElevation = scene.sunElevation;
   let prevTonalMap = scene.tonalMap;
   let prevVelvet = scene.velvet;
-  let prevGravity = scene.gravity;
   let prevTonalSort = scene.tonalSort;
   let prevEcho = scene.echo;
   let prevBaseOpacity = scene.baseOpacity;
@@ -187,7 +185,7 @@ export function initApp() {
     writeAtmosphereParams(state.atmosphere, state.horizonY);
     writeScatterParams(state.sunAngle, state.sunElevation, state.horizonY);
     writePaletteData(state.palette);
-    writeFormsData(state.forms, state.palette.colors, state.sunAngle, state.tonalMap, state.velvet, state.tonalSort, state.gravity, state.baseOpacity, state.falloff, state.sunElevation, state.horizonY);
+    writeFormsData(state.forms, state.palette.colors, state.sunAngle, state.tonalMap, state.velvet, state.tonalSort, state.baseOpacity, state.falloff, state.sunElevation, state.horizonY);
     writeLightData(state.lights, state.sunElevation, state.palette.colors);
     const gf = goldenFactor(state.sunElevation);
     writeCompositorParams({
@@ -206,7 +204,6 @@ export function initApp() {
         state.sunElevation !== prevSunElevation ||
         state.tonalMap !== prevTonalMap ||
         state.velvet !== prevVelvet ||
-        state.gravity !== prevGravity ||
         state.tonalSort !== prevTonalSort ||
         state.echo !== prevEcho ||
         state.baseOpacity !== prevBaseOpacity ||
@@ -229,7 +226,6 @@ export function initApp() {
     prevSunElevation = state.sunElevation;
     prevTonalMap = state.tonalMap;
     prevVelvet = state.velvet;
-    prevGravity = state.gravity;
     prevTonalSort = state.tonalSort;
     prevEcho = state.echo;
     prevBaseOpacity = state.baseOpacity;

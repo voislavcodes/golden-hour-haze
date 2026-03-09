@@ -75,7 +75,7 @@ export function initFormsLayer() {
 
   paramBuffer = device.createBuffer({
     label: 'forms-params',
-    size: 64, // 16 floats: form_count, sun_angle, key_value, value_range, contrast, velvet, tonal_sort, tonal_enabled, base_opacity, gravity, baked_count, falloff, edge_atmosphere, pad*3
+    size: 64, // 16 floats: form_count, sun_angle, key_value, value_range, contrast, velvet, tonal_sort, tonal_enabled, base_opacity, pad, baked_count, falloff, edge_atmosphere, horizon_y, pad*2
     usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
   });
 
@@ -197,7 +197,6 @@ export function writeFormsData(
   tonalMap: TonalMapParams = { enabled: true, valueRange: 0.8, keyValue: 0.5, contrast: 0.6 },
   velvet = 0.6,
   tonalSort = true,
-  gravity = 0.4,
   baseOpacity = 0.5,
   falloff = 0.7,
   sunElevation = 0.15,
@@ -237,7 +236,7 @@ export function writeFormsData(
   headerF32[6] = tonalSort ? 1.0 : 0.0;
   headerF32[7] = tonalMap.enabled ? 1.0 : 0.0;
   headerF32[8] = baseOpacity;
-  headerF32[9] = gravity;
+  headerF32[9] = 0.0; // pad (was gravity)
   // Always evaluate ALL forms when live strokes exist — ensures proper
   // inter-stroke blending instead of independent edge boundaries
   const hasLiveForms = count > bakedFormCount;

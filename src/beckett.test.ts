@@ -8,7 +8,6 @@
  *   - Tonal sort (dark-to-light for correct layering)
  *   - Velvet surface (alpha exponent)
  *   - Shadow chroma (hue-shifted shadows, not neutral gray)
- *   - Gravity (asymmetric dissolution)
  *   - Default scene parameters match Beckett intent
  *   - Form buffer packing matches GPU struct layout
  */
@@ -89,7 +88,6 @@ function packHeader(
   tonal: { enabled: boolean; keyValue: number; valueRange: number; contrast: number },
   velvet: number,
   tonalSort: boolean,
-  gravity: number,
 ): Float32Array {
   const buf = new ArrayBuffer(48);
   const u32 = new Uint32Array(buf);
@@ -103,7 +101,7 @@ function packHeader(
   f32[6] = tonalSort ? 1 : 0;
   f32[7] = tonal.enabled ? 1 : 0;
   f32[8] = 0; // scatter (removed)
-  f32[9] = gravity;
+  f32[9] = 0; // pad (was gravity)
   // f32[10], f32[11] = padding
   return f32;
 }
@@ -132,7 +130,6 @@ const BECKETT_PALETTE = [
 const BECKETT_DEFAULTS = {
   tonalMap: { enabled: true, valueRange: 0.8, keyValue: 0.5, contrast: 0.6 },
   velvet: 0.6,
-  gravity: 0.4,
   tonalSort: true,
   shadowChroma: 0.4,
   sunAngle: 0.8,
@@ -335,39 +332,6 @@ describe('velvet surface', () => {
   });
 });
 
-describe('gravity (asymmetric dissolution)', () => {
-  it('gravity pull increases effective softness below center', () => {
-    const formY = 0.5;
-    const belowPixel = 0.7; // below the form center
-    const abovePixel = 0.3; // above the form center
-
-    const below = Math.max(0, belowPixel - formY);
-    const above = Math.max(0, abovePixel - formY);
-
-    // smoothstep(0, 0.15, below) * gravity
-    const smoothstep = (e0: number, e1: number, x: number) => {
-      const t = Math.max(0, Math.min(1, (x - e0) / (e1 - e0)));
-      return t * t * (3 - 2 * t);
-    };
-
-    const gravBelow = smoothstep(0, 0.15, below) * BECKETT_DEFAULTS.gravity;
-    const gravAbove = smoothstep(0, 0.15, above) * BECKETT_DEFAULTS.gravity;
-
-    expect(gravBelow).toBeGreaterThan(0); // bottom edge dissolves
-    expect(gravAbove).toBe(0); // top edge stays sharp
-  });
-
-  it('gravity=0 means no asymmetry', () => {
-    const below = 0.2;
-    const smoothstep = (e0: number, e1: number, x: number) => {
-      const t = Math.max(0, Math.min(1, (x - e0) / (e1 - e0)));
-      return t * t * (3 - 2 * t);
-    };
-    const grav = smoothstep(0, 0.15, below) * 0; // gravity=0
-    expect(grav).toBe(0);
-  });
-});
-
 describe('smooth union SDF', () => {
   it('two overlapping circles merge into single shape', () => {
     const d1 = -0.02; // inside first circle
@@ -414,11 +378,6 @@ describe('default scene parameters (Beckett intent)', () => {
     expect(BECKETT_DEFAULTS.velvet).toBeLessThan(0.8);
   });
 
-  it('gravity gives gentle downward dissolution', () => {
-    expect(BECKETT_DEFAULTS.gravity).toBeGreaterThan(0.2);
-    expect(BECKETT_DEFAULTS.gravity).toBeLessThanOrEqual(0.5);
-  });
-
   it('tonal sort is on (dark-first layering)', () => {
     expect(BECKETT_DEFAULTS.tonalSort).toBe(true);
   });
@@ -445,7 +404,6 @@ describe('form buffer packing', () => {
       BECKETT_DEFAULTS.tonalMap,
       BECKETT_DEFAULTS.velvet,
       BECKETT_DEFAULTS.tonalSort,
-      BECKETT_DEFAULTS.gravity,
     );
     expect(header.byteLength).toBe(48);
   });
@@ -454,7 +412,7 @@ describe('form buffer packing', () => {
     const header = packHeader(
       7, 0.8,
       { enabled: true, keyValue: 0.5, valueRange: 0.8, contrast: 0.6 },
-      0.6, true, 0.4,
+      0.6, true,
     );
     // Read back as u32 for count
     const u32View = new Uint32Array(header.buffer);
@@ -467,7 +425,7 @@ describe('form buffer packing', () => {
     expect(header[6]).toBeCloseTo(1.0);  // tonal_sort (true)
     expect(header[7]).toBeCloseTo(1.0);  // tonal_enabled (true)
     expect(header[8]).toBeCloseTo(0.0);  // scatter (removed)
-    expect(header[9]).toBeCloseTo(0.4);  // gravity
+    expect(header[9]).toBeCloseTo(0.0);  // pad (was gravity)
   });
 
   it('per-form stride is 64 bytes (16 floats)', () => {

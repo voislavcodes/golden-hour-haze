@@ -40,7 +40,7 @@ struct FormsParams {
   tonal_sort: f32,
   tonal_enabled: f32,
   base_opacity: f32,
-  gravity: f32,    // downward dissolution amount
+  _pad_gravity: f32,
   baked_count: u32,
   falloff: f32,
   edge_atmosphere: f32,
@@ -207,7 +207,6 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
   var live_opacity = 0.0;
   var running_weight = 0.0; // intra-stroke weight for multi-segment attenuation
 
-  let grav_probe = 0.06;
   let velvet_exp = mix(1.5, 0.7, params.velvet);
 
   for (var i = params.baked_count; i < params.form_count; i++) {
@@ -238,16 +237,6 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
     if (edge < 0.001) { continue; } // form doesn't reach this pixel
 
     var form_color = vec3f(f.color_r, f.color_g, f.color_b);
-
-    // Gravity: per-form pigment settling via vertical SDF probes
-    let d_up = eval_sdf(f, p - vec2f(0.0, grav_probe), aspect);
-    let d_dn = eval_sdf(f, p + vec2f(0.0, grav_probe), aspect);
-    let vert_pos = clamp((d_up - d_dn) * 8.0, -1.0, 1.0);
-    let settle = vert_pos * params.gravity;
-    let base_lum = lum(form_color);
-    form_color *= (1.0 - settle * 0.45);
-    let sat_shift = 1.0 - settle * 0.4;
-    form_color = vec3f(base_lum) + (form_color - vec3f(base_lum)) * sat_shift;
 
     // Stroke direction and sun interaction
     let sl = length(vec2f(f.stroke_dir_x, f.stroke_dir_y));
@@ -280,7 +269,9 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
     let raw_alpha = pow(edge * f.opacity, velvet_exp);
     let attenuation = params.base_opacity * pow(params.falloff, existing_weight + running_weight);
     let effective_alpha = raw_alpha * attenuation;
-    running_weight += raw_alpha; // raw weight tracks user intent, not landed paint
+    // Exp-decay: weight grows ~logarithmically so overlapping segments from
+    // one stroke don't starve subsequent strokes of K/S contribution
+    running_weight += raw_alpha * exp(-running_weight);
 
     // Accumulate pigment in K/S space — colors mix subtractively
     let refl = rgb_to_reflectance(form_color);
