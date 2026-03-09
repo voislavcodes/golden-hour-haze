@@ -13,7 +13,8 @@ import { startLoop } from './gpu/frame-loop.js';
 // Painting
 import { initSurface, resizeSurface } from './painting/surface.js';
 import { initBrushEngine, beginStroke, endStroke, dispatchBrushDabs, reloadBrush } from './painting/brush-engine.js';
-import { initDissolveEngine, beginDissolve, endDissolve, dispatchDissolveDabs } from './painting/dissolve-engine.js';
+import { initScrapeEngine, beginScrape, endScrape, dispatchScrapeDabs } from './painting/scrape-engine.js';
+import { initWipeEngine, beginWipe, endWipe, dispatchWipeDabs } from './painting/wipe-engine.js';
 import { pushSnapshot, undo, redo } from './painting/undo.js';
 
 // Surface texture
@@ -79,7 +80,7 @@ let compositorBGDirty = true;
 
 // Stroke state
 let strokeActive = false;
-let strokeTool: 'form' | 'dissolve' | null = null;
+let strokeTool: 'form' | 'scrape' | 'wipe' | null = null;
 
 export function initApp() {
   const gpu = getGPU();
@@ -96,7 +97,8 @@ export function initApp() {
   initAtmosphere();
   initSurface(width, height);
   initBrushEngine();
-  initDissolveEngine();
+  initScrapeEngine();
+  initWipeEngine();
   initLightLayer();
   initCompositor();
 
@@ -301,8 +303,9 @@ function setupPaintingInteraction() {
 
   uiStore.subscribe((ui) => {
     const isBrush = ui.activeTool === 'form';
-    const isDissolve = ui.activeTool === 'dissolve';
-    const isPaintTool = isBrush || isDissolve;
+    const isScrape = ui.activeTool === 'scrape';
+    const isWipe = ui.activeTool === 'wipe';
+    const isPaintTool = isBrush || isScrape || isWipe;
 
     if (isPaintTool && ui.mouseDown && !wasDown) {
       // Stroke begin — push undo snapshot
@@ -315,12 +318,14 @@ function setupPaintingInteraction() {
       pointerQueue.length = 0;
 
       strokeActive = true;
-      strokeTool = isBrush ? 'form' : 'dissolve';
+      strokeTool = isBrush ? 'form' : isScrape ? 'scrape' : 'wipe';
 
       if (isBrush) {
         beginStroke(ui.mouseX, ui.mouseY);
+      } else if (isScrape) {
+        beginScrape(ui.mouseX, ui.mouseY);
       } else {
-        beginDissolve(ui.mouseX, ui.mouseY);
+        beginWipe(ui.mouseX, ui.mouseY);
       }
     }
 
@@ -331,8 +336,10 @@ function setupPaintingInteraction() {
       // Stroke end
       if (strokeTool === 'form') {
         endStroke();
+      } else if (strokeTool === 'scrape') {
+        endScrape();
       } else {
-        endDissolve();
+        endWipe();
       }
       strokeActive = false;
       strokeTool = null;
@@ -396,14 +403,16 @@ function renderFrame(dt: number, elapsed: number) {
     compositorBGDirty = true;
   }
 
-  // Painting surface — dispatch brush/dissolve dabs during active stroke
+  // Painting surface — dispatch brush/scrape/wipe dabs during active stroke
   if (isDirty('surface')) {
     let painted = false;
     if (strokeActive && ui.mouseDown) {
       if (strokeTool === 'form') {
         painted = dispatchBrushDabs(encoder, ui.mouseX, ui.mouseY);
-      } else if (strokeTool === 'dissolve') {
-        painted = dispatchDissolveDabs(encoder, ui.mouseX, ui.mouseY);
+      } else if (strokeTool === 'scrape') {
+        painted = dispatchScrapeDabs(encoder, ui.mouseX, ui.mouseY);
+      } else if (strokeTool === 'wipe') {
+        painted = dispatchWipeDabs(encoder, ui.mouseX, ui.mouseY);
       }
     }
     clearDirty('surface');

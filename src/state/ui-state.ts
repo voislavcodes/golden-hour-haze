@@ -1,6 +1,6 @@
 import { createStore } from './store.js';
 
-export type Tool = 'select' | 'form' | 'light' | 'dissolve' | 'drift' | 'palette' | 'anchor';
+export type Tool = 'select' | 'form' | 'light' | 'scrape' | 'wipe' | 'drift' | 'palette' | 'anchor';
 
 export interface UIState {
   activeTool: Tool;
@@ -14,7 +14,6 @@ export interface UIState {
   showUI: boolean;
   brushSize: number;
   grayscalePreview: boolean;
-  dissolveStrength: number;
 }
 
 export const uiStore = createStore<UIState>({
@@ -29,7 +28,6 @@ export const uiStore = createStore<UIState>({
   showUI: true,
   brushSize: 0.03,
   grayscalePreview: false,
-  dissolveStrength: 0.5,
 });
 
 // Pointer position queue — captures coalesced events for smooth brush strokes

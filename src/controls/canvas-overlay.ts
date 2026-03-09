@@ -3,13 +3,14 @@ import { customElement, state } from 'lit/decorators.js';
 import { BaseControl } from './base-control.js';
 import { uiStore, pointerQueue, type Tool } from '../state/ui-state.js';
 
-const BRUSH_TOOLS = new Set<Tool>(['form']);
+const BRUSH_TOOLS = new Set<Tool>(['form', 'scrape', 'wipe']);
 
 const TOOL_CURSORS: Record<Tool, string> = {
   select:   'default',
   form:     'none',
   light:    'cell',
-  dissolve: 'none',
+  scrape:   'none',
+  wipe:     'none',
   drift:    'grab',
   palette:  'copy',
   anchor:   'crosshair',
@@ -41,6 +42,17 @@ export class CanvasOverlay extends BaseControl {
         transform: translate(-50%, -50%);
         z-index: 11;
         box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.2);
+      }
+
+      .blade-cursor {
+        position: fixed;
+        height: 2px;
+        border-radius: 0;
+        border: 1px solid rgba(255, 255, 255, 0.55);
+        pointer-events: none;
+        z-index: 11;
+        box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.2);
+        background: rgba(255, 255, 255, 0.15);
       }
 
       .horizon-guide {
@@ -79,6 +91,8 @@ export class CanvasOverlay extends BaseControl {
   private _horizonFadeTimer?: number;
   private _unsubscribe?: () => void;
   private _activeTool: Tool = 'form';
+  private _scrapeDir = { x: 1, y: 0 };
+  private _prevPointerPos: { x: number; y: number } | null = null;
 
   private _horizonHandler = ((e: CustomEvent) => {
     const { y, active } = e.detail as { y: number; active: boolean };
@@ -149,6 +163,31 @@ export class CanvasOverlay extends BaseControl {
     const last = coalesced[coalesced.length - 1] ?? e;
     this._mx = last.clientX;
     this._my = last.clientY;
+
+    // Track scrape direction from pointer movement
+    if (this._activeTool === 'scrape') {
+      const px = last.clientX;
+      const py = last.clientY;
+      if (this._prevPointerPos) {
+        const dx = px - this._prevPointerPos.x;
+        const dy = py - this._prevPointerPos.y;
+        const len = Math.sqrt(dx * dx + dy * dy);
+        if (len > 2) {
+          const nx = dx / len;
+          const ny = dy / len;
+          this._scrapeDir.x = this._scrapeDir.x * 0.7 + nx * 0.3;
+          this._scrapeDir.y = this._scrapeDir.y * 0.7 + ny * 0.3;
+          const sLen = Math.sqrt(this._scrapeDir.x ** 2 + this._scrapeDir.y ** 2);
+          if (sLen > 0.001) {
+            this._scrapeDir.x /= sLen;
+            this._scrapeDir.y /= sLen;
+          }
+          this.requestUpdate();
+        }
+      }
+      this._prevPointerPos = { x: px, y: py };
+    }
+
     const { x, y } = this._normalizeCoords(last);
     uiStore.set({
       mouseX: x,
@@ -195,10 +234,16 @@ export class CanvasOverlay extends BaseControl {
 
   render() {
     return html`
-      ${this._showBrushCircle ? html`
+      ${this._showBrushCircle && this._activeTool !== 'scrape' ? html`
         <div
           class="brush-cursor"
           style="left:${this._mx}px;top:${this._my}px;width:${this._brushDiameter}px;height:${this._brushDiameter}px"
+        ></div>
+      ` : ''}
+      ${this._activeTool === 'scrape' ? html`
+        <div
+          class="blade-cursor"
+          style="left:${this._mx}px;top:${this._my}px;width:${this._brushDiameter}px;transform:translate(-50%,-50%) rotate(${Math.atan2(this._scrapeDir.x, -this._scrapeDir.y) * (180 / Math.PI)}deg)"
         ></div>
       ` : ''}
       ${this._horizonGuideVisible ? html`

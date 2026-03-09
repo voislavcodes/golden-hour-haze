@@ -1,11 +1,13 @@
-// Dissolve engine — subtract paint from the accumulation surface
+// Wipe engine — rag removal from the accumulation surface
+// Omnidirectional, grain-aware, patchy cloth texture, per-tool reservoir
 
 import { getGPU } from '../gpu/context.js';
 import { createComputePipeline } from '../gpu/pipeline-cache.js';
 import { getAccumPP, swapAccum, getSurfaceWidth, getSurfaceHeight } from './surface.js';
+import { getSurfaceGrainTexture } from '../surface/surface-grain-lut.js';
 import { sceneStore } from '../state/scene-state.js';
 import { uiStore, pointerQueue } from '../state/ui-state.js';
-import dissolveShader from '../shaders/brush/dissolve.wgsl';
+import wipeShader from '../shaders/brush/wipe.wgsl';
 
 type Vec2 = [number, number];
 
@@ -13,46 +15,68 @@ let pipeline: GPUComputePipeline;
 let paramBuffer: GPUBuffer;
 let paramLayout: GPUBindGroupLayout;
 let textureLayout: GPUBindGroupLayout;
+let grainLayout: GPUBindGroupLayout;
+let grainSampler: GPUSampler;
 
-const PARAM_SIZE = 32; // bytes per dab
-let paramStride = 256; // aligned stride, set at init from device limits
+const PARAM_SIZE = 32; // bytes: 2f center + 1f radius + 1f softness + 1f strength + 1f ghost_retention + 1f patchiness + 1f pad
+let paramStride = 256;
 const MAX_DABS_PER_FRAME = 256;
 
 let lastPos: Vec2 | null = null;
 
-export function initDissolveEngine() {
+// Per-tool reservoir
+let reservoir = 1.0;
+let totalDistance = 0;
+
+export function initWipeEngine() {
   const { device } = getGPU();
 
   paramStride = Math.max(PARAM_SIZE, device.limits.minUniformBufferOffsetAlignment);
 
   paramLayout = device.createBindGroupLayout({
-    label: 'dissolve-param-layout',
+    label: 'wipe-param-layout',
     entries: [
       { binding: 0, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'uniform', hasDynamicOffset: false } },
     ],
   });
 
   textureLayout = device.createBindGroupLayout({
-    label: 'dissolve-tex-layout',
+    label: 'wipe-tex-layout',
     entries: [
       { binding: 0, visibility: GPUShaderStage.COMPUTE, texture: { sampleType: 'unfilterable-float' } },
       { binding: 1, visibility: GPUShaderStage.COMPUTE, storageTexture: { access: 'write-only', format: 'rgba16float' } },
     ],
   });
 
-  pipeline = createComputePipeline('dissolve', device, {
-    label: 'dissolve-compute',
+  grainLayout = device.createBindGroupLayout({
+    label: 'wipe-grain-layout',
+    entries: [
+      { binding: 0, visibility: GPUShaderStage.COMPUTE, texture: { sampleType: 'float' } },
+      { binding: 1, visibility: GPUShaderStage.COMPUTE, sampler: { type: 'filtering' } },
+    ],
+  });
+
+  grainSampler = device.createSampler({
+    label: 'wipe-grain-sampler',
+    magFilter: 'linear',
+    minFilter: 'linear',
+    addressModeU: 'repeat',
+    addressModeV: 'repeat',
+  });
+
+  pipeline = createComputePipeline('wipe', device, {
+    label: 'wipe-compute',
     layout: device.createPipelineLayout({
-      bindGroupLayouts: [paramLayout, textureLayout],
+      bindGroupLayouts: [paramLayout, textureLayout, grainLayout],
     }),
     compute: {
-      module: device.createShaderModule({ label: 'dissolve-shader', code: dissolveShader }),
+      module: device.createShaderModule({ label: 'wipe-shader', code: wipeShader }),
       entryPoint: 'main',
     },
   });
 
   paramBuffer = device.createBuffer({
-    label: 'dissolve-params',
+    label: 'wipe-params',
     size: MAX_DABS_PER_FRAME * paramStride,
     usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
   });
@@ -72,15 +96,19 @@ function interpolateStroke(prev: Vec2, curr: Vec2, radius: number): Vec2[] {
   return points;
 }
 
-export function beginDissolve(x: number, y: number) {
+export function beginWipe(x: number, y: number) {
   lastPos = [x, y];
+  // Reset per-tool reservoir
+  const load = sceneStore.get().load;
+  reservoir = load > 0 ? 1.0 : 0;
+  totalDistance = 0;
 }
 
-export function endDissolve() {
+export function endWipe() {
   lastPos = null;
 }
 
-export function dispatchDissolveDabs(encoder: GPUCommandEncoder, x: number, y: number): boolean {
+export function dispatchWipeDabs(encoder: GPUCommandEncoder, x: number, y: number): boolean {
   const { device } = getGPU();
   const scene = sceneStore.get();
   const ui = uiStore.get();
@@ -110,18 +138,54 @@ export function dispatchDissolveDabs(encoder: GPUCommandEncoder, x: number, y: n
   const w = getSurfaceWidth();
   const h = getSurfaceHeight();
 
-  // Write all dab params at unique offsets before encoding dispatches
+  // Accumulate pixel distance for depletion
+  for (let i = 1; i < points.length; i++) {
+    const dx = points[i][0] - points[i - 1][0];
+    const dy = points[i][1] - points[i - 1][1];
+    totalDistance += Math.sqrt(dx * dx + dy * dy) * w;
+  }
+
+  // Update reservoir based on depletion curve
+  const load = scene.load;
+  if (load <= 0) {
+    reservoir = 0;
+  } else {
+    const holdDistance = load * 400;
+    const drainDistance = totalDistance - holdDistance;
+    if (drainDistance > 0) {
+      const drainRate = (1.0 - load) * 0.003 + 0.0002;
+      reservoir = Math.exp(-drainRate * drainDistance);
+    } else {
+      reservoir = 1.0;
+    }
+  }
+
+  const ghostRetention = 0.15;
+  const patchiness = 0.6;
+
+  // Write all dab params before encoding dispatches
   for (let i = 0; i < points.length; i++) {
     const pt = points[i];
     const data = new Float32Array([
-      pt[0], pt[1],       // center
-      radius,              // radius
-      softness,            // softness
-      ui.dissolveStrength, // dissolve_strength
-      0, 0, 0,             // padding
+      pt[0], pt[1],    // center
+      radius,           // radius
+      softness,         // softness
+      reservoir,        // strength
+      ghostRetention,   // ghost_retention
+      patchiness,       // patchiness
+      0,                // _pad0
     ]);
     device.queue.writeBuffer(paramBuffer, i * paramStride, data);
   }
+
+  // Create grain bind group once per dispatch batch
+  const grainBG = device.createBindGroup({
+    layout: grainLayout,
+    entries: [
+      { binding: 0, resource: getSurfaceGrainTexture().createView() },
+      { binding: 1, resource: grainSampler },
+    ],
+  });
 
   for (let i = 0; i < points.length; i++) {
     const accumPP = getAccumPP();
@@ -139,14 +203,16 @@ export function dispatchDissolveDabs(encoder: GPUCommandEncoder, x: number, y: n
       ],
     });
 
-    const pass = encoder.beginComputePass({ label: 'dissolve-dab' });
+    const pass = encoder.beginComputePass({ label: 'wipe-dab' });
     pass.setPipeline(pipeline);
     pass.setBindGroup(0, paramBG);
     pass.setBindGroup(1, texBG);
+    pass.setBindGroup(2, grainBG);
     pass.dispatchWorkgroups(Math.ceil(w / 8), Math.ceil(h / 8));
     pass.end();
 
     swapAccum();
   }
+
   return true;
 }
