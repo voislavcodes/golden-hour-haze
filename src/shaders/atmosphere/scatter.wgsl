@@ -34,7 +34,7 @@ const GOLDEN_HORIZON = vec3f(0.95, 0.65, 0.30);
 const NIGHT_HORIZON = vec3f(0.05, 0.05, 0.12);
 const GOLDEN_GLOW = vec3f(0.95, 0.80, 0.50);
 
-fn compute_sky(uv: vec2f, elevation: f32, azimuth: f32) -> vec3f {
+fn compute_sky(uv: vec2f, elevation: f32, azimuth: f32, density: f32, warmth: f32) -> vec3f {
   // Normalize elevation: -0.6 to 0.9 range
   let elev_norm = clamp((elevation + 0.6) / 1.5, 0.0, 1.0); // 0=deep night, 1=noon
 
@@ -47,25 +47,22 @@ fn compute_sky(uv: vec2f, elevation: f32, azimuth: f32) -> vec3f {
   let horizon_base = mix(NIGHT_HORIZON, day_horizon, smoothstep(0.0, 0.7, elev_norm));
   let horizon = mix(horizon_base, GOLDEN_HORIZON, golden_t);
 
-  // Vertical gradient bands — shift with elevation and horizon position
-  let horizon_width = mix(0.35, 0.6, elev_norm); // how much of sky is horizon color
-  let v = uv.y; // 0=top, 1=bottom
+  // Vertical gradient — v=0 bottom, v=1 top (matches horizon_y convention)
+  let horizon_width = mix(0.35, 0.6, elev_norm);
+  let v = 1.0 - uv.y; // flip: 0=bottom, 1=top
 
   var sky: vec3f;
   if (params.horizon_y >= 0.0) {
-    // Horizon control shifts the gradient bands (0.5 = no shift)
-    let horizon_shift = (params.horizon_y - 0.5) * 1.5;
-    let horizon_edge = clamp(horizon_width + horizon_shift, 0.05, 0.95);
-    let mid_edge = clamp(horizon_edge + 0.3, horizon_edge + 0.05, 1.0);
+    let h = params.horizon_y;
 
-    // Three-band blend: horizon band at top, mid transition, zenith at bottom
-    if (v < horizon_edge) {
-      sky = mix(horizon, mix(horizon, zenith, 0.3), v / max(horizon_edge, 0.01));
-    } else if (v < mid_edge) {
-      let t = (v - horizon_edge) / (mid_edge - horizon_edge);
-      sky = mix(mix(horizon, zenith, 0.3), zenith, t * t);
+    if (v <= h) {
+      // Below horizon: dark ground up to horizon color
+      let t = v / max(h, 0.01);
+      sky = mix(mix(horizon, zenith, 0.5) * 0.25, horizon, pow(t, 0.8));
     } else {
-      sky = zenith;
+      // Above horizon: horizon → zenith
+      let t = (v - h) / max(1.0 - h, 0.01);
+      sky = mix(horizon, zenith, pow(t, 1.5 + (1.0 - horizon_width) * 2.0));
     }
   } else {
     // Horizon off: simple vertical blend without horizon pivot
@@ -73,16 +70,27 @@ fn compute_sky(uv: vec2f, elevation: f32, azimuth: f32) -> vec3f {
     sky = mix(horizon, zenith, sky_factor);
   }
 
-  // Horizontal sun glow — directional warmth toward sun azimuth
+  // Horizontal sun glow — directional warmth toward sun azimuth, centered on horizon
   let sun_glow = exp(-(uv.x - azimuth) * (uv.x - azimuth) * 3.0);
   let glow_strength = golden_t * 0.6 + smoothstep(0.0, 0.3, elev_norm) * 0.15;
-  sky += GOLDEN_GLOW * sun_glow * glow_strength * (1.0 - v * 0.8);
+  let horizon_proximity = select(1.0 - saturate(abs(v - params.horizon_y) * 2.0), 1.0 - v * 0.8, params.horizon_y < 0.0);
+  sky += GOLDEN_GLOW * sun_glow * glow_strength * horizon_proximity;
 
   // Night mode: below-horizon darkening
   if (elevation < -0.1) {
     let night_t = smoothstep(-0.1, -0.5, elevation);
     sky = mix(sky, NIGHT_ZENITH * 0.5, night_t);
   }
+
+  // Dense atmosphere flattens the sky gradient toward uniform fog
+  let temp_darkness = mix(0.35, 0.65, saturate(warmth * 0.5 + 0.5));
+  let fog_color = mix(zenith, horizon, 0.5) * temp_darkness;
+  let gradient_strength = max(1.0 - pow(density, 1.5) * 0.9, 0.0);
+  sky = mix(fog_color, sky, gradient_strength);
+
+  // Dense atmosphere absorbs light
+  let density_darken = 1.0 - density * 0.3;
+  sky *= density_darken;
 
   return sky;
 }
@@ -110,12 +118,13 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4f {
   let warmth = density_data.g;
 
   // Compute sky gradient
-  var sky = compute_sky(in.uv, params.sun_elevation, params.sun_azimuth);
+  var sky = compute_sky(in.uv, params.sun_elevation, params.sun_azimuth, density, warmth);
 
   // Atmosphere orb influence on sky gradient:
   // Density → haze: washes out gradient contrast toward a uniform fog
   let sky_lum = dot(sky, vec3f(0.3, 0.5, 0.2));
-  let haze = vec3f(sky_lum * 1.1, sky_lum * 1.05, sky_lum);
+  let haze_tint = 1.0 - saturate(density);
+  let haze = vec3f(sky_lum * (1.0 + 0.1 * haze_tint), sky_lum * (1.0 + 0.05 * haze_tint), sky_lum);
   sky = mix(sky, haze, density * 0.5);
 
   // Warmth → tint: shifts sky warmer (amber) or cooler (blue)
@@ -150,10 +159,16 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4f {
   // to avoid per-pixel noise turbulence creating visible moving clouds
   let smooth_density = mix(density, params.intensity * 0.5, 0.7);
   let optical_depth = smooth_density * depth * 3.0;
-  let rayleigh = rayleigh_norm * rayleigh_phase * (1.0 - exp(-optical_depth));
+  // Dense fog: multiple scattering equalizes wavelengths → achromatic
+  let wavelength_factor = 1.0 - saturate(pow(density, 2.0));
+  let avg_rayleigh = dot(rayleigh_norm, vec3f(0.333));
+  let effective_rayleigh = mix(vec3f(avg_rayleigh), rayleigh_norm, wavelength_factor);
+  let rayleigh = effective_rayleigh * rayleigh_phase * (1.0 - exp(-optical_depth));
   let mie = vec3f(mie_phase) * smooth_density * 0.3;
 
-  var scatter_color = (rayleigh * 0.5 + mie) * params.intensity * 0.4;
+  // Dense fog absorbs scatter — no directional light variation in thick fog
+  let scatter_suppress = max(1.0 - density * 0.8, 0.0);
+  var scatter_color = (rayleigh * 0.5 + mie) * params.intensity * 0.4 * scatter_suppress;
 
   // Golden hour warmth shift
   let golden_tint = vec3f(1.2, 0.85, 0.5) * (1.0 + warmth * 0.5);

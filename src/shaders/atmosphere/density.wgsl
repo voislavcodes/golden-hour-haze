@@ -82,8 +82,11 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
 
   let uv = vec2f(f32(gid.x) + 0.5, f32(gid.y) + 0.5) / vec2f(f32(dims.x), f32(dims.y));
 
+  // Dense fog suppression: kills all spatial variation by density ~0.8
+  let fog_suppress = smoothstep(0.4, 0.85, params.density);
+
   // Read previous density via sampler for drift advection
-  let drift = vec2f(params.drift_x, params.drift_y) * params.drift_speed * globals.dt;
+  let drift = vec2f(params.drift_x, params.drift_y) * params.drift_speed * globals.dt * (1.0 - fog_suppress);
   let prev_uv = uv - drift;
   let prev = textureSampleLevel(prev_density, density_sampler, prev_uv, 0.0);
 
@@ -93,20 +96,25 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
   // Base density from depth (deeper = more atmosphere)
   // Ambient floor ensures orb always influences sky even without depth structure
   // Humidity amplifies density ceiling
-  var depth_density = depth * params.density + params.density * 0.3;
+  let effective_density = params.density + pow(params.density, 3.0) * 0.5;
+  // Dense fog flattens depth variation — everything equally obscured
+  let flat_depth = mix(depth, 1.0, fog_suppress);
+  var depth_density = flat_depth * effective_density + effective_density * 0.3;
   depth_density *= 1.0 + params.humidity * 0.5;
 
-  // FBM noise for turbulence — humidity dampens turbulence slightly
-  let effective_turb = params.turbulence * (1.0 - params.humidity * 0.3);
-  let noise_pos = uv * 4.0 + vec2f(globals.time * 0.05, globals.time * 0.03);
+  // FBM noise for turbulence — humidity dampens, density suppresses (fog is uniform, not cloudy)
+  let effective_turb = params.turbulence * (1.0 - params.humidity * 0.3) * (1.0 - fog_suppress);
+  let noise_pos = uv * 4.0;
   let turb = fbm_noise(noise_pos, 4) * effective_turb;
 
   // Gentle horizon haze — subtle density boost near horizon line (off when horizon_y < 0)
-  let horizon_dist = abs(uv.y - params.horizon_y);
-  let horizon_haze = select(0.0, exp(-horizon_dist * horizon_dist * 20.0) * params.density * 0.15, params.horizon_y >= 0.0);
+  let horizon_dist = abs((1.0 - uv.y) - params.horizon_y);
+  let horizon_haze = select(0.0, exp(-horizon_dist * horizon_dist * 20.0) * params.density * 0.15 * (1.0 - fog_suppress), params.horizon_y >= 0.0);
 
   // Evolve density: blend previous with new computation
-  let new_density = mix(depth_density + turb * 0.3 + horizon_haze, prev.r, 0.85);
+  // Dense fog reduces temporal persistence so old noise dies quickly
+  let temporal_blend = mix(0.85, 0.15, fog_suppress);
+  let new_density = mix(depth_density + turb * 0.3 + horizon_haze, prev.r, temporal_blend);
 
   // Warmth: based on depth and global warmth param
   let warmth = mix(params.warmth, params.warmth * (1.0 - depth * 0.5), 0.5);
@@ -114,13 +122,13 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
   // Local grain variation — grain_depth controls depth falloff
   let grain_noise = snoise(uv * 50.0 + vec2f(globals.time * 0.1)) * 0.5 + 0.5;
   let grain_depth_scale = 1.0 - depth * (1.0 - params.grain_depth);
-  let grain_val = grain_noise * params.grain * grain_depth_scale;
+  let grain_val = grain_noise * params.grain * grain_depth_scale * (1.0 - fog_suppress);
 
   // Local scatter based on density and depth
   let scatter_val = new_density * params.scatter * (0.5 + depth * 0.5);
 
   textureStore(output_tex, vec2i(gid.xy), vec4f(
-    clamp(new_density, 0.0, 1.0),
+    clamp(new_density, 0.0, 1.5),
     clamp(warmth, -1.0, 1.0),
     clamp(grain_val, 0.0, 1.0),
     clamp(scatter_val, 0.0, 1.0)
