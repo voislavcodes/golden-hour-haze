@@ -25,7 +25,7 @@ export interface SceneState {
 
 /** Derive sun elevation from dial angle. Shaped sine: golden hour → low, noon → high, night → negative */
 export function sunElevationFromAngle(angle: number): number {
-  return Math.sin(angle - Math.PI / 2) * 0.75 + 0.15;
+  return Math.sin(angle - Math.PI / 2) * 0.35 + 0.25;
 }
 
 /** Compute golden hour factor from sun elevation (0 at noon, 1 at golden hour, clamped for night) */
@@ -68,8 +68,8 @@ export const sceneStore = createStore<SceneState>({
   forms: [],
   lights: [],
   palette: defaultPalette,
-  sunAngle: 0.8, // ~golden hour angle
-  sunElevation: sunElevationFromAngle(0.8),
+  sunAngle: 1.28, // ~golden hour angle
+  sunElevation: sunElevationFromAngle(1.28),
   sunAzimuth: 0.5,
   horizonY: 0.5,
   echo: 0.5,

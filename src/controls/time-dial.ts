@@ -43,16 +43,13 @@ export class TimeDial extends BaseControl {
         transition: border-color 0.2s;
         background: conic-gradient(
           from 0deg,
-          var(--ghz-glass-bg) 0deg,
-          rgba(232, 168, 64, 0.15) 35deg,
-          rgba(232, 168, 64, 0.25) 45deg,
-          rgba(232, 168, 64, 0.15) 55deg,
-          var(--ghz-glass-bg) 90deg,
-          var(--ghz-glass-bg) 270deg,
-          rgba(100, 140, 200, 0.15) 305deg,
-          rgba(100, 140, 200, 0.25) 315deg,
-          rgba(100, 140, 200, 0.15) 325deg,
-          var(--ghz-glass-bg) 360deg
+          rgba(60, 50, 90, 0.25) 0deg,
+          rgba(100, 140, 200, 0.2) 45deg,
+          rgba(232, 168, 64, 0.25) 90deg,
+          rgba(200, 190, 170, 0.12) 180deg,
+          rgba(232, 168, 64, 0.25) 270deg,
+          rgba(100, 140, 200, 0.2) 315deg,
+          rgba(60, 50, 90, 0.25) 360deg
         );
         backdrop-filter: blur(var(--ghz-glass-blur));
         -webkit-backdrop-filter: blur(var(--ghz-glass-blur));
@@ -101,7 +98,7 @@ export class TimeDial extends BaseControl {
     `,
   ];
 
-  @state() private _angle: number = 0.8;
+  @state() private _angle: number = 1.28;
   @state() private _azimuth: number = 0.5;
   @state() private _dragging: boolean = false;
   @state() private _shiftHeld: boolean = false;
@@ -140,6 +137,9 @@ export class TimeDial extends BaseControl {
     const s = sceneStore.get();
     this._angle = s.sunAngle;
     this._azimuth = s.sunAzimuth;
+    // Initialize _lutT from angle (reverse LUT lookup)
+    const idx = this._angleLUT.findIndex((a) => a >= this._angle);
+    this._lutT = idx >= 0 ? idx / 256 : 0;
     this._unsubscribe = sceneStore.select(
       (s) => s.sunAngle,
       (angle) => { this._angle = angle; }
@@ -190,9 +190,9 @@ export class TimeDial extends BaseControl {
     }
     this._shiftHeld = false;
 
-    // Horizontal drag sweeps through time, vertical drag for fine-tune
-    // ~400px drag = full cycle, vertical at 1/3 sensitivity for fine control
-    const delta = (dx + dy * -0.33) * 0.0025;
+    // Vertical drag only: up = brighter (noon), down = darker (dusk)
+    // ~300px drag = full sweep
+    const delta = -dy * 0.0033;
     this._lutT = ((this._lutT + delta) % 1 + 1) % 1; // wrap 0-1
     const idx = Math.min(255, Math.floor(this._lutT * 256));
     const angle = this._angleLUT[idx];
@@ -206,13 +206,8 @@ export class TimeDial extends BaseControl {
     this._shiftHeld = false;
   }
 
-  /** Convert radians to a human-readable time string (golden hour = ~6pm feel) */
   private get _timeLabel(): string {
-    // Map 0-2PI to 0-24 hours for display
-    const hours = (this._angle / (Math.PI * 2)) * 24;
-    const h = Math.floor(hours) % 24;
-    const m = Math.floor((hours - Math.floor(hours)) * 60);
-    return `${h.toString().padStart(2, '0')}:${m.toString().padStart(2, '0')}`;
+    return this._lutT.toFixed(2);
   }
 
   /** Indicator rotation in degrees */
@@ -237,7 +232,7 @@ export class TimeDial extends BaseControl {
           ></div>
           <div class="dial-center"></div>
         </div>
-        <div class="label">sun angle</div>
+        <div class="label">time</div>
         <div class="time-value">${this._timeLabel}</div>
       </div>
     `;
