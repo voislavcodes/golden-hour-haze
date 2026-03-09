@@ -65,6 +65,7 @@ import './controls/velvet-slider.js';
 import './controls/horizon-control.js';
 import './controls/light-wells.js';
 import './controls/surface-pad.js';
+import './controls/export-button.js';
 
 // Input
 import { initPointerInput } from './input/pointer.js';
