@@ -91,8 +91,9 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
   let depth = textureSampleLevel(depth_tex, density_sampler, uv, 0.0).r;
 
   // Base density from depth (deeper = more atmosphere)
+  // Ambient floor ensures orb always influences sky even without depth structure
   // Humidity amplifies density ceiling
-  var depth_density = depth * params.density;
+  var depth_density = depth * params.density + params.density * 0.3;
   depth_density *= 1.0 + params.humidity * 0.5;
 
   // FBM noise for turbulence — humidity dampens turbulence slightly

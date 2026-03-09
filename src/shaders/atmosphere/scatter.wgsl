@@ -104,7 +104,16 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4f {
   let warmth = density_data.g;
 
   // Compute sky gradient
-  let sky = compute_sky(in.uv, params.sun_elevation, params.sun_azimuth);
+  var sky = compute_sky(in.uv, params.sun_elevation, params.sun_azimuth);
+
+  // Atmosphere orb influence on sky gradient:
+  // Density → haze: washes out gradient contrast toward a uniform fog
+  let sky_lum = dot(sky, vec3f(0.3, 0.5, 0.2));
+  let haze = vec3f(sky_lum * 1.1, sky_lum * 1.05, sky_lum);
+  sky = mix(sky, haze, density * 0.5);
+
+  // Warmth → tint: shifts sky warmer (amber) or cooler (blue)
+  sky *= vec3f(1.0 + warmth * 0.15, 1.0 + warmth * 0.03, 1.0 - warmth * 0.12);
 
   // Sun direction from angle + elevation
   let sun_dir = normalize(vec3f(
