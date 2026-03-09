@@ -32,6 +32,7 @@ export interface FormDef {
   softness: number;
   depth: number;         // 0-1
   colorIndex: number;    // palette index
+  paintedValue: number;  // 0-1, tonal column value at paint time (default 0.5)
   opacity: number;
   dissolution?: number;  // legacy, now handled by dissolution texture
   strokeDirX: number;    // normalized stroke direction
@@ -89,6 +90,7 @@ export interface PaletteColor {
 export interface PaletteState {
   colors: PaletteColor[];
   activeIndex: number;
+  tonalValues: number[];  // per-swatch value, 0=light 1=dark, default 0.5
 }
 
 export const MAX_FORMS = 1024;

@@ -3,6 +3,7 @@ import { customElement, state } from 'lit/decorators.js';
 import { BaseControl } from './base-control.js';
 import { sceneStore } from '../state/scene-state.js';
 import type { PaletteColor } from '../layers/layer-types.js';
+import { sampleTonalColumn } from '../layers/tonal-column.js';
 
 @customElement('ghz-mood-ring')
 export class MoodRing extends BaseControl {
@@ -26,16 +27,17 @@ export class MoodRing extends BaseControl {
       .ring {
         position: relative;
         width: 80px;
-        height: 80px;
+        height: 88px;
       }
 
       .swatch {
         position: absolute;
         width: 20px;
-        height: 20px;
-        border-radius: 50%;
+        height: 40px;
+        border-radius: 4px;
         cursor: pointer;
         border: 2px solid transparent;
+        overflow: hidden;
         transition: border-color var(--ghz-transition),
                     transform var(--ghz-transition),
                     box-shadow var(--ghz-transition);
@@ -51,6 +53,16 @@ export class MoodRing extends BaseControl {
         transform: scale(1.2);
       }
 
+      .value-indicator {
+        position: absolute;
+        left: 0;
+        width: 100%;
+        height: 2px;
+        background: rgba(255, 255, 255, 0.9);
+        box-shadow: 0 0 3px rgba(0, 0, 0, 0.5);
+        pointer-events: none;
+      }
+
       .label {
         text-align: center;
         font-size: 9px;
@@ -64,27 +76,58 @@ export class MoodRing extends BaseControl {
 
   @state() private _colors: PaletteColor[] = [];
   @state() private _activeIndex: number = 0;
+  @state() private _tonalValues: number[] = [];
 
   private _unsubscribe?: () => void;
+  private _wheelHandler?: (e: WheelEvent) => void;
 
   connectedCallback() {
     super.connectedCallback();
     const palette = sceneStore.get().palette;
     this._colors = palette.colors;
     this._activeIndex = palette.activeIndex;
+    this._tonalValues = palette.tonalValues ?? palette.colors.map(() => 0.5);
 
     this._unsubscribe = sceneStore.select(
       (s) => s.palette,
       (palette) => {
         this._colors = palette.colors;
         this._activeIndex = palette.activeIndex;
+        this._tonalValues = palette.tonalValues ?? palette.colors.map(() => 0.5);
       }
     );
+  }
+
+  protected firstUpdated() {
+    // Add wheel listener imperatively with {passive: false} so preventDefault works
+    const ring = this.shadowRoot!.querySelector('.ring');
+    if (ring) {
+      this._wheelHandler = (e: WheelEvent) => {
+        const swatch = (e.target as HTMLElement).closest('.swatch') as HTMLElement | null;
+        if (!swatch) return;
+        const idx = Number(swatch.dataset.index);
+        if (isNaN(idx)) return;
+        e.preventDefault();
+        e.stopPropagation();
+        const current = sceneStore.get().palette.tonalValues?.[idx] ?? 0.5;
+        const newValue = Math.max(0, Math.min(1, current + e.deltaY * 0.002));
+        sceneStore.update((s) => {
+          const vals = [...(s.palette.tonalValues ?? s.palette.colors.map(() => 0.5))];
+          vals[idx] = newValue;
+          return { palette: { ...s.palette, tonalValues: vals } };
+        });
+      };
+      ring.addEventListener('wheel', this._wheelHandler as EventListener, { passive: false });
+    }
   }
 
   disconnectedCallback() {
     super.disconnectedCallback();
     this._unsubscribe?.();
+    if (this._wheelHandler) {
+      const ring = this.shadowRoot?.querySelector('.ring');
+      ring?.removeEventListener('wheel', this._wheelHandler as EventListener);
+    }
   }
 
   private _selectColor(index: number) {
@@ -93,21 +136,39 @@ export class MoodRing extends BaseControl {
     }));
   }
 
-  private _colorToCSS(c: PaletteColor): string {
-    return `rgba(${Math.round(c.r * 255)}, ${Math.round(c.g * 255)}, ${Math.round(c.b * 255)}, ${c.a})`;
+  private _onSwatchDblClick(e: MouseEvent, index: number) {
+    e.preventDefault();
+    sceneStore.update((s) => {
+      const vals = [...(s.palette.tonalValues ?? s.palette.colors.map(() => 0.5))];
+      vals[index] = 0.5;
+      return { palette: { ...s.palette, tonalValues: vals } };
+    });
   }
 
-  /** Position swatches in a circle */
-  private _swatchPosition(index: number, total: number): { x: number; y: number } {
-    const radius = 28;
-    const centerX = 40 - 10; // ring center minus half swatch width
-    const centerY = 40 - 10;
-    const angleOffset = -Math.PI / 2; // start at top
-    const angle = angleOffset + (index / total) * Math.PI * 2;
-    return {
-      x: centerX + Math.cos(angle) * radius,
-      y: centerY + Math.sin(angle) * radius,
-    };
+  private _rgbToCSS(c: { r: number; g: number; b: number }): string {
+    return `rgb(${Math.round(c.r * 255)}, ${Math.round(c.g * 255)}, ${Math.round(c.b * 255)})`;
+  }
+
+  private _tonalGradient(color: PaletteColor): string {
+    const stops = [0, 0.25, 0.5, 0.75, 1.0];
+    const cssStops = stops.map(v => {
+      const c = sampleTonalColumn(color, v);
+      return `${this._rgbToCSS(c)} ${v * 100}%`;
+    });
+    return `linear-gradient(to bottom, ${cssStops.join(', ')})`;
+  }
+
+  /** Position swatches in 3-over-2 grid */
+  private _swatchPosition(index: number): { x: number; y: number } {
+    const spacing = 24;
+    if (index < 3) {
+      const rowWidth = 2 * spacing;
+      const startX = (80 - rowWidth) / 2 - 10;
+      return { x: startX + index * spacing, y: 0 };
+    }
+    const rowWidth = spacing;
+    const startX = (80 - rowWidth) / 2 - 10;
+    return { x: startX + (index - 3) * spacing, y: 44 };
   }
 
   render() {
@@ -115,17 +176,22 @@ export class MoodRing extends BaseControl {
       <div class="ring-container">
         <div class="ring">
           ${this._colors.map((color, i) => {
-            const pos = this._swatchPosition(i, this._colors.length);
+            const pos = this._swatchPosition(i);
+            const value = this._tonalValues[i] ?? 0.5;
             return html`
               <div
                 class="swatch ${this._activeIndex === i ? 'active' : ''}"
+                data-index="${i}"
                 style="
                   left: ${pos.x}px;
                   top: ${pos.y}px;
-                  background: ${this._colorToCSS(color)};
+                  background: ${this._tonalGradient(color)};
                 "
                 @click=${() => this._selectColor(i)}
-              ></div>
+                @dblclick=${(e: MouseEvent) => this._onSwatchDblClick(e, i)}
+              >
+                <div class="value-indicator" style="top: ${value * 36}px"></div>
+              </div>
             `;
           })}
         </div>

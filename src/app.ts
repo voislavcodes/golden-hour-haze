@@ -341,6 +341,8 @@ function setupFormPlacement(_canvas: HTMLCanvasElement) {
 
         let newForm: FormDef;
 
+        const paintedValue = scene.palette.tonalValues?.[scene.palette.activeIndex] ?? 0.5;
+
         if (!wasDown || aDist < 0.001) {
           // Initial click: circle stamp
           lastFormSize = formRadius;
@@ -354,6 +356,7 @@ function setupFormPlacement(_canvas: HTMLCanvasElement) {
             softness,
             depth: ui.mouseY,
             colorIndex: scene.palette.activeIndex,
+            paintedValue,
             opacity,
             dissolution: 0,
             strokeDirX: metrics.dirX,
@@ -378,6 +381,7 @@ function setupFormPlacement(_canvas: HTMLCanvasElement) {
             softness,
             depth: (lastFormY + ui.mouseY) / 2,
             colorIndex: scene.palette.activeIndex,
+            paintedValue,
             opacity,
             dissolution: 0,
             strokeDirX: dx / dist,

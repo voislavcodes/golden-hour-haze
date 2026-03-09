@@ -50,6 +50,7 @@ const defaultPalette: PaletteState = {
     { r: 0.80, g: 0.75, b: 0.60, a: 1 }, // warm cream
   ],
   activeIndex: 0,
+  tonalValues: [0.5, 0.5, 0.5, 0.5, 0.5],
 };
 
 export const sceneStore = createStore<SceneState>({

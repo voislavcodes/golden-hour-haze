@@ -6,6 +6,7 @@ import formsShader from '../shaders/forms/forms.wgsl';
 import glazeShader from '../shaders/forms/glaze.wgsl';
 import type { FormDef, TonalMapParams } from './layer-types.js';
 import { MAX_FORMS, FORM_STRIDE } from './layer-types.js';
+import { sampleTonalColumn } from './tonal-column.js';
 
 let pipeline: GPUComputePipeline;
 let paramBuffer: GPUBuffer;
@@ -206,7 +207,8 @@ export function writeFormsData(
 
   // Sort baked and live partitions independently for tonal sort
   const lumOf = (f: FormDef) => {
-    const c = palette[Math.min(f.colorIndex, palette.length - 1)] ?? { r: 0.5, g: 0.5, b: 0.5 };
+    const base = palette[Math.min(f.colorIndex, palette.length - 1)] ?? { r: 0.5, g: 0.5, b: 0.5 };
+    const c = sampleTonalColumn(base, f.paintedValue ?? 0.5);
     return 0.2126 * c.r + 0.7152 * c.g + 0.0722 * c.b;
   };
   const cmpLum = (a: FormDef, b: FormDef) => lumOf(a) - lumOf(b);
@@ -252,7 +254,8 @@ export function writeFormsData(
   const data = new Float32Array(count * 16);
   for (let i = 0; i < count; i++) {
     const f = toRender[i];
-    const color = palette[Math.min(f.colorIndex, palette.length - 1)] ?? { r: 0.5, g: 0.5, b: 0.5 };
+    const baseColor = palette[Math.min(f.colorIndex, palette.length - 1)] ?? { r: 0.5, g: 0.5, b: 0.5 };
+    const color = sampleTonalColumn(baseColor, f.paintedValue ?? 0.5);
     const off = i * 16;
     data[off] = f.type;
     data[off + 1] = f.x;

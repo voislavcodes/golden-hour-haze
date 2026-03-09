@@ -84,6 +84,14 @@ export function importScene(): Promise<void> {
           // Drop sunAzimuth from old scenes
           delete (scene as any).sunAzimuth;
 
+          // Migrate tonal columns
+          if (scene.forms) {
+            scene.forms = scene.forms.map(f => ({ ...f, paintedValue: f.paintedValue ?? 0.5 }));
+          }
+          if (scene.palette && !scene.palette.tonalValues) {
+            scene.palette.tonalValues = scene.palette.colors.map(() => 0.5);
+          }
+
           sceneStore.set(scene);
           resolve();
         } catch (err) {
