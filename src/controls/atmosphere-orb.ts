@@ -2,7 +2,6 @@ import { html, css } from 'lit';
 import { customElement, state } from 'lit/decorators.js';
 import { BaseControl } from './base-control.js';
 import { sceneStore } from '../state/scene-state.js';
-import type { AtmosphereParams } from '../layers/layer-types.js';
 
 @customElement('ghz-atmosphere-orb')
 export class AtmosphereOrb extends BaseControl {
@@ -11,7 +10,7 @@ export class AtmosphereOrb extends BaseControl {
     css`
       :host {
         position: fixed;
-        bottom: 248px;
+        bottom: 296px;
         right: 20px;
         z-index: 100;
         pointer-events: auto;
@@ -67,25 +66,6 @@ export class AtmosphereOrb extends BaseControl {
         text-transform: uppercase;
       }
 
-      .preset-dots {
-        display: flex;
-        gap: 4px;
-        justify-content: center;
-        margin-top: 4px;
-      }
-
-      .preset-dot {
-        width: 5px;
-        height: 5px;
-        border-radius: 50%;
-        border: 1px solid var(--ghz-text-dim);
-        opacity: 0.4;
-      }
-
-      .preset-dot.filled {
-        background: var(--ghz-accent);
-        opacity: 0.8;
-      }
     `,
   ];
 
@@ -94,14 +74,11 @@ export class AtmosphereOrb extends BaseControl {
   @state() private _grainDepth: number = 0.5;
   @state() private _dragging: boolean = false;
   @state() private _sunWarmth: number = 0;
-  @state() private _presets: (AtmosphereParams | null)[] = [null, null, null, null];
-
   private _startX = 0;
   private _startY = 0;
   private _startWarmth = 0;
   private _startDensity = 0;
   private _unsubscribe?: () => void;
-  private _unsubPresets?: () => void;
 
   connectedCallback() {
     super.connectedCallback();
@@ -109,8 +86,6 @@ export class AtmosphereOrb extends BaseControl {
     this._density = s.atmosphere.density;
     this._warmth = s.atmosphere.warmth;
     this._grainDepth = s.atmosphere.grainDepth;
-    this._presets = s.orbPresets;
-
     this._unsubscribe = sceneStore.select(
       (s) => s.atmosphere,
       (atmo) => {
@@ -131,29 +106,14 @@ export class AtmosphereOrb extends BaseControl {
       }
     );
 
-    this._unsubPresets = sceneStore.select(
-      (s) => s.orbPresets,
-      (presets) => { this._presets = presets; }
-    );
   }
 
   disconnectedCallback() {
     super.disconnectedCallback();
     this._unsubscribe?.();
-    this._unsubPresets?.();
   }
 
   private _onPointerDown(e: PointerEvent) {
-    // Cmd+click: save preset
-    if (e.metaKey) {
-      const presets = [...sceneStore.get().orbPresets];
-      const emptyIdx = presets.findIndex((p) => p === null);
-      const idx = emptyIdx >= 0 ? emptyIdx : 0; // cycle to 0 if all full
-      presets[idx] = { ...sceneStore.get().atmosphere };
-      sceneStore.set({ orbPresets: presets });
-      return;
-    }
-
     this._dragging = true;
     this._startX = e.clientX;
     this._startY = e.clientY;
@@ -250,11 +210,6 @@ export class AtmosphereOrb extends BaseControl {
           ></div>
         </div>
         <div class="label">${this._modeHint}</div>
-        <div class="preset-dots">
-          ${this._presets.map((p) => html`
-            <div class="preset-dot ${p ? 'filled' : ''}"></div>
-          `)}
-        </div>
       </div>
     `;
   }

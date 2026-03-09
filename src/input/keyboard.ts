@@ -24,17 +24,6 @@ export function initKeyboardInput() {
       }
     }
 
-    // Atmosphere preset recall (1-4)
-    const digit = parseInt(e.key, 10);
-    if (digit >= 1 && digit <= 4) {
-      const presets = sceneStore.get().orbPresets;
-      const preset = presets[digit - 1];
-      if (preset) {
-        sceneStore.update(() => ({ atmosphere: { ...preset } }));
-      }
-      return;
-    }
-
     // Brush size shortcuts — always controls circle size for all tools
     if (e.key === '[') {
       uiStore.update((s) => ({ brushSize: Math.max(0.01, s.brushSize * 0.8) }));

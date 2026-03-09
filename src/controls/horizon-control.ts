@@ -10,7 +10,7 @@ export class HorizonControl extends BaseControl {
     css`
       :host {
         position: fixed;
-        bottom: 168px;
+        bottom: 190px;
         right: 20px;
         z-index: 100;
         pointer-events: auto;
