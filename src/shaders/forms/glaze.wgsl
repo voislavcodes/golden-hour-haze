@@ -24,7 +24,9 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
 
   // On full rebake (is_clear), discard old accumulation
   let base_weight = select(accum.a, 0.0, gp.is_clear == 1u);
-  let new_weight = base_weight + live.a;
+  // Count whole stroke layers (smoothstep avoids hard edge at threshold)
+  let stroke_landed = smoothstep(0.01, 0.15, live.a);
+  let new_weight = base_weight + stroke_landed;
 
   textureStore(accum_write, vec2i(gid.xy), vec4f(0.0, 0.0, 0.0, new_weight));
 }

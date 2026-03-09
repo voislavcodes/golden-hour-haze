@@ -183,12 +183,14 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
   var opacity_accum = 0.0;
 
   // Seed from baked texture (completed strokes)
+  // Baked color encodes accumulated K/S sum via reflectance roundtrip —
+  // recover it directly so subsequent strokes ADD more pigment (darken).
   if (params.baked_count > 0u) {
     let baked = textureLoad(baked_tex, vec2i(gid.xy), 0);
     if (baked.a > 0.001) {
       let baked_refl = rgb_to_reflectance(baked.rgb);
       let baked_ks = (1.0 - baked_refl) * (1.0 - baked_refl) / (2.0 * baked_refl);
-      ks_accum = baked_ks * baked.a;
+      ks_accum = baked_ks;
       weight_accum = baked.a;
       opacity_accum = baked.a;
     }
@@ -303,10 +305,9 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
     textureStore(live_tex, vec2i(gid.xy), vec4f(0.0));
   }
 
-  // Convert mixed K/S back to RGB — full baked+live composite for display
-  if (weight_accum > 0.001) {
-    let ks_mixed = ks_accum / weight_accum;
-    let r_mixed = 1.0 + ks_mixed - sqrt(ks_mixed * ks_mixed + 2.0 * ks_mixed);
+  // Convert accumulated K/S to RGB — K/S SUM (not average) so more layers = darker
+  if (opacity_accum > 0.001) {
+    let r_mixed = 1.0 + ks_accum - sqrt(ks_accum * ks_accum + 2.0 * ks_accum);
     let out_color = reflectance_to_rgb(r_mixed);
     textureStore(output_tex, vec2i(gid.xy), vec4f(out_color, opacity_accum));
   } else {
