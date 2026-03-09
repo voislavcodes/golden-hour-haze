@@ -254,7 +254,7 @@ export class LightWells extends BaseControl {
     if (this._selectedIndex < 0 || !this._isActive) return;
     e.preventDefault();
 
-    const delta = e.deltaY > 0 ? -1 : 1;
+    const delta = -Math.sign(e.deltaY) * Math.min(Math.abs(e.deltaY) * 0.04, 1);
     const idx = this._selectedIndex;
     this._resetFadeTimer();
 

@@ -79,7 +79,7 @@ export class PalettePanel extends BaseControl {
   private handleWheel(e: WheelEvent, index: number) {
     e.preventDefault();
     e.stopPropagation();
-    const delta = e.deltaY > 0 ? 0.05 : -0.05;
+    const delta = Math.sign(e.deltaY) * Math.min(Math.abs(e.deltaY) * 0.002, 0.05);
     sceneStore.update((s) => {
       const newValues = [...s.palette.tonalValues];
       newValues[index] = Math.max(0, Math.min(1, newValues[index] + delta));
