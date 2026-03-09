@@ -42,6 +42,16 @@ export class CanvasOverlay extends BaseControl {
         z-index: 11;
         box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.2);
       }
+
+      .horizon-guide {
+        position: absolute;
+        left: 0;
+        right: 0;
+        height: 0;
+        border-top: 1px dashed rgba(255, 255, 255, 0.3);
+        pointer-events: none;
+        transition: opacity 0.5s;
+      }
     `,
   ];
 
@@ -60,8 +70,28 @@ export class CanvasOverlay extends BaseControl {
   @state()
   private _brushDiameter = 0;
 
+  @state()
+  private _horizonGuideY: number = 0;
+
+  @state()
+  private _horizonGuideVisible: boolean = false;
+
+  private _horizonFadeTimer?: number;
   private _unsubscribe?: () => void;
   private _activeTool: Tool = 'form';
+
+  private _horizonHandler = ((e: CustomEvent) => {
+    const { y, active } = e.detail as { y: number; active: boolean };
+    this._horizonGuideY = y;
+    if (active) {
+      clearTimeout(this._horizonFadeTimer);
+      this._horizonGuideVisible = true;
+    } else {
+      this._horizonFadeTimer = window.setTimeout(() => {
+        this._horizonGuideVisible = false;
+      }, 500);
+    }
+  }) as EventListener;
 
   connectedCallback() {
     super.connectedCallback();
@@ -77,11 +107,14 @@ export class CanvasOverlay extends BaseControl {
       }
       this._updateBrushDiameter(s.brushSize);
     });
+    document.addEventListener('horizon-drag', this._horizonHandler);
   }
 
   disconnectedCallback() {
     super.disconnectedCallback();
     this._unsubscribe?.();
+    document.removeEventListener('horizon-drag', this._horizonHandler);
+    clearTimeout(this._horizonFadeTimer);
   }
 
   private _updateBrushDiameter(brushSize: number) {
@@ -155,6 +188,12 @@ export class CanvasOverlay extends BaseControl {
         <div
           class="brush-cursor"
           style="left:${this._mx}px;top:${this._my}px;width:${this._brushDiameter}px;height:${this._brushDiameter}px"
+        ></div>
+      ` : ''}
+      ${this._horizonGuideVisible ? html`
+        <div
+          class="horizon-guide"
+          style="top: ${this._horizonGuideY * 100}%; opacity: ${this._horizonGuideVisible ? 1 : 0}"
         ></div>
       ` : ''}
       <div

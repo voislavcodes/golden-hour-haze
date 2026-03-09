@@ -11,7 +11,7 @@ export class AtmosphereOrb extends BaseControl {
     css`
       :host {
         position: fixed;
-        top: 20px;
+        bottom: 248px;
         right: 20px;
         z-index: 100;
         pointer-events: auto;

@@ -15,7 +15,7 @@ struct ScatterParams {
   sun_elevation: f32,
   intensity: f32,
   sun_azimuth: f32,
-  _pad1: f32,
+  horizon_y: f32,
   _pad2: f32,
   _pad3: f32,
   _pad4: f32,
@@ -47,13 +47,16 @@ fn compute_sky(uv: vec2f, elevation: f32, azimuth: f32) -> vec3f {
   let horizon_base = mix(NIGHT_HORIZON, day_horizon, smoothstep(0.0, 0.7, elev_norm));
   let horizon = mix(horizon_base, GOLDEN_HORIZON, golden_t);
 
-  // Vertical gradient bands — shift with elevation
+  // Vertical gradient bands — shift with elevation and horizon position
   let horizon_width = mix(0.35, 0.6, elev_norm); // how much of sky is horizon color
-  let v = uv.y; // 0=bottom, 1=top
+  let v = uv.y; // 0=top, 1=bottom
 
-  // Three-band blend: golden band at bottom, mid transition, zenith at top
-  let horizon_edge = horizon_width;
-  let mid_edge = horizon_width + 0.3;
+  // Horizon control shifts the gradient bands (0.5 = no shift)
+  let horizon_shift = (params.horizon_y - 0.5) * 1.5;
+  let horizon_edge = clamp(horizon_width + horizon_shift, 0.05, 0.95);
+  let mid_edge = clamp(horizon_edge + 0.3, horizon_edge + 0.05, 1.0);
+
+  // Three-band blend: horizon band at top, mid transition, zenith at bottom
   var sky: vec3f;
   if (v < horizon_edge) {
     sky = mix(horizon, mix(horizon, zenith, 0.3), v / max(horizon_edge, 0.01));

@@ -10,6 +10,7 @@ export interface SceneState {
   sunAngle: number; // radians, drives time-of-day
   sunElevation: number;
   sunAzimuth: number; // 0-1, horizontal sun position (0=left, 0.5=center, 1=right)
+  horizonY: number; // 0-1, vertical horizon position (0=top, 1=bottom)
   echo: number; // 0-1, stroke coherence (controls form opacity/softness)
   tonalMap: TonalMapParams;
   anchor: AnchorPoint | null;
@@ -70,6 +71,7 @@ export const sceneStore = createStore<SceneState>({
   sunAngle: 0.8, // ~golden hour angle
   sunElevation: sunElevationFromAngle(0.8),
   sunAzimuth: 0.5,
+  horizonY: 0.5,
   echo: 0.5,
   tonalMap: { enabled: true, valueRange: 0.8, keyValue: 0.5, contrast: 0.6 },
   anchor: null,

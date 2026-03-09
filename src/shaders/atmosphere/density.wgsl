@@ -22,7 +22,7 @@ struct AtmosphereParams {
   turbulence: f32,
   humidity: f32,
   grain_depth: f32,
-  _pad1: f32,
+  horizon_y: f32,
   _pad2: f32,
 };
 
@@ -100,8 +100,12 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
   let noise_pos = uv * 4.0 + vec2f(globals.time * 0.05, globals.time * 0.03);
   let turb = fbm_noise(noise_pos, 4) * effective_turb;
 
+  // Gentle horizon haze — subtle density boost near horizon line
+  let horizon_dist = abs(uv.y - params.horizon_y);
+  let horizon_haze = exp(-horizon_dist * horizon_dist * 20.0) * params.density * 0.15;
+
   // Evolve density: blend previous with new computation
-  let new_density = mix(depth_density + turb * 0.3, prev.r, 0.85);
+  let new_density = mix(depth_density + turb * 0.3 + horizon_haze, prev.r, 0.85);
 
   // Warmth: based on depth and global warmth param
   let warmth = mix(params.warmth, params.warmth * (1.0 - depth * 0.5), 0.5);

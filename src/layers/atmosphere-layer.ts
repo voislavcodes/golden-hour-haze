@@ -249,13 +249,13 @@ export function rebuildDensityBindGroup() {
   });
 }
 
-export function writeAtmosphereParams(params: AtmosphereParams) {
+export function writeAtmosphereParams(params: AtmosphereParams, horizonY = 0.5) {
   const { device } = getGPU();
   const humidity = params.density * (1 - Math.abs(params.warmth)) * 0.8;
   const data = new Float32Array([
     params.density, params.warmth, params.grain, params.scatter,
     params.driftX, params.driftY, params.driftSpeed, params.turbulence,
-    humidity, params.grainDepth, 0, 0,
+    humidity, params.grainDepth, horizonY, 0,
   ]);
   device.queue.writeBuffer(atmosphereParamBuffer, 0, data);
 
@@ -266,11 +266,11 @@ export function writeAtmosphereParams(params: AtmosphereParams) {
   ]));
 }
 
-export function writeScatterParams(sunAngle: number, sunElevation: number, sunAzimuth: number) {
+export function writeScatterParams(sunAngle: number, sunElevation: number, sunAzimuth: number, horizonY = 0.5) {
   const { device } = getGPU();
   device.queue.writeBuffer(scatterParamBuffer, 0, new Float32Array([
     sunAngle, sunElevation, 1.0, sunAzimuth,
-    0, 0, 0, 0,
+    horizonY, 0, 0, 0,
   ]));
 }
 

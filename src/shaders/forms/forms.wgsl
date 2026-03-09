@@ -44,7 +44,7 @@ struct FormsParams {
   baked_count: u32,
   falloff: f32,
   edge_atmosphere: f32,
-  _pad1: f32,
+  horizon_y: f32,
   _pad2: f32,
   _pad3: f32,
 };
@@ -216,11 +216,18 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
     // edge_atmosphere: sun elevation modulates global edge softness
     let depth_diss = f.depth * f.depth * 2.0;
     let local_density = textureLoad(density_tex, vec2i(gid.xy), 0).r;
+
+    // Horizon proximity softening — forms near horizon have softer edges
+    let form_center_y = f.y;
+    let form_horizon_dist = abs(form_center_y - params.horizon_y);
+    let horizon_softening = 1.0 + exp(-form_horizon_dist * form_horizon_dist * 8.0) * 0.5;
+
     let eff_soft = f.softness
       * (1.0 + depth_diss * 0.3)
       * params.edge_atmosphere
       * (1.0 + local_density * 0.15)
-      * (1.0 + dissolution_mask * 3.0);
+      * (1.0 + dissolution_mask * 3.0)
+      * horizon_softening;
 
     // Dissolution erodes form boundaries inward — shifts the SDF zero-edge
     // so interior pixels enter the transition zone and fade

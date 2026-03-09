@@ -58,6 +58,7 @@ import './controls/drift-field.js';
 import './controls/anchor-control.js';
 import './controls/velvet-slider.js';
 import './controls/gravity-slider.js';
+import './controls/horizon-control.js';
 import { initPointerInput } from './input/pointer.js';
 import { initGestureInput } from './input/gesture.js';
 import { initKeyboardInput } from './input/keyboard.js';
@@ -103,9 +104,9 @@ export function initApp() {
   const scene = sceneStore.get();
   writeDepthParams(scene.depth);
   writePaletteData(scene.palette);
-  writeAtmosphereParams(scene.atmosphere);
-  writeScatterParams(scene.sunAngle, scene.sunElevation, scene.sunAzimuth);
-  writeFormsData(scene.forms, scene.palette.colors, scene.sunAngle, scene.tonalMap, scene.velvet, scene.tonalSort, scene.gravity, scene.baseOpacity, scene.falloff, scene.sunElevation);
+  writeAtmosphereParams(scene.atmosphere, scene.horizonY);
+  writeScatterParams(scene.sunAngle, scene.sunElevation, scene.sunAzimuth, scene.horizonY);
+  writeFormsData(scene.forms, scene.palette.colors, scene.sunAngle, scene.tonalMap, scene.velvet, scene.tonalSort, scene.gravity, scene.baseOpacity, scene.falloff, scene.sunElevation, scene.horizonY);
   writeLightData(scene.lights, 32, scene.sunElevation);
   const gf = goldenFactor(scene.sunElevation);
   writeCompositorParams({
@@ -149,7 +150,7 @@ export function initApp() {
       setDissolutionActive(true);
       // Force re-write so baked_count=0 reaches the GPU
       const s = sceneStore.get();
-      writeFormsData(s.forms, s.palette.colors, s.sunAngle, s.tonalMap, s.velvet, s.tonalSort, s.gravity, s.baseOpacity, s.falloff, s.sunElevation);
+      writeFormsData(s.forms, s.palette.colors, s.sunAngle, s.tonalMap, s.velvet, s.tonalSort, s.gravity, s.baseOpacity, s.falloff, s.sunElevation, s.horizonY);
     }
     stampDissolve(stroke.x, stroke.y, stroke.radius, stroke.pressure, ds);
   }) as EventListener);
@@ -162,7 +163,7 @@ export function initApp() {
     // also use baked_count=0 so dissolution_mask is always applied from scratch
     requestFullRebake();
     const s = sceneStore.get();
-    writeFormsData(s.forms, s.palette.colors, s.sunAngle, s.tonalMap, s.velvet, s.tonalSort, s.gravity, s.baseOpacity, s.falloff);
+    writeFormsData(s.forms, s.palette.colors, s.sunAngle, s.tonalMap, s.velvet, s.tonalSort, s.gravity, s.baseOpacity, s.falloff, s.sunElevation, s.horizonY);
     pushHistory();
   });
 
@@ -177,6 +178,7 @@ export function initApp() {
   let prevEcho = scene.echo;
   let prevBaseOpacity = scene.baseOpacity;
   let prevFalloff = scene.falloff;
+  let prevHorizonY = scene.horizonY;
   let prevPaletteColors = scene.palette.colors;
   let prevForms = scene.forms;
   let prevFormsLen = scene.forms.length;
@@ -184,10 +186,10 @@ export function initApp() {
   // React to state changes
   sceneStore.subscribe((state) => {
     writeDepthParams(state.depth);
-    writeAtmosphereParams(state.atmosphere);
-    writeScatterParams(state.sunAngle, state.sunElevation, state.sunAzimuth);
+    writeAtmosphereParams(state.atmosphere, state.horizonY);
+    writeScatterParams(state.sunAngle, state.sunElevation, state.sunAzimuth, state.horizonY);
     writePaletteData(state.palette);
-    writeFormsData(state.forms, state.palette.colors, state.sunAngle, state.tonalMap, state.velvet, state.tonalSort, state.gravity, state.baseOpacity, state.falloff, state.sunElevation);
+    writeFormsData(state.forms, state.palette.colors, state.sunAngle, state.tonalMap, state.velvet, state.tonalSort, state.gravity, state.baseOpacity, state.falloff, state.sunElevation, state.horizonY);
     writeLightData(state.lights, 32, state.sunElevation);
     const gf = goldenFactor(state.sunElevation);
     writeCompositorParams({
@@ -213,6 +215,7 @@ export function initApp() {
         state.echo !== prevEcho ||
         state.baseOpacity !== prevBaseOpacity ||
         state.falloff !== prevFalloff ||
+        state.horizonY !== prevHorizonY ||
         state.palette.colors !== prevPaletteColors) {
       requestFullRebake();
     }
@@ -237,6 +240,7 @@ export function initApp() {
     prevEcho = state.echo;
     prevBaseOpacity = state.baseOpacity;
     prevFalloff = state.falloff;
+    prevHorizonY = state.horizonY;
     prevPaletteColors = state.palette.colors;
     prevForms = state.forms;
     prevFormsLen = state.forms.length;

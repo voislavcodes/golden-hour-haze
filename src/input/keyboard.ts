@@ -45,6 +45,12 @@ export function initKeyboardInput() {
       return;
     }
 
+    // Horizon reset
+    if (e.key.toLowerCase() === 'h') {
+      sceneStore.set({ horizonY: 0.5 });
+      return;
+    }
+
     // Grayscale preview
     if (e.key.toLowerCase() === 'g') {
       uiStore.update((s) => ({ grayscalePreview: !s.grayscalePreview }));

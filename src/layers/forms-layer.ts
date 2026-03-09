@@ -201,6 +201,7 @@ export function writeFormsData(
   baseOpacity = 0.5,
   falloff = 0.7,
   sunElevation = 0.15,
+  horizonY = 0.5,
 ) {
   const { device } = getGPU();
 
@@ -240,7 +241,8 @@ export function writeFormsData(
   headerU32[10] = (pendingFullRebake || dissolutionActive) ? 0 : bakedFormCount;
   headerF32[11] = falloff;
   headerF32[12] = edgeAtmo;
-  // 13, 14, 15 = padding (already 0)
+  headerF32[13] = horizonY;
+  // 14, 15 = padding (already 0)
   device.queue.writeBuffer(paramBuffer, 0, headerData);
 
   if (count === 0) return;
