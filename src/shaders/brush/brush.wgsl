@@ -47,28 +47,13 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
   let surface_K = existing.rgb;
   let input_K = mix(params.palette_K, surface_K, params.echo);
 
-  // Per-channel reflectance via K-M formula (S=1 implicit)
-  // R(K) = 1 + K - sqrt(K² + 2K)
-  let ex_K = existing.rgb;
-  let ex_R = 1.0 + ex_K - sqrt(ex_K * ex_K + 2.0 * ex_K);
-  let new_R = 1.0 + input_K - sqrt(input_K * input_K + 2.0 * input_K);
-
-  // Compare luminance of reflectances to determine light vs dark
-  let ex_lum = dot(ex_R, vec3f(0.2126, 0.7152, 0.0722));
-  let new_lum = dot(new_R, vec3f(0.2126, 0.7152, 0.0722));
-
-  // Smooth coverage factor — avoids hard branch seams between dab pixels
-  let lum_diff = new_lum - ex_lum;
-  let coverage_t = smoothstep(0.05, 0.25, lum_diff) * step(0.01, existing.a);
-
-  // Glaze path — additive K (dark over light / bare canvas)
-  let glaze_K = existing.rgb + input_K * effective_alpha;
-
-  // Coverage path — replace toward lighter K
-  let cover_K = mix(existing.rgb, input_K, effective_alpha * 0.8);
-
-  // Blend between modes
-  let result_K = mix(glaze_K, cover_K, coverage_t);
+  // K-M mixing — oil model with saturating resistance.
+  // Paint depth caps at 2.0: beyond that, surface is "opaque" and new paint
+  // covers at a consistent rate. Existing paint resists change proportionally
+  // to its depth, but multiple strokes always resolve toward the new color.
   let new_weight = existing.a + effective_alpha;
+  let paint_depth = min(existing.a, 2.0);
+  let blend_factor = effective_alpha / (paint_depth + effective_alpha);
+  let result_K = mix(existing.rgb, input_K, blend_factor);
   textureStore(accum_write, vec2i(gid.xy), vec4f(result_K, new_weight));
 }
