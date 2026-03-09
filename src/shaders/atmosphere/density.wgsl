@@ -117,7 +117,7 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
   let new_density = mix(depth_density + turb * 0.3 + horizon_haze, prev.r, temporal_blend);
 
   // Warmth: based on depth and global warmth param
-  let warmth = mix(params.warmth, params.warmth * (1.0 - depth * 0.5), 0.5);
+  let warmth = mix(params.warmth, params.warmth * (1.0 - flat_depth * 0.5), 0.5);
 
   // Local grain variation — grain_depth controls depth falloff
   let grain_noise = snoise(uv * 50.0 + vec2f(globals.time * 0.1)) * 0.5 + 0.5;
@@ -125,7 +125,7 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
   let grain_val = grain_noise * params.grain * grain_depth_scale * (1.0 - fog_suppress);
 
   // Local scatter based on density and depth
-  let scatter_val = new_density * params.scatter * (0.5 + depth * 0.5);
+  let scatter_val = new_density * params.scatter * (0.5 + flat_depth * 0.5);
 
   textureStore(output_tex, vec2i(gid.xy), vec4f(
     clamp(new_density, 0.0, 1.5),

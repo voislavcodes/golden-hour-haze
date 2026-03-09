@@ -70,6 +70,13 @@ fn compute_sky(uv: vec2f, elevation: f32, azimuth: f32, density: f32, warmth: f3
     sky = mix(horizon, zenith, sky_factor);
   }
 
+  // Additive warm glow band at the horizon line — strongest at dusk/golden hour
+  if (params.horizon_y >= 0.0) {
+    let horizon_band = exp(-pow((v - params.horizon_y) * 6.0, 2.0));
+    let dusk_gate = smoothstep(0.7, 0.1, elev_norm);
+    sky += GOLDEN_GLOW * horizon_band * 0.3 * dusk_gate;
+  }
+
   // Horizontal sun glow — directional warmth toward sun azimuth, centered on horizon
   let sun_glow = exp(-(uv.x - azimuth) * (uv.x - azimuth) * 3.0);
   let glow_strength = golden_t * 0.6 + smoothstep(0.0, 0.3, elev_norm) * 0.15;
