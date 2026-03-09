@@ -9,7 +9,7 @@ struct GrainLUTParams {
 };
 
 @group(0) @binding(0) var<uniform> params: GrainLUTParams;
-@group(0) @binding(1) var output_tex: texture_storage_2d<r8unorm, write>;
+@group(0) @binding(1) var output_tex: texture_storage_2d<rgba8unorm, write>;
 
 fn hash(p: vec2f) -> f32 {
   var p3 = fract(vec3f(p.x, p.y, p.x) * 0.1031);

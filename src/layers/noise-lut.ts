@@ -69,7 +69,7 @@ export function initNoiseLut() {
     label: 'grain-lut-layout',
     entries: [
       { binding: 0, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'uniform' } },
-      { binding: 1, visibility: GPUShaderStage.COMPUTE, storageTexture: { access: 'write-only', format: 'r8unorm' } },
+      { binding: 1, visibility: GPUShaderStage.COMPUTE, storageTexture: { access: 'write-only', format: 'rgba8unorm' } },
     ],
   });
 
@@ -91,7 +91,7 @@ export function initNoiseLut() {
   grainLutTexture = device.createTexture({
     label: 'grain-lut',
     size: { width: GRAIN_LUT_SIZE, height: GRAIN_LUT_SIZE },
-    format: 'r8unorm',
+    format: 'rgba8unorm',
     usage: GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING,
   });
 

@@ -71,7 +71,9 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
   let horizon_haze = select(0.0, exp(-horizon_dist * horizon_dist * 20.0) * params.density * 0.15 * (1.0 - fog_suppress), params.horizon_y >= 0.0);
 
   // Evolve density: blend previous with new computation
-  let temporal_blend = mix(0.85, 0.15, fog_suppress);
+  // Skip temporal blend when prev is uninitialized (first frame) so density converges immediately
+  let has_prev = step(0.0001, abs(prev.r) + abs(prev.g) + abs(prev.b) + abs(prev.a));
+  let temporal_blend = mix(0.85, 0.15, fog_suppress) * has_prev;
   let new_density = mix(depth_density + turb * 0.3 + horizon_haze, prev.r, temporal_blend);
 
   // Warmth
