@@ -82,6 +82,7 @@ export class CanvasOverlay extends BaseControl {
 
   private _horizonHandler = ((e: CustomEvent) => {
     const { y, active } = e.detail as { y: number; active: boolean };
+    if (y < 0) { this._horizonGuideVisible = false; return; }
     this._horizonGuideY = y;
     if (active) {
       clearTimeout(this._horizonFadeTimer);

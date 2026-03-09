@@ -51,20 +51,26 @@ fn compute_sky(uv: vec2f, elevation: f32, azimuth: f32) -> vec3f {
   let horizon_width = mix(0.35, 0.6, elev_norm); // how much of sky is horizon color
   let v = uv.y; // 0=top, 1=bottom
 
-  // Horizon control shifts the gradient bands (0.5 = no shift)
-  let horizon_shift = (params.horizon_y - 0.5) * 1.5;
-  let horizon_edge = clamp(horizon_width + horizon_shift, 0.05, 0.95);
-  let mid_edge = clamp(horizon_edge + 0.3, horizon_edge + 0.05, 1.0);
-
-  // Three-band blend: horizon band at top, mid transition, zenith at bottom
   var sky: vec3f;
-  if (v < horizon_edge) {
-    sky = mix(horizon, mix(horizon, zenith, 0.3), v / max(horizon_edge, 0.01));
-  } else if (v < mid_edge) {
-    let t = (v - horizon_edge) / (mid_edge - horizon_edge);
-    sky = mix(mix(horizon, zenith, 0.3), zenith, t * t);
+  if (params.horizon_y >= 0.0) {
+    // Horizon control shifts the gradient bands (0.5 = no shift)
+    let horizon_shift = (params.horizon_y - 0.5) * 1.5;
+    let horizon_edge = clamp(horizon_width + horizon_shift, 0.05, 0.95);
+    let mid_edge = clamp(horizon_edge + 0.3, horizon_edge + 0.05, 1.0);
+
+    // Three-band blend: horizon band at top, mid transition, zenith at bottom
+    if (v < horizon_edge) {
+      sky = mix(horizon, mix(horizon, zenith, 0.3), v / max(horizon_edge, 0.01));
+    } else if (v < mid_edge) {
+      let t = (v - horizon_edge) / (mid_edge - horizon_edge);
+      sky = mix(mix(horizon, zenith, 0.3), zenith, t * t);
+    } else {
+      sky = zenith;
+    }
   } else {
-    sky = zenith;
+    // Horizon off: simple vertical blend without horizon pivot
+    let sky_factor = pow(v, 1.5 + elev_norm * 2.0);
+    sky = mix(horizon, zenith, sky_factor);
   }
 
   // Horizontal sun glow — directional warmth toward sun azimuth

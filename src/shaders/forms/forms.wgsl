@@ -217,10 +217,10 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
     let depth_diss = f.depth * f.depth * 2.0;
     let local_density = textureLoad(density_tex, vec2i(gid.xy), 0).r;
 
-    // Horizon proximity softening — forms near horizon have softer edges
+    // Horizon proximity softening — forms near horizon have softer edges (off when horizon_y < 0)
     let form_center_y = f.y;
     let form_horizon_dist = abs(form_center_y - params.horizon_y);
-    let horizon_softening = 1.0 + exp(-form_horizon_dist * form_horizon_dist * 8.0) * 0.5;
+    let horizon_softening = select(1.0, 1.0 + exp(-form_horizon_dist * form_horizon_dist * 8.0) * 0.5, params.horizon_y >= 0.0);
 
     let eff_soft = f.softness
       * (1.0 + depth_diss * 0.3)

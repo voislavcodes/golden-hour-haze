@@ -34,9 +34,16 @@ export function initKeyboardInput() {
       return;
     }
 
-    // Horizon reset
+    // Horizon cycle: current → 0.5 (center) → -1.0 (off) → 0.5
     if (e.key.toLowerCase() === 'h') {
-      sceneStore.set({ horizonY: 0.5 });
+      const cur = sceneStore.get().horizonY;
+      if (cur < 0) {
+        sceneStore.set({ horizonY: 0.5 });
+      } else if (Math.abs(cur - 0.5) < 0.01) {
+        sceneStore.set({ horizonY: -1.0 });
+      } else {
+        sceneStore.set({ horizonY: 0.5 });
+      }
       return;
     }
 

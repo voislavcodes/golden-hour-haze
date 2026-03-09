@@ -69,15 +69,24 @@ export class HorizonControl extends BaseControl {
   ];
 
   @state() private _horizonY: number = 0.5;
+  private _lastOnValue = 0.5;
   private _dragging = false;
   private _unsub?: () => void;
+
+  private get _isOff(): boolean {
+    return this._horizonY < 0;
+  }
 
   connectedCallback() {
     super.connectedCallback();
     this._horizonY = sceneStore.get().horizonY;
+    if (!this._isOff) this._lastOnValue = this._horizonY;
     this._unsub = sceneStore.select(
       (s) => s.horizonY,
-      (v) => { this._horizonY = v; }
+      (v) => {
+        this._horizonY = v;
+        if (v >= 0) this._lastOnValue = v;
+      }
     );
   }
 
@@ -87,6 +96,7 @@ export class HorizonControl extends BaseControl {
   }
 
   private _onPointerDown(e: PointerEvent) {
+    if (this._isOff) return;
     this._dragging = true;
     (e.target as HTMLElement).setPointerCapture(e.pointerId);
     this._updateFromEvent(e);
@@ -106,11 +116,21 @@ export class HorizonControl extends BaseControl {
     }
   }
 
+  private _onDblClick() {
+    if (this._isOff) {
+      // Restore last on position
+      sceneStore.set({ horizonY: this._lastOnValue });
+    } else {
+      // Turn off
+      this._lastOnValue = this._horizonY;
+      sceneStore.set({ horizonY: -1.0 });
+    }
+  }
+
   private _updateFromEvent(e: PointerEvent) {
     const track = this.shadowRoot!.querySelector('.horizon-track') as HTMLElement;
     if (!track) return;
     const rect = track.getBoundingClientRect();
-    // Top of track = low horizonY (high horizon), bottom = high horizonY (low horizon)
     const t = this.clamp((e.clientY - rect.top) / rect.height, 0, 1);
     const y = this.clamp(0.1 + t * 0.8, 0.1, 0.9);
     this._horizonY = y;
@@ -121,7 +141,9 @@ export class HorizonControl extends BaseControl {
   }
 
   private get _gradient(): string {
-    // Sky-to-ground gradient preview
+    if (this._isOff) {
+      return 'linear-gradient(to bottom, rgba(30, 30, 35, 0.5), rgba(30, 30, 35, 0.5))';
+    }
     const hPos = (this._horizonY * 100);
     return `linear-gradient(to bottom,
       rgba(30, 50, 90, 0.6) 0%,
@@ -131,21 +153,24 @@ export class HorizonControl extends BaseControl {
   }
 
   render() {
-    const lineTop = this._horizonY * 100;
+    const off = this._isOff;
+    const lineTop = off ? 50 : this._horizonY * 100;
     return html`
       <div class="horizon-container">
         <span class="horizon-label">horizon</span>
         <div
           class="horizon-track"
+          style="cursor: ${off ? 'pointer' : 'ns-resize'}; opacity: ${off ? 0.5 : 1}"
           @pointerdown=${this._onPointerDown}
           @pointermove=${this._onPointerMove}
           @pointerup=${this._onPointerUp}
           @pointerleave=${this._onPointerUp}
+          @dblclick=${this._onDblClick}
         >
           <div class="horizon-gradient" style="background: ${this._gradient}"></div>
-          <div class="horizon-line" style="top: ${lineTop}%"></div>
+          ${off ? '' : html`<div class="horizon-line" style="top: ${lineTop}%"></div>`}
         </div>
-        <span class="horizon-value">${this._horizonY.toFixed(2)}</span>
+        <span class="horizon-value">${off ? 'OFF' : this._horizonY.toFixed(2)}</span>
       </div>
     `;
   }

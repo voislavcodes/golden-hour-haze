@@ -101,9 +101,9 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
   let noise_pos = uv * 4.0 + vec2f(globals.time * 0.05, globals.time * 0.03);
   let turb = fbm_noise(noise_pos, 4) * effective_turb;
 
-  // Gentle horizon haze — subtle density boost near horizon line
+  // Gentle horizon haze — subtle density boost near horizon line (off when horizon_y < 0)
   let horizon_dist = abs(uv.y - params.horizon_y);
-  let horizon_haze = exp(-horizon_dist * horizon_dist * 20.0) * params.density * 0.15;
+  let horizon_haze = select(0.0, exp(-horizon_dist * horizon_dist * 20.0) * params.density * 0.15, params.horizon_y >= 0.0);
 
   // Evolve density: blend previous with new computation
   let new_density = mix(depth_density + turb * 0.3 + horizon_haze, prev.r, 0.85);
