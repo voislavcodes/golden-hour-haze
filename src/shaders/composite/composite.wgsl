@@ -64,12 +64,18 @@ fn linear_to_srgb(c: vec3f) -> vec3f {
   return mix(high, low, cutoff);
 }
 
-// Convert K-M accumulation (K, S) back to reflectance then RGB
-fn km_to_rgb(K: f32, S: f32) -> vec3f {
-  let ks = K / max(S, 0.001);
-  let R = 1.0 + ks - sqrt(ks * ks + 2.0 * ks);
-  let reflectance = clamp(R, 0.0, 1.0);
-  return vec3f(sqrt(reflectance));
+// Convert per-channel K-M absorption back to RGB (S=1.0 implicit)
+fn km_reflectance(K: f32) -> f32 {
+  let R = 1.0 + K - sqrt(K * K + 2.0 * K);
+  return clamp(R, 0.0, 1.0);
+}
+
+fn km_to_rgb(Kr: f32, Kg: f32, Kb: f32) -> vec3f {
+  return vec3f(
+    sqrt(km_reflectance(Kr)),
+    sqrt(km_reflectance(Kg)),
+    sqrt(km_reflectance(Kb))
+  );
 }
 
 @fragment
@@ -79,10 +85,10 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4f {
   // 1. Sky — the base layer
   var sky = textureSample(scatter_tex, tex_sampler, uv).rgb;
 
-  // 2. Paint surface — K-M pigment to RGB
+  // 2. Paint surface — per-channel K-M pigment to RGB
   let accum = textureSample(accum_tex, tex_sampler, uv);
-  let paint_weight = accum.b;
-  let paint_rgb = km_to_rgb(accum.r, accum.g);
+  let paint_weight = accum.a;
+  let paint_rgb = km_to_rgb(accum.r, accum.g, accum.b);
 
   // 3. Lights
   let light = textureSample(light_tex, tex_sampler, uv).rgb;

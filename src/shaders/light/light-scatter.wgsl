@@ -66,7 +66,7 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
   // V2: Read paint weight from accumulation surface for occlusion
   let accum_dims = textureDimensions(accum_tex);
   let accum_coord = vec2i(uv * vec2f(accum_dims));
-  let paint_weight = textureLoad(accum_tex, accum_coord, 0).b;
+  let paint_weight = textureLoad(accum_tex, accum_coord, 0).a;
   let paint_opacity = clamp(paint_weight * 2.0, 0.0, 1.0);
 
   var total_light = vec3f(0.0);

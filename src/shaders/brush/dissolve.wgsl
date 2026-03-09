@@ -35,11 +35,10 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
     return;
   }
 
-  // Reduce weight, scale K and S proportionally
-  let new_weight = max(0.0, existing.b - dissolve_amount);
-  let scale = new_weight / max(existing.b, 0.001);
-  let new_K = existing.r * scale;
-  let new_S = existing.g * scale;
+  // Reduce weight, scale per-channel K proportionally
+  let new_weight = max(0.0, existing.a - dissolve_amount);
+  let scale = new_weight / max(existing.a, 0.001);
+  let new_K = existing.rgb * scale;
 
-  textureStore(accum_write, vec2i(gid.xy), vec4f(new_K, new_S, new_weight, existing.a));
+  textureStore(accum_write, vec2i(gid.xy), vec4f(new_K, new_weight));
 }

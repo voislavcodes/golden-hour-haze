@@ -98,9 +98,9 @@ export function dispatchBrushDabs(encoder: GPUCommandEncoder, x: number, y: numb
       pt[0], pt[1],    // center
       radius,           // radius
       softness,         // softness
-      ks.K, ks.K, ks.K, // palette_K (vec3f — simplified: same K for all channels)
+      ks.Kr, ks.Kg, ks.Kb, // palette_K (vec3f — per-channel K-M absorption)
       0,                // pad
-      ks.S, ks.S, ks.S, // palette_S (vec3f)
+      1.0, 1.0, 1.0,   // palette_S (vec3f — always 1.0 in simplified model)
       0,                // pad
       scene.baseOpacity, // base_opacity
       scene.falloff,     // falloff

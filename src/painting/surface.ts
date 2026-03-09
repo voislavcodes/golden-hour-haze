@@ -1,5 +1,5 @@
 // Accumulation texture management — the painting surface
-// rgba16float: R=K, G=S, B=paint_weight, A=layer_count
+// rgba16float: R=K_r, G=K_g, B=K_b, A=paint_weight
 
 import { allocPingPong, type PingPongTexture } from '../gpu/texture-pool.js';
 

@@ -104,23 +104,25 @@ export function sampleTonalColumn(base: RGB, value: number): RGB {
 }
 
 /**
- * Convert an RGB color to K-M coefficients (simplified single-constant model)
- * Returns K (absorption) and S (scattering) as single floats for the simplified model
+ * Convert an RGB color to per-channel K-M absorption coefficients.
+ * S (scattering) is always 1.0 in the simplified model and kept implicit.
  */
-export function rgbToKS(color: RGB): { K: number; S: number } {
-  // Average reflectance
-  const R = (color.r * color.r + color.g * color.g + color.b * color.b) / 3;
-  const clamped = Math.max(R, 0.001);
-  const K = (1 - clamped) * (1 - clamped) / (2 * clamped);
-  const S = 1.0; // single-constant K-M: S=1
-  return { K, S };
+export function rgbToKS(color: RGB): { Kr: number; Kg: number; Kb: number } {
+  const rr = Math.max(color.r * color.r, 0.001);
+  const rg = Math.max(color.g * color.g, 0.001);
+  const rb = Math.max(color.b * color.b, 0.001);
+  return {
+    Kr: (1 - rr) * (1 - rr) / (2 * rr),
+    Kg: (1 - rg) * (1 - rg) / (2 * rg),
+    Kb: (1 - rb) * (1 - rb) / (2 * rb),
+  };
 }
 
 /**
  * Get active palette K-M coefficients for the brush shader.
- * Reads scene state, samples tonal column, converts to K/S.
+ * Reads scene state, samples tonal column, converts to per-channel K.
  */
-export function getActiveKS(): { K: number; S: number; color: RGB } {
+export function getActiveKS(): { Kr: number; Kg: number; Kb: number; color: RGB } {
   const scene = sceneStore.get();
   const { palette } = scene;
   const baseColor = palette.colors[palette.activeIndex];
