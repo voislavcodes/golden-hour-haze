@@ -238,7 +238,10 @@ export function writeFormsData(
   headerF32[7] = tonalMap.enabled ? 1.0 : 0.0;
   headerF32[8] = baseOpacity;
   headerF32[9] = gravity;
-  headerU32[10] = (pendingFullRebake || dissolutionActive) ? 0 : bakedFormCount;
+  // Always evaluate ALL forms when live strokes exist — ensures proper
+  // inter-stroke blending instead of independent edge boundaries
+  const hasLiveForms = count > bakedFormCount;
+  headerU32[10] = (pendingFullRebake || dissolutionActive || hasLiveForms) ? 0 : bakedFormCount;
   headerF32[11] = falloff;
   headerF32[12] = edgeAtmo;
   headerF32[13] = horizonY;
@@ -361,7 +364,7 @@ export function handlePendingBakes(encoder: GPUCommandEncoder) {
     pendingFullRebake = false;
     pendingBake = false;
   } else if (pendingBake) {
-    bakeCurrentForms(encoder, false);
+    bakeCurrentForms(encoder, true);
     pendingBake = false;
   }
 }
