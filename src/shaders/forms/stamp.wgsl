@@ -206,30 +206,36 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
   let attenuation = sp.base_opacity * pow(sp.falloff, existing_weight);
   let effective_alpha = raw_alpha * attenuation;
 
-  // K/S pigment accumulation
-  var ks_accum = vec3f(0.0);
-  var weight_accum = 0.0;
+  // K/S pigment accumulation — two modes blended by velvet
+  var existing_ks = vec3f(0.0);
   var opacity_accum = 0.0;
 
-  // Seed from existing paint
   if (existing_forms.a > 0.001) {
     let existing_refl = rgb_to_reflectance(existing_forms.rgb);
-    let existing_ks = (1.0 - existing_refl) * (1.0 - existing_refl) / (2.0 * existing_refl);
-    ks_accum = existing_ks * existing_forms.a;
-    weight_accum = existing_forms.a;
+    existing_ks = (1.0 - existing_refl) * (1.0 - existing_refl) / (2.0 * existing_refl);
     opacity_accum = existing_forms.a;
   }
 
-  // Add new pigment
   let refl = rgb_to_reflectance(form_color);
   let ks = (1.0 - refl) * (1.0 - refl) / (2.0 * refl);
-  ks_accum += ks * effective_alpha;
-  weight_accum += effective_alpha;
   opacity_accum = effective_alpha + opacity_accum * (1.0 - effective_alpha);
 
-  // Convert weighted-average K/S to RGB
-  let avg_ks = ks_accum / max(weight_accum, 0.001);
-  let r_mixed = 1.0 + avg_ks - sqrt(avg_ks * avg_ks + 2.0 * avg_ks);
+  // Glazing: additive K/S — each transparent layer adds absorption,
+  // light passes through all layers and back, building luminous depth
+  let ks_glaze = existing_ks + ks * effective_alpha;
+
+  // Opaque mixing: weighted average K/S — pigments blended on palette
+  let total_w = existing_forms.a + effective_alpha;
+  let ks_mix = select(
+    ks * effective_alpha / max(effective_alpha, 0.001),
+    (existing_ks * existing_forms.a + ks * effective_alpha) / max(total_w, 0.001),
+    existing_forms.a > 0.001
+  );
+
+  // Velvet blends between opaque mixing and glazing
+  let final_ks = mix(ks_mix, ks_glaze, sp.velvet);
+
+  let r_mixed = 1.0 + final_ks - sqrt(final_ks * final_ks + 2.0 * final_ks);
   let out_color = reflectance_to_rgb(r_mixed);
 
   textureStore(forms_write, px, vec4f(out_color, opacity_accum));

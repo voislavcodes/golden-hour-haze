@@ -178,21 +178,20 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
   let atmo = textureSampleLevel(density_tex, density_sampler, uv, 0.0);
   let sun_dir = vec2f(cos(params.sun_angle), sin(params.sun_angle));
 
-  // K/S pigment accumulator — overlapping forms mix subtractively
-  var ks_accum = vec3f(0.0);
+  // K/S pigment accumulator — two modes blended by velvet
+  var ks_accum = vec3f(0.0);  // live form contributions only
   var weight_accum = 0.0;
   var opacity_accum = 0.0;
+  var seed_ks = vec3f(0.0);   // baked K/S stored separately for dual-mode output
+  var seed_a = 0.0;
 
   // Seed from baked texture (completed strokes)
-  // Baked color encodes accumulated K/S sum via reflectance roundtrip —
-  // recover it directly so subsequent strokes ADD more pigment (darken).
   if (params.baked_count > 0u) {
     let baked = textureLoad(baked_tex, vec2i(gid.xy), 0);
     if (baked.a > 0.001) {
       let baked_refl = rgb_to_reflectance(baked.rgb);
-      let baked_ks = (1.0 - baked_refl) * (1.0 - baked_refl) / (2.0 * baked_refl);
-      ks_accum = baked_ks;
-      weight_accum = baked.a;
+      seed_ks = (1.0 - baked_refl) * (1.0 - baked_refl) / (2.0 * baked_refl);
+      seed_a = baked.a;
       opacity_accum = baked.a;
     }
   }
@@ -297,9 +296,21 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
     textureStore(live_tex, vec2i(gid.xy), vec4f(0.0));
   }
 
-  // Convert accumulated K/S to RGB — K/S SUM (not average) so more layers = darker
+  // Combine baked seed + live forms with velvet-based dual mode
   if (opacity_accum > 0.001) {
-    let r_mixed = 1.0 + ks_accum - sqrt(ks_accum * ks_accum + 2.0 * ks_accum);
+    // Glazing: additive K/S — transparent layers build absorption depth
+    let ks_glaze = seed_ks + ks_accum;
+
+    // Opaque mixing: weighted average K/S — pigments blended on palette
+    let total_w = seed_a + weight_accum;
+    let ks_mix = select(
+      ks_accum / max(weight_accum, 0.001),
+      (seed_ks * seed_a + ks_accum) / max(total_w, 0.001),
+      seed_a > 0.001
+    );
+
+    let final_ks = mix(ks_mix, ks_glaze, params.velvet);
+    let r_mixed = 1.0 + final_ks - sqrt(final_ks * final_ks + 2.0 * final_ks);
     let out_color = reflectance_to_rgb(r_mixed);
     textureStore(output_tex, vec2i(gid.xy), vec4f(out_color, opacity_accum));
   } else {
