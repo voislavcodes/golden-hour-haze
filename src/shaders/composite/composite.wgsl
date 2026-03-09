@@ -91,9 +91,13 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4f {
   var sky = textureSample(scatter_tex, tex_sampler, uv).rgb;
 
   // 2. Paint surface — per-channel K-M pigment to RGB
+  //    Thicker paint absorbs more light (K-M depth scaling).
+  //    depth_scale ramps from 1.0 at first coverage to ~2.0 at heavy impasto.
   let accum = textureSample(accum_tex, tex_sampler, uv);
   let paint_weight = accum.a;
-  let paint_rgb = km_to_rgb(accum.r, accum.g, accum.b);
+  let depth_factor = max(paint_weight - 0.5, 0.0);
+  let depth_scale = 1.0 + depth_factor / (depth_factor + 1.5);
+  let paint_rgb = km_to_rgb(accum.r * depth_scale, accum.g * depth_scale, accum.b * depth_scale);
 
   // 3. Lights
   let light = textureSample(light_tex, tex_sampler, uv).rgb;
