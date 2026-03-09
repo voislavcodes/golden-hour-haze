@@ -27,12 +27,12 @@ struct ScatterParams {
 @group(2) @binding(1) var depth_tex: texture_2d<f32>;
 @group(2) @binding(2) var tex_sampler: sampler;
 
-// Sky color palette
-const NIGHT_ZENITH = vec3f(0.03, 0.03, 0.08);
-const DAY_ZENITH = vec3f(0.15, 0.20, 0.45);
-const GOLDEN_HORIZON = vec3f(0.95, 0.65, 0.30);
-const NIGHT_HORIZON = vec3f(0.05, 0.05, 0.12);
-const GOLDEN_GLOW = vec3f(0.95, 0.80, 0.50);
+// Sky color palette — Beckett rose-mauve-lavender axis
+const NIGHT_ZENITH = vec3f(0.04, 0.03, 0.10);
+const DAY_ZENITH = vec3f(0.18, 0.17, 0.42);
+const GOLDEN_HORIZON = vec3f(0.85, 0.56, 0.44);
+const NIGHT_HORIZON = vec3f(0.07, 0.04, 0.14);
+const GOLDEN_GLOW = vec3f(0.88, 0.70, 0.56);
 
 fn compute_sky(uv: vec2f, elevation: f32, density: f32, warmth: f32) -> vec3f {
   // Normalize elevation: -0.6 to 0.9 range
@@ -43,7 +43,7 @@ fn compute_sky(uv: vec2f, elevation: f32, density: f32, warmth: f32) -> vec3f {
 
   // Horizon color: night dark to golden warm
   let golden_t = smoothstep(0.2, 0.5, elev_norm) * smoothstep(0.8, 0.5, elev_norm); // peaks at golden hour
-  let day_horizon = vec3f(0.60, 0.55, 0.55); // bleached flat at noon
+  let day_horizon = vec3f(0.50, 0.48, 0.53); // pearl grey with mauve at noon
   let horizon_base = mix(NIGHT_HORIZON, day_horizon, smoothstep(0.0, 0.7, elev_norm));
   let horizon = mix(horizon_base, GOLDEN_HORIZON, golden_t);
 
@@ -141,7 +141,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4f {
   let scatter_suppress = max(1.0 - density * 0.8, 0.0);
 
   // Temperature tint from warmth (orb X-axis)
-  let golden_tint = vec3f(1.2, 0.85, 0.5) * (1.0 + warmth * 0.5);
+  let golden_tint = vec3f(1.08, 0.82, 0.62) * (1.0 + warmth * 0.5);
   var scatter_color = golden_tint * scatter_amount * scatter_suppress;
 
   // Combine: sky as base, scatter tints subtly on top

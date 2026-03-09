@@ -93,7 +93,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4f {
   let shadowed = km_mix(forms.rgb, form_hue_shadow, shadow_amount * comp_params.shadow_chroma);
 
   // Composite forms over sky with depth-aware atmospheric opacity
-  let atmosphere_fog = vec3f(0.75, 0.60, 0.50) * density * 0.2;
+  let atmosphere_fog = vec3f(0.60, 0.53, 0.56) * density * 0.2;
   var form_color = shadowed + atmosphere_fog * (1.0 - shadow_amount);
 
   // --- Atmospheric Brightness Conformance ---
@@ -112,13 +112,15 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4f {
   form_color = mix(form_color, vec3f(dimmed_lum), effective_darkness * 0.6);
 
   // (c) Color bleed: atmosphere tints forms toward sky hue (darkness OR density)
+  // sqrt curve on density so effect plateaus at high density instead of erasing forms
+  let soft_density = sqrt(density);
   let darkness_bleed = darkness * 0.4;
-  let density_bleed = density * 0.35;
+  let density_bleed = soft_density * 0.2;
   let bleed = max(darkness_bleed, density_bleed) * (1.0 - saturate(light_boost));
   form_color = mix(form_color, sky * (dimmed_lum / max(atmo_lum, 0.01)), bleed);
 
   // (d) Atmosphere eats form chroma based on density
-  let chroma_loss = density * 0.5 * (1.0 - saturate(light_boost));
+  let chroma_loss = soft_density * 0.25 * (1.0 - saturate(light_boost));
   let form_grey = dot(form_color, vec3f(0.2126, 0.7152, 0.0722));
   form_color = mix(form_color, vec3f(form_grey), chroma_loss);
 
@@ -144,7 +146,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4f {
   color = aces_tonemap(color);
 
   // Sun-driven color grade (after tonemap, before sRGB)
-  let grade = mix(vec3f(0.85, 0.92, 1.15), vec3f(1.1, 0.95, 0.8),
+  let grade = mix(vec3f(0.90, 0.88, 1.08), vec3f(1.06, 0.93, 0.88),
                   comp_params.sun_grade_warmth * 0.5 + 0.5);
   color *= mix(vec3f(1.0), grade, comp_params.sun_grade_intensity);
 
