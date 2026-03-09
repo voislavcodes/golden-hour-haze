@@ -219,8 +219,7 @@ export function initApp() {
     // Detect undo/redo: forms array shrinks or elements differ (not just append)
     if (state.forms !== prevForms) {
       const isAppend = state.forms.length > prevFormsLen &&
-        state.forms.length > 0 && prevForms.length > 0 &&
-        state.forms[prevFormsLen - 1] === prevForms[prevFormsLen - 1];
+        (prevFormsLen === 0 || state.forms[prevFormsLen - 1] === prevForms[prevFormsLen - 1]);
       if (!isAppend) {
         requestFullRebake();
       }
