@@ -200,10 +200,13 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
   let existing_accum = textureLoad(accum_read, px, 0);
   let existing_weight = existing_accum.a;
 
-  // Diminishing returns
+  // Diminishing returns — color-aware so new colors aren't blocked by old ones
   let velvet_exp = mix(1.5, 0.7, sp.velvet);
   let raw_alpha = pow(edge * form.opacity, velvet_exp);
-  let attenuation = sp.base_opacity * pow(sp.falloff, existing_weight);
+  let color_diff = length(existing_forms.rgb - form_color);
+  let fresh_layer = smoothstep(0.05, 0.3, color_diff);
+  let eff_weight = existing_weight * (1.0 - fresh_layer);
+  let attenuation = sp.base_opacity * pow(sp.falloff, eff_weight);
   let effective_alpha = raw_alpha * attenuation;
 
   // K/S pigment accumulation — two modes blended by velvet
@@ -240,8 +243,8 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
 
   textureStore(forms_write, px, vec4f(out_color, opacity_accum));
 
-  // Update accum weight
+  // Update accum weight — reset when painting a different color
   let stroke_landed = smoothstep(0.01, 0.15, effective_alpha);
-  let new_weight = existing_weight + stroke_landed;
+  let new_weight = eff_weight + stroke_landed;
   textureStore(accum_write, px, vec4f(0.0, 0.0, 0.0, new_weight));
 }

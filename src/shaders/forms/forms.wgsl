@@ -184,6 +184,7 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
   var opacity_accum = 0.0;
   var seed_ks = vec3f(0.0);   // baked K/S stored separately for dual-mode output
   var seed_a = 0.0;
+  var seed_rgb = vec3f(0.5);  // baked color for color-distance attenuation
 
   // Seed from baked texture (completed strokes)
   if (params.baked_count > 0u) {
@@ -192,6 +193,7 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
       let baked_refl = rgb_to_reflectance(baked.rgb);
       seed_ks = (1.0 - baked_refl) * (1.0 - baked_refl) / (2.0 * baked_refl);
       seed_a = baked.a;
+      seed_rgb = baked.rgb;
       opacity_accum = baked.a;
     }
   }
@@ -265,9 +267,12 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
       form_color *= clamp(lr, 0.3, 3.0);
     }
 
-    // Diminishing returns: attenuation based on accumulated + intra-stroke weight
+    // Diminishing returns — color-aware so new colors aren't blocked by old ones
     let raw_alpha = pow(edge * f.opacity, velvet_exp);
-    let attenuation = params.base_opacity * pow(params.falloff, existing_weight + running_weight);
+    let color_diff = length(seed_rgb - form_color);
+    let fresh_layer = smoothstep(0.05, 0.3, color_diff);
+    let eff_weight = (existing_weight + running_weight) * (1.0 - fresh_layer);
+    let attenuation = params.base_opacity * pow(params.falloff, eff_weight);
     let effective_alpha = raw_alpha * attenuation;
     // Exp-decay: weight grows ~logarithmically so overlapping segments from
     // one stroke don't starve subsequent strokes of K/S contribution
