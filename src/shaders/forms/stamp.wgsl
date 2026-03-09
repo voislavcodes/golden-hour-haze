@@ -160,11 +160,7 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
   let diss_erode = dissolution_mask * eff_soft * 2.0;
   let edge = 1.0 - smoothstep(-diss_erode, max(eff_soft, 0.001), d);
   if (edge < 0.001) {
-    // No contribution — pass through existing values
-    let existing_forms = textureLoad(forms_read, px, 0);
-    let existing_accum = textureLoad(accum_read, px, 0);
-    textureStore(forms_write, px, existing_forms);
-    textureStore(accum_write, px, existing_accum);
+    // No contribution — pre-copy already filled write texture
     return;
   }
 
@@ -219,7 +215,7 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
   if (existing_forms.a > 0.001) {
     let existing_refl = rgb_to_reflectance(existing_forms.rgb);
     let existing_ks = (1.0 - existing_refl) * (1.0 - existing_refl) / (2.0 * existing_refl);
-    ks_accum = existing_ks;
+    ks_accum = existing_ks * existing_forms.a;
     weight_accum = existing_forms.a;
     opacity_accum = existing_forms.a;
   }
@@ -231,8 +227,9 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
   weight_accum += effective_alpha;
   opacity_accum = effective_alpha + opacity_accum * (1.0 - effective_alpha);
 
-  // Convert K/S sum to RGB
-  let r_mixed = 1.0 + ks_accum - sqrt(ks_accum * ks_accum + 2.0 * ks_accum);
+  // Convert weighted-average K/S to RGB
+  let avg_ks = ks_accum / max(weight_accum, 0.001);
+  let r_mixed = 1.0 + avg_ks - sqrt(avg_ks * avg_ks + 2.0 * avg_ks);
   let out_color = reflectance_to_rgb(r_mixed);
 
   textureStore(forms_write, px, vec4f(out_color, opacity_accum));

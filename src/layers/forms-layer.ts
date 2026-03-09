@@ -199,12 +199,12 @@ export function updateFormsTextures(width: number, height: number) {
   allocTexture('dissolution', 'r32float', width, height,
     GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST);
 
-  // Persistent paint surface ping-pong
+  // Persistent paint surface ping-pong (COPY_DST needed for pre-stamp full-texture copy)
   formsPP = allocPingPong('forms-paint', 'rgba16float', width, height,
-    GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.COPY_SRC);
+    GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.COPY_SRC | GPUTextureUsage.COPY_DST);
 
   accumPP = allocPingPong('forms-accum', 'rgba16float', width, height,
-    GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.STORAGE_BINDING);
+    GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.COPY_SRC | GPUTextureUsage.COPY_DST);
 
   // Resize invalidates paint — full restamp needed
   lastStampedIndex = 0;
@@ -344,6 +344,11 @@ function stampOneForm(encoder: GPUCommandEncoder, f: FormDef, globalBG: GPUBindG
 
   const bbox = computeBBox(f);
   if (bbox.w <= 0 || bbox.h <= 0) return;
+
+  // Copy full read → write so pixels outside the bbox are preserved after swap
+  const size = { width: currentWidth, height: currentHeight };
+  encoder.copyTextureToTexture({ texture: formsPP.read }, { texture: formsPP.write }, size);
+  encoder.copyTextureToTexture({ texture: accumPP.read }, { texture: accumPP.write }, size);
 
   writeStampParams(device, bbox);
   writeFormData(device, f);
