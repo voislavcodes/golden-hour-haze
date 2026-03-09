@@ -71,7 +71,8 @@ export function initBrushEngine() {
 }
 
 export function reloadBrush() {
-  reservoir = sceneStore.get().load;
+  const load = sceneStore.get().load;
+  reservoir = load > 0 ? 1.0 : 0;
   totalDistance = 0;
 }
 
@@ -144,14 +145,19 @@ export function dispatchBrushDabs(encoder: GPUCommandEncoder, x: number, y: numb
   }
 
   // Update reservoir based on depletion curve
+  // Reservoir starts at 1.0 (full opacity), load controls how fast it drains.
   const load = scene.load;
-  const holdDistance = load * 200;
-  const drainDistance = totalDistance - holdDistance;
-  if (drainDistance > 0) {
-    const drainRate = (1.0 - load) * 0.004 + 0.0005;
-    reservoir = load * Math.exp(-drainRate * drainDistance);
+  if (load <= 0) {
+    reservoir = 0;
   } else {
-    reservoir = load;
+    const holdDistance = load * 400;
+    const drainDistance = totalDistance - holdDistance;
+    if (drainDistance > 0) {
+      const drainRate = (1.0 - load) * 0.003 + 0.0002;
+      reservoir = Math.exp(-drainRate * drainDistance);
+    } else {
+      reservoir = 1.0;
+    }
   }
 
   // Write ALL dab params to the buffer at unique offsets BEFORE encoding dispatches.
