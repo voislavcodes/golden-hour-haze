@@ -4,7 +4,7 @@ import { getGPU } from '../gpu/context.js';
 import { createComputePipeline } from '../gpu/pipeline-cache.js';
 import { getAccumPP, swapAccum, getSurfaceWidth, getSurfaceHeight } from './surface.js';
 import { sceneStore } from '../state/scene-state.js';
-import { uiStore } from '../state/ui-state.js';
+import { uiStore, pointerQueue } from '../state/ui-state.js';
 import dissolveShader from '../shaders/brush/dissolve.wgsl';
 
 type Vec2 = [number, number];
@@ -81,9 +81,21 @@ export function dispatchDissolveDabs(encoder: GPUCommandEncoder, x: number, y: n
   const ui = uiStore.get();
   const radius = ui.brushSize;
 
-  const curr: Vec2 = [x, y];
-  const points = lastPos ? interpolateStroke(lastPos, curr, radius) : [curr];
-  lastPos = curr;
+  // Build waypoints from queued coalesced positions, falling back to current position
+  const waypoints: Vec2[] = pointerQueue.length > 0
+    ? pointerQueue.splice(0).map(p => [p.x, p.y] as Vec2)
+    : [[x, y]];
+
+  // Interpolate through all waypoints for a continuous stroke
+  let points: Vec2[] = [];
+  for (const wp of waypoints) {
+    if (lastPos) {
+      points = points.concat(interpolateStroke(lastPos, wp, radius));
+    } else {
+      points.push(wp);
+    }
+    lastPos = wp;
+  }
 
   const softness = scene.velvet * radius;
   const w = getSurfaceWidth();

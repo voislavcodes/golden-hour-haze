@@ -1,7 +1,7 @@
 import { html, css } from 'lit';
 import { customElement, state } from 'lit/decorators.js';
 import { BaseControl } from './base-control.js';
-import { uiStore, type Tool } from '../state/ui-state.js';
+import { uiStore, pointerQueue, type Tool } from '../state/ui-state.js';
 
 const BRUSH_TOOLS = new Set<Tool>(['form']);
 
@@ -30,6 +30,7 @@ export class CanvasOverlay extends BaseControl {
       .overlay {
         width: 100%;
         height: 100%;
+        touch-action: none;
       }
 
       .brush-cursor {
@@ -136,16 +137,26 @@ export class CanvasOverlay extends BaseControl {
   }
 
   private _onPointerMove(e: PointerEvent) {
-    const { x, y } = this._normalizeCoords(e);
-    this._mx = e.clientX;
-    this._my = e.clientY;
+    // Queue all coalesced positions for the brush engine
+    const coalesced = e.getCoalescedEvents?.() ?? [e];
+    for (const ce of coalesced) {
+      pointerQueue.push({
+        x: ce.clientX / window.innerWidth,
+        y: ce.clientY / window.innerHeight,
+      });
+    }
+
+    const last = coalesced[coalesced.length - 1] ?? e;
+    this._mx = last.clientX;
+    this._my = last.clientY;
+    const { x, y } = this._normalizeCoords(last);
     uiStore.set({
       mouseX: x,
       mouseY: y,
-      pressure: this._normalizePressure(e),
-      tiltX: e.tiltX,
-      tiltY: e.tiltY,
-      pointerType: e.pointerType,
+      pressure: this._normalizePressure(last),
+      tiltX: last.tiltX,
+      tiltY: last.tiltY,
+      pointerType: last.pointerType,
     });
   }
 

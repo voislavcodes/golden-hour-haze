@@ -1,4 +1,4 @@
-import { uiStore } from '../state/ui-state.js';
+import { uiStore, pointerQueue } from '../state/ui-state.js';
 
 let canvas: HTMLCanvasElement;
 
@@ -39,8 +39,16 @@ function onPointerDown(e: PointerEvent) {
 }
 
 function onPointerMove(e: PointerEvent) {
-  // Use coalesced events if available for smoother strokes
-  const events = ('getCoalescedEvents' in e) ? e.getCoalescedEvents() : [e];
+  // Queue all coalesced positions for the brush engine
+  const events = e.getCoalescedEvents?.() ?? [e];
+  for (const ce of events) {
+    const rect = canvas.getBoundingClientRect();
+    pointerQueue.push({
+      x: (ce.clientX - rect.left) / rect.width,
+      y: (ce.clientY - rect.top) / rect.height,
+    });
+  }
+
   const last = events[events.length - 1] || e;
   const { x, y } = normalizeCoords(last);
 
