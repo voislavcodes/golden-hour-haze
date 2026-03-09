@@ -111,9 +111,16 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4f {
   let dimmed_lum = dot(form_color, vec3f(0.2126, 0.7152, 0.0722));
   form_color = mix(form_color, vec3f(dimmed_lum), effective_darkness * 0.6);
 
-  // (c) Color bleed: dark atmosphere tints forms toward sky hue
-  let bleed = darkness * 0.4 * (1.0 - saturate(light_boost));
+  // (c) Color bleed: atmosphere tints forms toward sky hue (darkness OR density)
+  let darkness_bleed = darkness * 0.4;
+  let density_bleed = density * 0.35;
+  let bleed = max(darkness_bleed, density_bleed) * (1.0 - saturate(light_boost));
   form_color = mix(form_color, sky * (dimmed_lum / max(atmo_lum, 0.01)), bleed);
+
+  // (d) Atmosphere eats form chroma based on density
+  let chroma_loss = density * 0.5 * (1.0 - saturate(light_boost));
+  let form_grey = dot(form_color, vec3f(0.2126, 0.7152, 0.0722));
+  form_color = mix(form_color, vec3f(form_grey), chroma_loss);
 
   var color = mix(sky, form_color, forms.a);
 
