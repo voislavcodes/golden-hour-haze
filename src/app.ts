@@ -12,7 +12,7 @@ import { startLoop } from './gpu/frame-loop.js';
 
 // Painting
 import { initSurface, resizeSurface } from './painting/surface.js';
-import { initBrushEngine, beginStroke, endStroke, dispatchBrushDabs } from './painting/brush-engine.js';
+import { initBrushEngine, beginStroke, endStroke, dispatchBrushDabs, reloadBrush } from './painting/brush-engine.js';
 import { initDissolveEngine, beginDissolve, endDissolve, dispatchDissolveDabs } from './painting/dissolve-engine.js';
 import { pushSnapshot, undo, redo } from './painting/undo.js';
 
@@ -66,6 +66,7 @@ import './controls/horizon-control.js';
 import './controls/light-wells.js';
 import './controls/surface-pad.js';
 import './controls/export-button.js';
+import './controls/load-slider.js';
 
 // Input
 import { initPointerInput } from './input/pointer.js';
@@ -169,8 +170,14 @@ export function initApp() {
   let prevShadowChroma = scene.shadowChroma;
   let prevAnchor = scene.anchor;
   let prevSurface = scene.surface;
+  let prevLoad = scene.load;
 
   sceneStore.subscribe((state) => {
+    if (state.load !== prevLoad) {
+      reloadBrush();
+      prevLoad = state.load;
+    }
+
     if (state.atmosphere !== prevAtmosphere || state.horizonY !== prevHorizonY) {
       writeAtmosphereParams(state.atmosphere, state.horizonY);
       updateNoiseLutParams(state.atmosphere.turbulence);

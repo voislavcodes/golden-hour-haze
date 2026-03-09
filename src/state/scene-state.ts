@@ -86,6 +86,7 @@ export interface SceneState {
   palette: PaletteState;
   lights: LightDef[];
   velvet: number;       // 0-1, brush edge softness
+  load: number;         // 0-1, paint reservoir amount
   echo: number;         // 0-1, surface color pickup
   baseOpacity: number;  // 0.1-1.0, default 0.5
   falloff: number;      // 0.5-0.9, diminishing returns per layer (default 0.7)
@@ -152,6 +153,7 @@ export const sceneStore = createStore<SceneState>({
   echo: 0.0,
   anchor: null,
   velvet: 0.5,
+  load: 0.5,
   shadowChroma: 0.4,
   baseOpacity: 0.5,
   falloff: 0.7,

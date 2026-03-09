@@ -7,12 +7,14 @@ struct BrushParams {
   softness: f32,           // edge softness (0=hard, up to radius=fully soft)
   palette_K: vec3f,        // per-channel K-M absorption from tonal column
   _pad0: f32,
-  palette_S: vec3f,        // K-M scattering (always 1.0, kept for future use)
-  _pad1: f32,
   base_opacity: f32,       // 0.5 default
   falloff: f32,            // 0.7 default — diminishing returns
   echo: f32,               // 0-1, surface color pickup
   stroke_start_layers: f32, // layer count at stroke start — per-stroke diminishing returns
+  reservoir: f32,           // current paint remaining (0-1)
+  _pad1: f32,
+  _pad2: f32,
+  _pad3: f32,
 };
 
 @group(0) @binding(0) var<uniform> params: BrushParams;
@@ -36,7 +38,7 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
 
   // Diminishing returns — per-stroke only; new strokes arrive at full opacity
   let layers_this_stroke = max(existing.a - params.stroke_start_layers, 0.0);
-  let effective_alpha = alpha * params.base_opacity * pow(params.falloff, layers_this_stroke);
+  let effective_alpha = alpha * params.base_opacity * pow(params.falloff, layers_this_stroke) * params.reservoir;
 
   if (effective_alpha < 0.001) {
     textureStore(accum_write, vec2i(gid.xy), existing);

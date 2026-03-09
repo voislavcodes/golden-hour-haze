@@ -6,6 +6,7 @@ import { customElement, state } from 'lit/decorators.js';
 import { BaseControl } from './base-control.js';
 import { sceneStore, type PaletteColor } from '../state/scene-state.js';
 import { sampleTonalColumn } from '../painting/palette.js';
+import { reloadBrush } from '../painting/brush-engine.js';
 
 @customElement('ghz-palette-panel')
 export class PalettePanel extends BaseControl {
@@ -74,6 +75,7 @@ export class PalettePanel extends BaseControl {
     sceneStore.update((s) => ({
       palette: { ...s.palette, activeIndex: index },
     }));
+    reloadBrush();
   }
 
   private handleWheel(e: WheelEvent, index: number) {
@@ -85,6 +87,7 @@ export class PalettePanel extends BaseControl {
       newValues[index] = Math.max(0, Math.min(1, newValues[index] + delta));
       return { palette: { ...s.palette, tonalValues: newValues } };
     });
+    reloadBrush();
   }
 
   private handleDblClick(index: number) {
@@ -93,6 +96,7 @@ export class PalettePanel extends BaseControl {
       newValues[index] = 0.5;
       return { palette: { ...s.palette, tonalValues: newValues } };
     });
+    reloadBrush();
   }
 
   private getSwatchColor(index: number): string {

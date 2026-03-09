@@ -24,6 +24,10 @@ let lastPos: Vec2 | null = null;
 let strokeStartLayers = 0;   // snapshot of estimated peak weight when stroke began
 let estimatedPeakLayers = 0;  // running CPU-side estimate of heaviest pixel weight
 
+// Paint depletion state
+let reservoir = 0.5;
+let totalDistance = 0;
+
 export function initBrushEngine() {
   const { device } = getGPU();
 
@@ -62,6 +66,17 @@ export function initBrushEngine() {
     size: MAX_DABS_PER_FRAME * paramStride,
     usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
   });
+
+  reloadBrush();
+}
+
+export function reloadBrush() {
+  reservoir = sceneStore.get().load;
+  totalDistance = 0;
+}
+
+export function getReservoir(): number {
+  return reservoir;
 }
 
 function interpolateStroke(prev: Vec2, curr: Vec2, radius: number): Vec2[] {
@@ -121,6 +136,24 @@ export function dispatchBrushDabs(encoder: GPUCommandEncoder, x: number, y: numb
   const w = getSurfaceWidth();
   const h = getSurfaceHeight();
 
+  // Accumulate pixel distance for paint depletion
+  for (let i = 1; i < points.length; i++) {
+    const dx = points[i][0] - points[i - 1][0];
+    const dy = points[i][1] - points[i - 1][1];
+    totalDistance += Math.sqrt(dx * dx + dy * dy) * w;
+  }
+
+  // Update reservoir based on depletion curve
+  const load = scene.load;
+  const holdDistance = load * 200;
+  const drainDistance = totalDistance - holdDistance;
+  if (drainDistance > 0) {
+    const drainRate = (1.0 - load) * 0.004 + 0.0005;
+    reservoir = load * Math.exp(-drainRate * drainDistance);
+  } else {
+    reservoir = load;
+  }
+
   // Write ALL dab params to the buffer at unique offsets BEFORE encoding dispatches.
   // This is critical: queue.writeBuffer writes are coalesced before submit(),
   // so writing to the same offset would make all dispatches see only the last dab.
@@ -132,12 +165,12 @@ export function dispatchBrushDabs(encoder: GPUCommandEncoder, x: number, y: numb
       softness,         // softness
       ks.Kr, ks.Kg, ks.Kb, // palette_K (vec3f — per-channel K-M absorption)
       0,                // pad
-      1.0, 1.0, 1.0,   // palette_S (vec3f — always 1.0 in simplified model)
-      0,                // pad
       scene.baseOpacity,    // base_opacity
       scene.falloff,        // falloff
       scene.echo,           // echo
       strokeStartLayers,    // stroke_start_layers
+      reservoir,            // reservoir
+      0, 0, 0,              // padding to 64 bytes
     ]);
     device.queue.writeBuffer(paramBuffer, i * paramStride, data);
   }
