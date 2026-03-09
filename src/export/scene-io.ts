@@ -96,6 +96,13 @@ export async function loadProject(file: File): Promise<void> {
   // Restore scene state
   sceneStore.set(header.scene);
 
+  // Backward compat — old files without surface params
+  if (!header.scene.surface) {
+    sceneStore.update(() => ({
+      surface: { grainSize: 0.3, directionality: 0.7, intensity: 0.08, mode: 'standard' as const },
+    }));
+  }
+
   // Upload accumulation data to texture
   const accumData = new Uint8Array(arrayBuffer, 4 + headerLength);
   const accumPP = getAccumPP();

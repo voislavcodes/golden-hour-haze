@@ -50,6 +50,13 @@ export interface PaletteState {
   tonalValues: number[];  // per-swatch value, 0=light 1=dark, default 0.5
 }
 
+export interface SurfaceParams {
+  grainSize: number;        // 0-1, fine→coarse (X axis)
+  directionality: number;   // 0-1, isotropic→directional (Y axis)
+  intensity: number;        // 0-0.2, texture visibility
+  mode: 'standard' | 'woodblock';
+}
+
 export interface CompositorParams {
   shadowChroma: number;
   grayscale: number;
@@ -63,6 +70,7 @@ export interface CompositorParams {
   grainAngle?: number;
   grainDepth?: number;
   grainScale?: number;
+  surfaceIntensity?: number;
 }
 
 export const MAX_LIGHTS = 16;
@@ -73,6 +81,7 @@ export interface SceneState {
   sunAngle: number;
   sunElevation: number;
   atmosphere: AtmosphereParams;
+  surface: SurfaceParams;
   horizonY: number;
   palette: PaletteState;
   lights: LightDef[];
@@ -128,6 +137,12 @@ export const sceneStore = createStore<SceneState>({
     turbulence: 0.4,
     grainAngle: 0,
     grainDepth: 0.5,
+  },
+  surface: {
+    grainSize: 0.3,
+    directionality: 0.7,
+    intensity: 0.08,
+    mode: 'standard',
   },
   lights: [],
   palette: defaultPalette,

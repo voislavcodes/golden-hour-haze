@@ -23,6 +23,10 @@ struct CompositorParams {
   grain_angle: f32,
   grain_depth: f32,
   grain_scale: f32,
+  surface_intensity: f32,
+  _pad1: f32,
+  _pad2: f32,
+  _pad3: f32,
 };
 
 @group(0) @binding(0) var<uniform> globals: Globals;
@@ -34,6 +38,7 @@ struct CompositorParams {
 @group(1) @binding(5) var bloom_tex: texture_2d<f32>;
 @group(1) @binding(6) var tex_sampler: sampler;
 @group(1) @binding(7) var grain_sampler: sampler;
+@group(1) @binding(8) var surface_lut: texture_2d<f32>;
 @group(2) @binding(0) var<uniform> comp_params: CompositorParams;
 
 struct VertexOutput {
@@ -98,6 +103,15 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4f {
   // 4. Blend paint over sky based on weight
   let paint_opacity = clamp(paint_weight * 2.0, 0.0, 1.0);
   var color = mix(sky, paint_rgb, paint_opacity);
+
+  // 4b. Surface texture — grain shows through thin paint, buried by thick
+  let surface_tiling = globals.resolution / 512.0;
+  let surface_uv = uv * surface_tiling;
+  let surface_grain = textureSample(surface_lut, grain_sampler, surface_uv).r;
+  let grain_visibility = (1.0 - saturate(paint_weight * 1.5)) * comp_params.surface_intensity;
+  let grain_offset = (surface_grain - 0.5) * 2.0 * grain_visibility;
+  let grain_tint = mix(vec3f(grain_offset), sky * grain_offset * 2.0, 0.3);
+  color += grain_tint;
 
   // 5. Add lights (additive)
   color += light * 0.5;

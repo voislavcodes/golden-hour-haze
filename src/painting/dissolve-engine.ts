@@ -14,15 +14,21 @@ let paramBuffer: GPUBuffer;
 let paramLayout: GPUBindGroupLayout;
 let textureLayout: GPUBindGroupLayout;
 
+const PARAM_SIZE = 32; // bytes per dab
+let paramStride = 256; // aligned stride, set at init from device limits
+const MAX_DABS_PER_FRAME = 256;
+
 let lastPos: Vec2 | null = null;
 
 export function initDissolveEngine() {
   const { device } = getGPU();
 
+  paramStride = Math.max(PARAM_SIZE, device.limits.minUniformBufferOffsetAlignment);
+
   paramLayout = device.createBindGroupLayout({
     label: 'dissolve-param-layout',
     entries: [
-      { binding: 0, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'uniform' } },
+      { binding: 0, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'uniform', hasDynamicOffset: false } },
     ],
   });
 
@@ -45,10 +51,9 @@ export function initDissolveEngine() {
     },
   });
 
-  // DissolveParams: center(2f) + radius(f) + softness(f) + dissolve_strength(f) + pad(3f) = 32 bytes
   paramBuffer = device.createBuffer({
     label: 'dissolve-params',
-    size: 32,
+    size: MAX_DABS_PER_FRAME * paramStride,
     usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
   });
 }
@@ -75,18 +80,16 @@ export function endDissolve() {
   lastPos = null;
 }
 
-export function dispatchDissolveDabs(encoder: GPUCommandEncoder, x: number, y: number) {
+export function dispatchDissolveDabs(encoder: GPUCommandEncoder, x: number, y: number): boolean {
   const { device } = getGPU();
   const scene = sceneStore.get();
   const ui = uiStore.get();
   const radius = ui.brushSize;
 
-  // Build waypoints from queued coalesced positions, falling back to current position
   const waypoints: Vec2[] = pointerQueue.length > 0
     ? pointerQueue.splice(0).map(p => [p.x, p.y] as Vec2)
     : [[x, y]];
 
-  // Interpolate through all waypoints for a continuous stroke
   let points: Vec2[] = [];
   for (const wp of waypoints) {
     if (lastPos) {
@@ -97,11 +100,19 @@ export function dispatchDissolveDabs(encoder: GPUCommandEncoder, x: number, y: n
     lastPos = wp;
   }
 
+  if (points.length === 0) return false;
+
+  if (points.length > MAX_DABS_PER_FRAME) {
+    points = points.slice(points.length - MAX_DABS_PER_FRAME);
+  }
+
   const softness = scene.velvet * radius;
   const w = getSurfaceWidth();
   const h = getSurfaceHeight();
 
-  for (const pt of points) {
+  // Write all dab params at unique offsets before encoding dispatches
+  for (let i = 0; i < points.length; i++) {
+    const pt = points[i];
     const data = new Float32Array([
       pt[0], pt[1],       // center
       radius,              // radius
@@ -109,13 +120,15 @@ export function dispatchDissolveDabs(encoder: GPUCommandEncoder, x: number, y: n
       ui.dissolveStrength, // dissolve_strength
       0, 0, 0,             // padding
     ]);
-    device.queue.writeBuffer(paramBuffer, 0, data);
+    device.queue.writeBuffer(paramBuffer, i * paramStride, data);
+  }
 
+  for (let i = 0; i < points.length; i++) {
     const accumPP = getAccumPP();
 
     const paramBG = device.createBindGroup({
       layout: paramLayout,
-      entries: [{ binding: 0, resource: { buffer: paramBuffer } }],
+      entries: [{ binding: 0, resource: { buffer: paramBuffer, offset: i * paramStride, size: PARAM_SIZE } }],
     });
 
     const texBG = device.createBindGroup({
@@ -135,4 +148,5 @@ export function dispatchDissolveDabs(encoder: GPUCommandEncoder, x: number, y: n
 
     swapAccum();
   }
+  return true;
 }

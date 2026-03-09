@@ -8,6 +8,7 @@ import { getGlobalBindGroupLayout } from '../gpu/bind-groups.js';
 import { getReadTexture } from '../painting/surface.js';
 import { getBloomTexture } from '../light/light-layer.js';
 import { getGrainLutTexture, getNoiseLutSampler } from '../atmosphere/noise-lut.js';
+import { getSurfaceGrainTexture } from '../surface/surface-grain-lut.js';
 import type { CompositorParams } from '../state/scene-state.js';
 import compositeShader from '../shaders/composite/composite.wgsl';
 
@@ -41,6 +42,7 @@ export function initCompositor() {
       { binding: 5, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: 'float' } },  // bloom
       { binding: 6, visibility: GPUShaderStage.FRAGMENT, sampler: { type: 'filtering' } },     // tex sampler
       { binding: 7, visibility: GPUShaderStage.FRAGMENT, sampler: { type: 'filtering' } },     // grain repeat sampler
+      { binding: 8, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: 'float' } },  // surface grain LUT
     ],
   });
 
@@ -53,7 +55,7 @@ export function initCompositor() {
 
   compositorParamBuffer = device.createBuffer({
     label: 'compositor-params',
-    size: 48,
+    size: 64,
     usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
   });
 
@@ -128,6 +130,7 @@ export function rebuildCompositorBindGroup() {
       { binding: 5, resource: bloomTex.createView() },
       { binding: 6, resource: sampler },
       { binding: 7, resource: grainSampler },
+      { binding: 8, resource: getSurfaceGrainTexture().createView() },
     ],
   });
 }
@@ -147,6 +150,8 @@ export function writeCompositorParams(params: CompositorParams) {
     params.grainAngle ?? 0,
     params.grainDepth ?? 0.5,
     params.grainScale ?? 4.0,
+    params.surfaceIntensity ?? 0,
+    0, 0, 0,
   ]));
 }
 

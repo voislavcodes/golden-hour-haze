@@ -12,7 +12,7 @@ struct BrushParams {
   base_opacity: f32,       // 0.5 default
   falloff: f32,            // 0.7 default — diminishing returns
   echo: f32,               // 0-1, surface color pickup
-  _pad2: f32,
+  stroke_start_layers: f32, // layer count at stroke start — per-stroke diminishing returns
 };
 
 @group(0) @binding(0) var<uniform> params: BrushParams;
@@ -34,9 +34,9 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
   let inner_edge = params.radius - params.softness;
   let alpha = 1.0 - smoothstep(inner_edge, params.radius, dist);
 
-  // Diminishing returns — existing paint resists new paint
-  let existing_weight = existing.a;
-  let effective_alpha = alpha * params.base_opacity * pow(params.falloff, existing_weight);
+  // Diminishing returns — per-stroke only; new strokes arrive at full opacity
+  let layers_this_stroke = max(existing.a - params.stroke_start_layers, 0.0);
+  let effective_alpha = alpha * params.base_opacity * pow(params.falloff, layers_this_stroke);
 
   if (effective_alpha < 0.001) {
     textureStore(accum_write, vec2i(gid.xy), existing);

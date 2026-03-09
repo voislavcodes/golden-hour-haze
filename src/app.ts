@@ -16,6 +16,9 @@ import { initBrushEngine, beginStroke, endStroke, dispatchBrushDabs } from './pa
 import { initDissolveEngine, beginDissolve, endDissolve, dispatchDissolveDabs } from './painting/dissolve-engine.js';
 import { pushSnapshot, undo, redo } from './painting/undo.js';
 
+// Surface texture
+import { initSurfaceGrainLut, updateSurfaceGrainParams, generateSurfaceGrainIfDirty } from './surface/surface-grain-lut.js';
+
 // Atmosphere
 import { initNoiseLut, updateNoiseLutParams, updateGrainLutParams, generateLutsIfDirty } from './atmosphere/noise-lut.js';
 import {
@@ -46,7 +49,7 @@ import {
 
 // State
 import { sceneStore, goldenFactor } from './state/scene-state.js';
-import { uiStore } from './state/ui-state.js';
+import { uiStore, pointerQueue } from './state/ui-state.js';
 import { markDirty, isDirty, clearDirty, isAnyDirty, markAllDirty } from './state/dirty-flags.js';
 
 // Register web components (side-effect imports)
@@ -61,6 +64,7 @@ import './controls/anchor-control.js';
 import './controls/velvet-slider.js';
 import './controls/horizon-control.js';
 import './controls/light-wells.js';
+import './controls/surface-pad.js';
 
 // Input
 import { initPointerInput } from './input/pointer.js';
@@ -86,6 +90,7 @@ export function initApp() {
 
   // Init all systems
   initNoiseLut();
+  initSurfaceGrainLut();
   initAtmosphere();
   initSurface(width, height);
   initBrushEngine();
@@ -97,6 +102,7 @@ export function initApp() {
   const scene = sceneStore.get();
   updateNoiseLutParams(scene.atmosphere.turbulence);
   updateGrainLutParams(1.0 + scene.atmosphere.grain * 3.0, scene.atmosphere.grainAngle);
+  updateSurfaceGrainParams(scene.surface.grainSize, scene.surface.directionality, scene.surface.mode === 'woodblock' ? 1 : 0);
 
   // Allocate textures at initial size
   allocateAllTextures(width, height);
@@ -119,6 +125,7 @@ export function initApp() {
     grainAngle: scene.atmosphere.grainAngle,
     grainDepth: scene.atmosphere.grainDepth,
     grainScale: 1.0 + scene.atmosphere.grain * 3.0,
+    surfaceIntensity: scene.surface.intensity,
   });
 
   // Input
@@ -160,6 +167,7 @@ export function initApp() {
   let prevLights = scene.lights;
   let prevShadowChroma = scene.shadowChroma;
   let prevAnchor = scene.anchor;
+  let prevSurface = scene.surface;
 
   sceneStore.subscribe((state) => {
     if (state.atmosphere !== prevAtmosphere || state.horizonY !== prevHorizonY) {
@@ -180,10 +188,16 @@ export function initApp() {
       markDirty('light');
     }
 
+    if (state.surface !== prevSurface) {
+      updateSurfaceGrainParams(state.surface.grainSize, state.surface.directionality, state.surface.mode === 'woodblock' ? 1 : 0);
+      markDirty('composite');
+    }
+
     if (state.shadowChroma !== prevShadowChroma ||
         state.anchor !== prevAnchor ||
         state.sunElevation !== prevSunElevation ||
-        state.atmosphere !== prevAtmosphere) {
+        state.atmosphere !== prevAtmosphere ||
+        state.surface !== prevSurface) {
       const gf = goldenFactor(state.sunElevation);
       writeCompositorParams({
         shadowChroma: state.shadowChroma,
@@ -198,6 +212,7 @@ export function initApp() {
         grainAngle: state.atmosphere.grainAngle,
         grainDepth: state.atmosphere.grainDepth,
         grainScale: 1.0 + state.atmosphere.grain * 3.0,
+        surfaceIntensity: state.surface.intensity,
       });
       markDirty('composite');
     }
@@ -209,6 +224,7 @@ export function initApp() {
     prevLights = state.lights;
     prevShadowChroma = state.shadowChroma;
     prevAnchor = state.anchor;
+    prevSurface = state.surface;
   });
 
   uiStore.subscribe((_ui) => {
@@ -227,6 +243,7 @@ export function initApp() {
       grainAngle: state.atmosphere.grainAngle,
       grainDepth: state.atmosphere.grainDepth,
       grainScale: 1.0 + state.atmosphere.grain * 3.0,
+      surfaceIntensity: state.surface.intensity,
     });
     markDirty('composite');
   });
@@ -286,6 +303,9 @@ function setupPaintingInteraction() {
       pushSnapshot(encoder);
       device.queue.submit([encoder.finish()]);
 
+      // Flush stale pointer positions accumulated before stroke began
+      pointerQueue.length = 0;
+
       strokeActive = true;
       strokeTool = isBrush ? 'form' : 'dissolve';
 
@@ -296,10 +316,8 @@ function setupPaintingInteraction() {
       }
     }
 
-    if (strokeActive && ui.mouseDown) {
-      // During stroke — defer dabs to the next frame
-      markDirty('surface');
-    }
+    // Note: surface dirty is driven directly by renderFrame checking strokeActive,
+    // not by this subscriber — avoids microtask timing gaps
 
     if (!ui.mouseDown && wasDown && strokeActive) {
       // Stroke end
@@ -329,6 +347,12 @@ function renderFrame(dt: number, elapsed: number) {
     markDirty('density');
   }
 
+  // Active stroke: always render (don't depend on dirty flag from microtask subscriber)
+  const strokeNeedsDispatch = strokeActive && ui.mouseDown;
+  if (strokeNeedsDispatch) {
+    markDirty('surface');
+  }
+
   // Full frame skip when nothing is dirty
   if (!isAnyDirty()) return;
 
@@ -341,6 +365,11 @@ function renderFrame(dt: number, elapsed: number) {
 
   // Generate noise LUTs if dirty
   generateLutsIfDirty(encoder);
+
+  // Generate surface grain LUT if dirty
+  if (generateSurfaceGrainIfDirty(encoder)) {
+    compositorBGDirty = true;
+  }
 
   if (isDirty('density')) {
     dispatchDensity(encoder, globalBindGroup);
@@ -361,15 +390,18 @@ function renderFrame(dt: number, elapsed: number) {
 
   // Painting surface — dispatch brush/dissolve dabs during active stroke
   if (isDirty('surface')) {
+    let painted = false;
     if (strokeActive && ui.mouseDown) {
       if (strokeTool === 'form') {
-        dispatchBrushDabs(encoder, ui.mouseX, ui.mouseY);
+        painted = dispatchBrushDabs(encoder, ui.mouseX, ui.mouseY);
       } else if (strokeTool === 'dissolve') {
-        dispatchDissolveDabs(encoder, ui.mouseX, ui.mouseY);
+        painted = dispatchDissolveDabs(encoder, ui.mouseX, ui.mouseY);
       }
     }
     clearDirty('surface');
-    compositorBGDirty = true;
+    if (painted) {
+      compositorBGDirty = true;
+    }
   }
 
   if (isDirty('light')) {

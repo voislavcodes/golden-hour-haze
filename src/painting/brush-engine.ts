@@ -16,15 +16,23 @@ let paramBuffer: GPUBuffer;
 let paramLayout: GPUBindGroupLayout;
 let textureLayout: GPUBindGroupLayout;
 
+const PARAM_SIZE = 64; // bytes per dab
+let paramStride = 256; // aligned stride, set at init from device limits
+const MAX_DABS_PER_FRAME = 256;
+
 let lastPos: Vec2 | null = null;
+let strokeStartLayers = 0;   // snapshot of estimated peak weight when stroke began
+let estimatedPeakLayers = 0;  // running CPU-side estimate of heaviest pixel weight
 
 export function initBrushEngine() {
   const { device } = getGPU();
 
+  paramStride = Math.max(PARAM_SIZE, device.limits.minUniformBufferOffsetAlignment);
+
   paramLayout = device.createBindGroupLayout({
     label: 'brush-param-layout',
     entries: [
-      { binding: 0, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'uniform' } },
+      { binding: 0, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'uniform', hasDynamicOffset: false } },
     ],
   });
 
@@ -47,10 +55,11 @@ export function initBrushEngine() {
     },
   });
 
-  // BrushParams: center(2f) + radius(f) + softness(f) + palette_K(3f) + pad + palette_S(3f) + pad + base_opacity(f) + falloff(f) + echo(f) + pad = 64 bytes
+  // Pre-allocate buffer large enough for many dabs per frame
+  // Each dab needs PARAM_SIZE bytes, aligned to paramStride
   paramBuffer = device.createBuffer({
     label: 'brush-params',
-    size: 64,
+    size: MAX_DABS_PER_FRAME * paramStride,
     usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
   });
 }
@@ -70,6 +79,7 @@ function interpolateStroke(prev: Vec2, curr: Vec2, radius: number): Vec2[] {
 }
 
 export function beginStroke(x: number, y: number) {
+  strokeStartLayers = estimatedPeakLayers;
   lastPos = [x, y];
 }
 
@@ -77,7 +87,7 @@ export function endStroke() {
   lastPos = null;
 }
 
-export function dispatchBrushDabs(encoder: GPUCommandEncoder, x: number, y: number) {
+export function dispatchBrushDabs(encoder: GPUCommandEncoder, x: number, y: number): boolean {
   const { device } = getGPU();
   const scene = sceneStore.get();
   const ui = uiStore.get();
@@ -99,13 +109,23 @@ export function dispatchBrushDabs(encoder: GPUCommandEncoder, x: number, y: numb
     lastPos = wp;
   }
 
+  if (points.length === 0) return false;
+
+  // Cap dabs per frame to buffer capacity
+  if (points.length > MAX_DABS_PER_FRAME) {
+    points = points.slice(points.length - MAX_DABS_PER_FRAME);
+  }
+
   const ks = getActiveKS();
   const softness = scene.velvet * radius;
   const w = getSurfaceWidth();
   const h = getSurfaceHeight();
 
-  for (const pt of points) {
-    // Write brush params
+  // Write ALL dab params to the buffer at unique offsets BEFORE encoding dispatches.
+  // This is critical: queue.writeBuffer writes are coalesced before submit(),
+  // so writing to the same offset would make all dispatches see only the last dab.
+  for (let i = 0; i < points.length; i++) {
+    const pt = points[i];
     const data = new Float32Array([
       pt[0], pt[1],    // center
       radius,           // radius
@@ -114,18 +134,21 @@ export function dispatchBrushDabs(encoder: GPUCommandEncoder, x: number, y: numb
       0,                // pad
       1.0, 1.0, 1.0,   // palette_S (vec3f — always 1.0 in simplified model)
       0,                // pad
-      scene.baseOpacity, // base_opacity
-      scene.falloff,     // falloff
-      scene.echo,        // echo
-      0,                // pad
+      scene.baseOpacity,    // base_opacity
+      scene.falloff,        // falloff
+      scene.echo,           // echo
+      strokeStartLayers,    // stroke_start_layers
     ]);
-    device.queue.writeBuffer(paramBuffer, 0, data);
+    device.queue.writeBuffer(paramBuffer, i * paramStride, data);
+  }
 
+  // Encode dispatches — each reads from its own offset in the param buffer
+  for (let i = 0; i < points.length; i++) {
     const accumPP = getAccumPP();
 
     const paramBG = device.createBindGroup({
       layout: paramLayout,
-      entries: [{ binding: 0, resource: { buffer: paramBuffer } }],
+      entries: [{ binding: 0, resource: { buffer: paramBuffer, offset: i * paramStride, size: PARAM_SIZE } }],
     });
 
     const texBG = device.createBindGroup({
@@ -136,7 +159,6 @@ export function dispatchBrushDabs(encoder: GPUCommandEncoder, x: number, y: numb
       ],
     });
 
-    // Dispatch over full texture (bbox optimization would need offset in shader)
     const pass = encoder.beginComputePass({ label: 'brush-dab' });
     pass.setPipeline(pipeline);
     pass.setBindGroup(0, paramBG);
@@ -144,7 +166,11 @@ export function dispatchBrushDabs(encoder: GPUCommandEncoder, x: number, y: numb
     pass.dispatchWorkgroups(Math.ceil(w / 8), Math.ceil(h / 8));
     pass.end();
 
-    // Swap after each dab for correctness
     swapAccum();
   }
+
+  // Update CPU-side peak weight estimate (rough: ~1 full-opacity dab's worth per frame)
+  estimatedPeakLayers += scene.baseOpacity;
+
+  return true;
 }
