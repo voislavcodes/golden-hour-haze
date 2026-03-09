@@ -1,6 +1,7 @@
 // Atmosphere density compute shader
 // Reads previous density (ping), writes new density (pong)
 // R=density, G=warmth, B=grain_local, A=scatter_local
+// Uses pre-baked noise LUT instead of inline FBM
 
 struct Globals {
   resolution: vec2f,
@@ -32,48 +33,8 @@ struct AtmosphereParams {
 @group(2) @binding(1) var depth_tex: texture_2d<f32>;
 @group(2) @binding(2) var density_sampler: sampler;
 @group(2) @binding(3) var output_tex: texture_storage_2d<rgba16float, write>;
-
-// Inline noise for compute shader
-fn mod289v3(x: vec3f) -> vec3f { return x - floor(x * (1.0 / 289.0)) * 289.0; }
-fn mod289v2(x: vec2f) -> vec2f { return x - floor(x * (1.0 / 289.0)) * 289.0; }
-fn permuteV3(x: vec3f) -> vec3f { return mod289v3((x * 34.0 + 10.0) * x); }
-
-fn snoise(v: vec2f) -> f32 {
-  let C = vec4f(0.211324865405187, 0.366025403784439,
-                -0.577350269189626, 0.024390243902439);
-  var i = floor(v + dot(v, C.yy));
-  let x0 = v - i + dot(i, C.xx);
-  var i1: vec2f;
-  if (x0.x > x0.y) { i1 = vec2f(1.0, 0.0); } else { i1 = vec2f(0.0, 1.0); }
-  var x12 = vec4f(x0.x + C.x, x0.y + C.x, x0.x + C.z, x0.y + C.z);
-  x12 = vec4f(x12.xy - i1, x12.zw);
-  i = mod289v2(i);
-  let p = permuteV3(permuteV3(vec3f(i.y, i.y + i1.y, i.y + 1.0)) +
-                     vec3f(i.x, i.x + i1.x, i.x + 1.0));
-  var m = max(vec3f(0.5) - vec3f(dot(x0, x0), dot(x12.xy, x12.xy), dot(x12.zw, x12.zw)), vec3f(0.0));
-  m = m * m; m = m * m;
-  let x = 2.0 * fract(p * C.www) - 1.0;
-  let h = abs(x) - 0.5;
-  let ox = floor(x + 0.5);
-  let a0 = x - ox;
-  m *= vec3f(1.79284291400159) - 0.85373472095314 * (a0 * a0 + h * h);
-  return 130.0 * dot(m, vec3f(a0.x * x0.x + h.x * x0.y,
-                               a0.y * x12.x + h.y * x12.y,
-                               a0.z * x12.z + h.z * x12.w));
-}
-
-fn fbm_noise(p: vec2f, octaves: i32) -> f32 {
-  var value = 0.0;
-  var amp = 0.5;
-  var freq = 1.0;
-  var pos = p;
-  for (var i = 0; i < octaves; i++) {
-    value += amp * snoise(pos * freq);
-    freq *= 2.0; amp *= 0.5;
-    pos = vec2f(pos.y + 100.0, pos.x + 100.0);
-  }
-  return value;
-}
+@group(2) @binding(4) var noise_lut: texture_2d<f32>;
+@group(2) @binding(5) var noise_sampler: sampler;
 
 @compute @workgroup_size(8, 8, 1)
 fn main(@builtin(global_invocation_id) gid: vec3u) {
@@ -90,37 +51,34 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
   let prev_uv = uv - drift;
   let prev = textureSampleLevel(prev_density, density_sampler, prev_uv, 0.0);
 
-  // Read depth
+  // Read depth (use density sampler for bilinear — works if depth is half-res or full-res)
   let depth = textureSampleLevel(depth_tex, density_sampler, uv, 0.0).r;
 
   // Base density from depth (deeper = more atmosphere)
-  // Ambient floor ensures orb always influences sky even without depth structure
-  // Humidity amplifies density ceiling
   let effective_density = params.density + pow(params.density, 3.0) * 0.5;
-  // Dense fog flattens depth variation — everything equally obscured
   let flat_depth = mix(depth, 1.0, fog_suppress);
   var depth_density = flat_depth * effective_density + effective_density * 0.3;
   depth_density *= 1.0 + params.humidity * 0.5;
 
-  // FBM noise for turbulence — humidity dampens, density suppresses (fog is uniform, not cloudy)
+  // Sample noise LUT instead of computing FBM inline
+  // Drift offset creates temporal animation without recomputing noise
   let effective_turb = params.turbulence * (1.0 - params.humidity * 0.3) * (1.0 - fog_suppress);
-  let noise_pos = uv * 4.0;
-  let turb = fbm_noise(noise_pos, 4) * effective_turb;
+  let noise_data = textureSampleLevel(noise_lut, noise_sampler, uv * 4.0, 0.0);
+  let turb = noise_data.r * effective_turb;
 
-  // Gentle horizon haze — subtle density boost near horizon line (off when horizon_y < 0)
+  // Gentle horizon haze
   let horizon_dist = abs((1.0 - uv.y) - params.horizon_y);
   let horizon_haze = select(0.0, exp(-horizon_dist * horizon_dist * 20.0) * params.density * 0.15 * (1.0 - fog_suppress), params.horizon_y >= 0.0);
 
   // Evolve density: blend previous with new computation
-  // Dense fog reduces temporal persistence so old noise dies quickly
   let temporal_blend = mix(0.85, 0.15, fog_suppress);
   let new_density = mix(depth_density + turb * 0.3 + horizon_haze, prev.r, temporal_blend);
 
-  // Warmth: based on depth and global warmth param
+  // Warmth
   let warmth = mix(params.warmth, params.warmth * (1.0 - flat_depth * 0.5), 0.5);
 
-  // Local grain variation — grain_depth controls depth falloff
-  let grain_noise = snoise(uv * 50.0 + vec2f(globals.time * 0.1)) * 0.5 + 0.5;
+  // Local grain variation from LUT G channel
+  let grain_noise = noise_data.g;
   let grain_depth_scale = 1.0 - depth * (1.0 - params.grain_depth);
   let grain_val = grain_noise * params.grain * grain_depth_scale * (1.0 - fog_suppress);
 

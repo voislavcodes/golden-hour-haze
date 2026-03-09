@@ -59,6 +59,7 @@ struct FormsParams {
 @group(2) @binding(4) var baked_tex: texture_2d<f32>;
 @group(2) @binding(5) var accum_tex: texture_2d<f32>;
 @group(2) @binding(6) var live_tex: texture_storage_2d<rgba16float, write>;
+@group(2) @binding(7) var density_sampler: sampler;
 
 // --- Inline simplex noise (same as depth-field.wgsl) ---
 fn mod289v3(x: vec3f) -> vec3f { return x - floor(x * (1.0 / 289.0)) * 289.0; }
@@ -174,7 +175,7 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
 
   let depth = textureLoad(depth_tex, vec2i(gid.xy), 0).r;
   let dissolution_mask = textureLoad(dissolution_tex, vec2i(gid.xy), 0).r;
-  let atmo = textureLoad(density_tex, vec2i(gid.xy), 0);
+  let atmo = textureSampleLevel(density_tex, density_sampler, uv, 0.0);
   let sun_dir = vec2f(cos(params.sun_angle), sin(params.sun_angle));
 
   // K/S pigment accumulator — overlapping forms mix subtractively
@@ -216,7 +217,7 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
     // Per-form softness: depth recession dissolves edges, dissolution widens them
     // edge_atmosphere: sun elevation modulates global edge softness
     let depth_diss = f.depth * f.depth * 2.0;
-    let local_density = textureLoad(density_tex, vec2i(gid.xy), 0).r;
+    let local_density = textureSampleLevel(density_tex, density_sampler, uv, 0.0).r;
 
     // Horizon proximity softening — forms near horizon have softer edges (off when horizon_y < 0)
     let form_center_y = f.y;

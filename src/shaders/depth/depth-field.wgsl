@@ -99,7 +99,7 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
   }
 
   // Noise-based terrain variation
-  let noise = fbm(uv * params.noise_scale + vec2f(globals.time * 0.02), 4);
+  let noise = fbm(uv * params.noise_scale, 4);
   depth += noise * params.noise_strength;
 
   depth = clamp(depth, 0.0, 1.0);

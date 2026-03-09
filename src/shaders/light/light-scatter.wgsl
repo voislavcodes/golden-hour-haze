@@ -60,7 +60,10 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
   if (gid.x >= dims.x || gid.y >= dims.y) { return; }
 
   let uv = vec2f(f32(gid.x) + 0.5, f32(gid.y) + 0.5) / vec2f(f32(dims.x), f32(dims.y));
-  let density = textureLoad(density_tex, vec2i(gid.xy), 0).r;
+  // Density may be half-res — map UV to density texture dimensions
+  let density_dims = vec2f(textureDimensions(density_tex));
+  let density_coord = vec2i(uv * density_dims);
+  let density = textureLoad(density_tex, density_coord, 0).r;
   let pixel_depth = textureLoad(depth_tex, vec2i(gid.xy), 0).r;
   let form_alpha = textureLoad(forms_tex, vec2i(gid.xy), 0).a;
 

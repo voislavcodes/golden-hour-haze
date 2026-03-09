@@ -1,6 +1,5 @@
 // Final compositor — samples all layer outputs, depth-aware blending, ACES tonemapping
-
-#include "../common/kubelka-munk.wgsl"
+// Grain sampled directly from pre-baked LUT (no separate grain pass)
 
 struct Globals {
   resolution: vec2f,
@@ -20,21 +19,22 @@ struct CompositorParams {
   anchor_falloff: f32,
   sun_grade_warmth: f32,
   sun_grade_intensity: f32,
-  _pad0: f32,
-  _pad1: f32,
-  _pad2: f32,
-  _pad3: f32,
+  grain_intensity: f32,
+  grain_angle: f32,
+  grain_depth: f32,
+  grain_scale: f32,
 };
 
 @group(0) @binding(0) var<uniform> globals: Globals;
 @group(1) @binding(0) var depth_tex: texture_2d<f32>;
 @group(1) @binding(1) var density_tex: texture_2d<f32>;
 @group(1) @binding(2) var scatter_tex: texture_2d<f32>;
-@group(1) @binding(3) var grain_tex: texture_2d<f32>;
+@group(1) @binding(3) var grain_lut: texture_2d<f32>;
 @group(1) @binding(4) var forms_tex: texture_2d<f32>;
 @group(1) @binding(5) var light_tex: texture_2d<f32>;
 @group(1) @binding(6) var bloom_tex: texture_2d<f32>;
 @group(1) @binding(7) var tex_sampler: sampler;
+@group(1) @binding(8) var grain_sampler: sampler;
 @group(2) @binding(0) var<uniform> comp_params: CompositorParams;
 
 struct VertexOutput {
@@ -76,7 +76,6 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4f {
   // Sample all layers
   let depth = textureSample(depth_tex, tex_sampler, uv).r;
   let density_data = textureSample(density_tex, tex_sampler, uv);
-  let grain = textureSample(grain_tex, tex_sampler, uv).r;
   let forms = textureLoad(forms_tex, vec2i(uv * vec2f(textureDimensions(forms_tex))), 0);
   let light = textureSample(light_tex, tex_sampler, uv).rgb;
   let bloom = textureSample(bloom_tex, tex_sampler, uv).rgb;
@@ -90,7 +89,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4f {
   let shadow_depth = density * depth;
   let shadow_amount = smoothstep(0.0, 0.8, shadow_depth);
   let form_hue_shadow = forms.rgb * vec3f(0.3, 0.25, 0.35);
-  let shadowed = km_mix(forms.rgb, form_hue_shadow, shadow_amount * comp_params.shadow_chroma);
+  let shadowed = mix(forms.rgb, form_hue_shadow, shadow_amount * comp_params.shadow_chroma);
 
   // Composite forms over sky with depth-aware atmospheric opacity
   let atmosphere_fog = vec3f(0.60, 0.53, 0.56) * density * 0.2;
@@ -109,20 +108,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4f {
   let darkness = 1.0 - saturate(atmo_lum * 2.0);
   let effective_darkness = darkness * (1.0 - saturate(light_boost * 2.0));
   let dimmed_lum = dot(form_color, vec3f(0.2126, 0.7152, 0.0722));
-  form_color = mix(form_color, vec3f(dimmed_lum), effective_darkness * 0.6);
-
-  // (c) Color bleed: atmosphere tints forms toward sky hue (darkness OR density)
-  // sqrt curve on density so effect plateaus at high density instead of erasing forms
-  let soft_density = sqrt(density);
-  let darkness_bleed = darkness * 0.4;
-  let density_bleed = soft_density * 0.2;
-  let bleed = max(darkness_bleed, density_bleed) * (1.0 - saturate(light_boost));
-  form_color = mix(form_color, sky * (dimmed_lum / max(atmo_lum, 0.01)), bleed);
-
-  // (d) Atmosphere eats form chroma based on density
-  let chroma_loss = soft_density * 0.25 * (1.0 - saturate(light_boost));
-  let form_grey = dot(form_color, vec3f(0.2126, 0.7152, 0.0722));
-  form_color = mix(form_color, vec3f(form_grey), chroma_loss);
+  form_color = mix(form_color, vec3f(dimmed_lum), effective_darkness * 0.7);
 
   var color = mix(sky, form_color, forms.a);
 
@@ -130,9 +116,12 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4f {
   color += light * 0.5;
   color += bloom * 0.3;
 
-  // Grain overlay
-  let grain_amount = grain * 0.08;
-  color += vec3f(grain_amount - 0.04); // centered around 0
+  // Grain overlay — sampled directly from pre-baked LUT with time offset for animation
+  let grain_depth_scale = 1.0 - depth * (1.0 - comp_params.grain_depth);
+  let grain_uv = uv * comp_params.grain_scale + vec2f(globals.time * 0.37, globals.time * 0.53);
+  let grain = textureSample(grain_lut, grain_sampler, grain_uv).r;
+  let grain_amount = grain * comp_params.grain_intensity * grain_depth_scale * 0.08;
+  color += vec3f(grain_amount - comp_params.grain_intensity * grain_depth_scale * 0.04);
 
   // Anchor chroma focus point
   let anchor_pos = vec2f(comp_params.anchor_x, comp_params.anchor_y);

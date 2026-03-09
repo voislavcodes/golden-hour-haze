@@ -78,6 +78,10 @@ export interface CompositorParams {
   anchorFalloff: number;
   sunGradeWarmth: number;    // -1 cool to 1 warm
   sunGradeIntensity: number; // 0 to 1
+  grainIntensity?: number;   // 0-1, grain overlay strength
+  grainAngle?: number;       // radians, grain rotation
+  grainDepth?: number;       // 0-1, grain persistence with depth
+  grainScale?: number;       // UV multiplier for grain LUT tiling
 }
 
 export interface PaletteColor {

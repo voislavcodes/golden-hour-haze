@@ -13,16 +13,22 @@ import {
   updateAtmosphereTextures,
   writeAtmosphereParams,
   writeScatterParams,
-  dispatchAtmosphere,
+  dispatchDensity,
+  dispatchScatter,
 } from './layers/atmosphere-layer.js';
+import {
+  initNoiseLut,
+  updateNoiseLutParams,
+  updateGrainLutParams,
+  generateLutsIfDirty,
+} from './layers/noise-lut.js';
 import {
   initFormsLayer,
   updateFormsTextures,
   writeFormsData,
-  dispatchForms,
   requestBake,
   requestFullRebake,
-  handlePendingBakes,
+  stampForms,
   setDissolutionActive,
 } from './layers/forms-layer.js';
 import {
@@ -41,6 +47,7 @@ import {
 import { initUILayer, renderUI } from './layers/ui-layer.js';
 import { sceneStore, goldenFactor } from './state/scene-state.js';
 import { uiStore } from './state/ui-state.js';
+import { markDirty, isDirty, clearDirty, isAnyDirty, markAllDirty } from './gpu/frame-dirty.js';
 
 // Register web components (side-effect imports)
 import './controls/toolbar.js';
@@ -78,6 +85,9 @@ import {
 let globalUniformBuffer: GPUBuffer;
 let globalBindGroup: GPUBindGroup;
 
+// Compositor bind group dirty tracking
+let compositorBGDirty = true;
+
 export function initApp() {
   const gpu = getGPU();
   const { device, canvas, width, height } = gpu;
@@ -90,17 +100,22 @@ export function initApp() {
   // Init all layers
   initDepthLayer();
   initPaletteLayer();
+  initNoiseLut(); // Must init before atmosphere (density needs LUT textures)
   initAtmosphereLayer();
   initFormsLayer();
   initLightLayer();
   initCompositor();
   initUILayer();
 
+  // Write initial LUT params before texture allocation (LUTs must exist for bind groups)
+  const scene = sceneStore.get();
+  updateNoiseLutParams(scene.atmosphere.turbulence);
+  updateGrainLutParams(1.0 + scene.atmosphere.grain * 3.0, scene.atmosphere.grainAngle);
+
   // Allocate textures at initial size
   allocateAllTextures(width, height);
 
   // Write initial state
-  const scene = sceneStore.get();
   writeDepthParams(scene.depth);
   writePaletteData(scene.palette);
   writeAtmosphereParams(scene.atmosphere, scene.horizonY);
@@ -117,6 +132,10 @@ export function initApp() {
     anchorFalloff: scene.anchor ? scene.anchor.muteFalloff : 999.0,
     sunGradeWarmth: gf * 0.8 - 0.1,
     sunGradeIntensity: 0.3 + gf * 0.4,
+    grainIntensity: scene.atmosphere.grain,
+    grainAngle: scene.atmosphere.grainAngle,
+    grainDepth: scene.atmosphere.grainDepth,
+    grainScale: 1.0 + scene.atmosphere.grain * 3.0,
   });
 
   // Input
@@ -149,8 +168,10 @@ export function initApp() {
       // Force re-write so baked_count=0 reaches the GPU
       const s = sceneStore.get();
       writeFormsData(s.forms, s.palette.colors, s.sunAngle, s.tonalMap, s.velvet, s.tonalSort, s.baseOpacity, s.falloff, s.sunElevation, s.horizonY);
+      markDirty('forms');
     }
     stampDissolve(stroke.x, stroke.y, stroke.radius, stroke.pressure, ds);
+    markDirty('forms');
   }) as EventListener);
 
   document.addEventListener('dissolve-stroke-end', () => {
@@ -162,10 +183,13 @@ export function initApp() {
     requestFullRebake();
     const s = sceneStore.get();
     writeFormsData(s.forms, s.palette.colors, s.sunAngle, s.tonalMap, s.velvet, s.tonalSort, s.baseOpacity, s.falloff, s.sunElevation, s.horizonY);
+    markDirty('forms');
     pushHistory();
   });
 
-  // Track previous state for detecting global param changes / undo
+  // Track previous state for detecting selective changes
+  let prevDepth = scene.depth;
+  let prevAtmosphere = scene.atmosphere;
   let prevSunAngle = scene.sunAngle;
   let prevSunElevation = scene.sunElevation;
   let prevTonalMap = scene.tonalMap;
@@ -178,38 +202,86 @@ export function initApp() {
   let prevPaletteColors = scene.palette.colors;
   let prevForms = scene.forms;
   let prevFormsLen = scene.forms.length;
+  let prevLights = scene.lights;
+  let prevShadowChroma = scene.shadowChroma;
+  let prevAnchor = scene.anchor;
 
-  // React to state changes
+  // React to state changes — selective writes + dirty marking
   sceneStore.subscribe((state) => {
-    writeDepthParams(state.depth);
-    writeAtmosphereParams(state.atmosphere, state.horizonY);
-    writeScatterParams(state.sunAngle, state.sunElevation, state.horizonY);
-    writePaletteData(state.palette);
-    writeFormsData(state.forms, state.palette.colors, state.sunAngle, state.tonalMap, state.velvet, state.tonalSort, state.baseOpacity, state.falloff, state.sunElevation, state.horizonY);
-    writeLightData(state.lights, state.sunElevation, state.palette.colors);
-    const gf = goldenFactor(state.sunElevation);
-    writeCompositorParams({
-      shadowChroma: state.shadowChroma,
-      grayscale: uiStore.get().grayscalePreview ? 1.0 : 0.0,
-      anchorX: state.anchor?.x ?? 0.5,
-      anchorY: state.anchor?.y ?? 0.5,
-      anchorBoost: state.anchor?.chromaBoost ?? 0,
-      anchorFalloff: state.anchor ? state.anchor.muteFalloff : 999.0,
-      sunGradeWarmth: gf * 0.8 - 0.1,
-      sunGradeIntensity: 0.3 + gf * 0.4,
-    });
+    // Depth
+    if (state.depth !== prevDepth) {
+      writeDepthParams(state.depth);
+      markDirty('depth');
+    }
+
+    // Atmosphere density params
+    if (state.atmosphere !== prevAtmosphere || state.horizonY !== prevHorizonY) {
+      writeAtmosphereParams(state.atmosphere, state.horizonY);
+      updateNoiseLutParams(state.atmosphere.turbulence);
+      updateGrainLutParams(1.0 + state.atmosphere.grain * 3.0, state.atmosphere.grainAngle);
+      markDirty('density');
+      markDirty('composite'); // grain params changed
+    }
+
+    // Scatter params
+    if (state.sunAngle !== prevSunAngle || state.sunElevation !== prevSunElevation || state.horizonY !== prevHorizonY) {
+      writeScatterParams(state.sunAngle, state.sunElevation, state.horizonY);
+      markDirty('scatter');
+    }
+
+    // Palette
+    if (state.palette !== prevPaletteColors as unknown) {
+      writePaletteData(state.palette);
+    }
+
+    // Forms data — always write when forms or related params change
+    const formsParamsChanged =
+      state.sunAngle !== prevSunAngle ||
+      state.sunElevation !== prevSunElevation ||
+      state.tonalMap !== prevTonalMap ||
+      state.velvet !== prevVelvet ||
+      state.tonalSort !== prevTonalSort ||
+      state.baseOpacity !== prevBaseOpacity ||
+      state.falloff !== prevFalloff ||
+      state.horizonY !== prevHorizonY ||
+      state.palette.colors !== prevPaletteColors;
+
+    if (state.forms !== prevForms || formsParamsChanged) {
+      writeFormsData(state.forms, state.palette.colors, state.sunAngle, state.tonalMap, state.velvet, state.tonalSort, state.baseOpacity, state.falloff, state.sunElevation, state.horizonY);
+      markDirty('forms');
+    }
+
+    // Lights
+    if (state.lights !== prevLights || state.sunElevation !== prevSunElevation || state.palette.colors !== prevPaletteColors) {
+      writeLightData(state.lights, state.sunElevation, state.palette.colors);
+      markDirty('light');
+    }
+
+    // Compositor params (includes grain — always update when atmosphere changes too)
+    if (state.shadowChroma !== prevShadowChroma ||
+        state.anchor !== prevAnchor ||
+        state.sunElevation !== prevSunElevation ||
+        state.atmosphere !== prevAtmosphere) {
+      const gf = goldenFactor(state.sunElevation);
+      writeCompositorParams({
+        shadowChroma: state.shadowChroma,
+        grayscale: uiStore.get().grayscalePreview ? 1.0 : 0.0,
+        anchorX: state.anchor?.x ?? 0.5,
+        anchorY: state.anchor?.y ?? 0.5,
+        anchorBoost: state.anchor?.chromaBoost ?? 0,
+        anchorFalloff: state.anchor ? state.anchor.muteFalloff : 999.0,
+        sunGradeWarmth: gf * 0.8 - 0.1,
+        sunGradeIntensity: 0.3 + gf * 0.4,
+        grainIntensity: state.atmosphere.grain,
+        grainAngle: state.atmosphere.grainAngle,
+        grainDepth: state.atmosphere.grainDepth,
+        grainScale: 1.0 + state.atmosphere.grain * 3.0,
+      });
+      markDirty('composite');
+    }
 
     // Detect global param changes → full rebake
-    if (state.sunAngle !== prevSunAngle ||
-        state.sunElevation !== prevSunElevation ||
-        state.tonalMap !== prevTonalMap ||
-        state.velvet !== prevVelvet ||
-        state.tonalSort !== prevTonalSort ||
-        state.echo !== prevEcho ||
-        state.baseOpacity !== prevBaseOpacity ||
-        state.falloff !== prevFalloff ||
-        state.horizonY !== prevHorizonY ||
-        state.palette.colors !== prevPaletteColors) {
+    if (formsParamsChanged || state.echo !== prevEcho) {
       requestFullRebake();
     }
 
@@ -222,6 +294,8 @@ export function initApp() {
       }
     }
 
+    prevDepth = state.depth;
+    prevAtmosphere = state.atmosphere;
     prevSunAngle = state.sunAngle;
     prevSunElevation = state.sunElevation;
     prevTonalMap = state.tonalMap;
@@ -234,6 +308,9 @@ export function initApp() {
     prevPaletteColors = state.palette.colors;
     prevForms = state.forms;
     prevFormsLen = state.forms.length;
+    prevLights = state.lights;
+    prevShadowChroma = state.shadowChroma;
+    prevAnchor = state.anchor;
   });
 
   // Also react to UI state changes (grayscale toggle)
@@ -249,12 +326,19 @@ export function initApp() {
       anchorFalloff: state.anchor ? state.anchor.muteFalloff : 999.0,
       sunGradeWarmth: gf * 0.8 - 0.1,
       sunGradeIntensity: 0.3 + gf * 0.4,
+      grainIntensity: state.atmosphere.grain,
+      grainAngle: state.atmosphere.grainAngle,
+      grainDepth: state.atmosphere.grainDepth,
+      grainScale: 1.0 + state.atmosphere.grain * 3.0,
     });
+    markDirty('composite');
   });
 
   // Handle resize
   onResize((w, h) => {
     allocateAllTextures(w, h);
+    markAllDirty();
+    compositorBGDirty = true;
   });
 
   // Start render loop
@@ -272,10 +356,30 @@ function allocateAllTextures(width: number, height: number) {
   resizeDissolutionBuffer(width, height);
 }
 
+// Cached drift state for density temporal animation
+let cachedDriftSpeed = 0;
+let cachedDriftX = 0;
+let cachedDriftY = 0;
+
 function renderFrame(dt: number, elapsed: number) {
   const gpu = getGPU();
   const { device, context, width, height } = gpu;
   const ui = uiStore.get();
+
+  // Density drifts every frame when drift is active
+  const scene = sceneStore.get();
+  cachedDriftSpeed = scene.atmosphere.driftSpeed;
+  cachedDriftX = scene.atmosphere.driftX;
+  cachedDriftY = scene.atmosphere.driftY;
+  const drifting = cachedDriftSpeed > 0 && (cachedDriftX !== 0 || cachedDriftY !== 0);
+  if (drifting) {
+    markDirty('density');
+  }
+
+  // Full frame skip when nothing is dirty
+  if (!isAnyDirty()) {
+    return;
+  }
 
   // Update global uniforms
   writeGlobalUniforms(device, globalUniformBuffer, width, height, elapsed, dt, ui.mouseX, ui.mouseY, gpu.dpr);
@@ -291,18 +395,58 @@ function renderFrame(dt: number, elapsed: number) {
   const dissolveTex = getTexture('dissolution');
   if (dissolveTex) flushDissolution(device, dissolveTex);
 
-  // Pass order: depth → atmosphere → forms → light → bloom → composite
-  dispatchDepth(encoder, globalBindGroup);
-  dispatchAtmosphere(encoder, globalBindGroup);
-  dispatchForms(encoder, globalBindGroup);
-  handlePendingBakes(encoder);
-  dispatchLight(encoder, globalBindGroup);
+  // Generate noise LUTs if dirty (one-shot compute, before density/grain consumers)
+  generateLutsIfDirty(encoder);
 
-  // Rebuild compositor bind group to get latest texture views
-  rebuildCompositorBindGroup();
-  renderComposite(encoder, targetView, globalBindGroup);
+  // Conditional dispatch based on dirty flags
+  if (isDirty('depth')) {
+    dispatchDepth(encoder, globalBindGroup);
+    clearDirty('depth');
+    compositorBGDirty = true;
+  }
 
-  // UI overlay (after composite, uses load op to preserve scene)
+  if (isDirty('density')) {
+    dispatchDensity(encoder, globalBindGroup);
+    clearDirty('density');
+    compositorBGDirty = true;
+  }
+
+  // Grain is now sampled from LUT in compositor — no separate dispatch
+  if (isDirty('grain')) {
+    clearDirty('grain');
+    compositorBGDirty = true;
+  }
+
+  if (isDirty('scatter')) {
+    dispatchScatter(encoder, globalBindGroup);
+    clearDirty('scatter');
+    compositorBGDirty = true;
+  }
+
+  if (isDirty('forms')) {
+    const currentScene = sceneStore.get();
+    stampForms(encoder, globalBindGroup, currentScene.forms);
+    clearDirty('forms');
+    compositorBGDirty = true;
+  }
+
+  if (isDirty('light')) {
+    dispatchLight(encoder, globalBindGroup);
+    clearDirty('light');
+    compositorBGDirty = true;
+  }
+
+  if (isDirty('composite')) {
+    // Rebuild compositor bind group only when textures changed
+    if (compositorBGDirty) {
+      rebuildCompositorBindGroup();
+      compositorBGDirty = false;
+    }
+    renderComposite(encoder, targetView, globalBindGroup);
+    clearDirty('composite');
+  }
+
+  // UI overlay (always render — cheap, 2 draws)
   renderUI(encoder, targetView, globalBindGroup);
 
   // Submit

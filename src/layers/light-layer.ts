@@ -1,5 +1,5 @@
 import { getGPU } from '../gpu/context.js';
-import { allocTexture } from '../gpu/texture-pool.js';
+import { allocTexture, allocPingPong } from '../gpu/texture-pool.js';
 import { createComputePipeline, createRenderPipeline } from '../gpu/pipeline-manager.js';
 import { getGlobalBindGroupLayout } from '../gpu/bind-groups.js';
 import lightScatterShader from '../shaders/light/light-scatter.wgsl';
@@ -24,7 +24,7 @@ let scatterTextureBG: GPUBindGroup;
 let bloomSampler: GPUSampler;
 
 // Bloom mip chain
-const BLOOM_MIPS = 5;
+const BLOOM_MIPS = 3;
 let bloomTextures: GPUTexture[] = [];
 // bloomBindGroups created dynamically per-frame
 let bloomParamBuffers: GPUBuffer[] = [];
@@ -147,15 +147,16 @@ export function updateLightTextures(width: number, height: number) {
   const formsTex = allocTexture('forms', 'rgba16float', width, height,
     GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING);
 
-  // Reference to atmosphere density for scatter read
-  const densityTex = allocTexture('forms-density-ref', 'rgba16float', width, height,
-    GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.RENDER_ATTACHMENT);
+  // Reference to atmosphere density (half-res) for scatter read
+  const densityW = Math.ceil(width / 2);
+  const densityH = Math.ceil(height / 2);
+  const densityPP = allocPingPong('atmosphere-density', 'rgba16float', densityW, densityH);
 
   scatterTextureBG = device.createBindGroup({
     label: 'light-tex-bg',
     layout: scatterTextureLayout,
     entries: [
-      { binding: 0, resource: densityTex.createView() },
+      { binding: 0, resource: densityPP.readView },
       { binding: 1, resource: depthTex.createView() },
       { binding: 2, resource: formsTex.createView() },
       { binding: 3, resource: scatterTex.createView() },

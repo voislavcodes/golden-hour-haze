@@ -4,6 +4,7 @@ import { createRenderPipeline } from '../gpu/pipeline-manager.js';
 import { getGlobalBindGroupLayout } from '../gpu/bind-groups.js';
 import compositeShader from '../shaders/composite/composite.wgsl';
 import { getBloomTexture } from './light-layer.js';
+import { getGrainLutTexture, getNoiseLutSampler } from './noise-lut.js';
 import type { CompositorParams } from './layer-types.js';
 
 let pipeline: GPURenderPipeline;
@@ -30,11 +31,12 @@ export function initCompositor() {
       { binding: 0, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: 'unfilterable-float' } }, // depth
       { binding: 1, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: 'float' } },  // density
       { binding: 2, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: 'float' } },  // scatter
-      { binding: 3, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: 'unfilterable-float' } }, // grain
+      { binding: 3, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: 'float' } },  // grain LUT (was grain compute texture)
       { binding: 4, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: 'float' } },  // forms
       { binding: 5, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: 'float' } },  // light
       { binding: 6, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: 'float' } },  // bloom
       { binding: 7, visibility: GPUShaderStage.FRAGMENT, sampler: { type: 'filtering' } },
+      { binding: 8, visibility: GPUShaderStage.FRAGMENT, sampler: { type: 'filtering' } },     // grain repeat sampler
     ],
   });
 
@@ -88,11 +90,15 @@ export function rebuildCompositorBindGroup() {
 
   const depthTex = allocTexture('depth', 'r32float', currentWidth, currentHeight,
     GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING);
-  const densityPP = allocPingPong('atmosphere-density', 'rgba16float', currentWidth, currentHeight);
+
+  // Density is half-res — allocPingPong returns existing at half dimensions
+  const densityW = Math.ceil(currentWidth / 2);
+  const densityH = Math.ceil(currentHeight / 2);
+  const densityPP = allocPingPong('atmosphere-density', 'rgba16float', densityW, densityH);
+
   const scatterTex = allocTexture('scatter', 'rgba16float', currentWidth, currentHeight,
     GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.RENDER_ATTACHMENT);
-  const grainTex = allocTexture('grain', 'r32float', currentWidth, currentHeight,
-    GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING);
+
   const formsTex = allocTexture('forms', 'rgba16float', currentWidth, currentHeight,
     GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING);
   const lightTex = allocTexture('light-scatter', 'rgba16float', currentWidth, currentHeight,
@@ -109,6 +115,11 @@ export function rebuildCompositorBindGroup() {
     });
   }
 
+  // Grain LUT texture (pre-baked tiling grain)
+  const grainLut = getGrainLutTexture();
+  // Repeat sampler for grain LUT
+  const grainSampler = getNoiseLutSampler();
+
   textureBG = device.createBindGroup({
     label: 'composite-tex-bg',
     layout: textureLayout,
@@ -116,11 +127,12 @@ export function rebuildCompositorBindGroup() {
       { binding: 0, resource: depthTex.createView() },
       { binding: 1, resource: densityPP.readView },
       { binding: 2, resource: scatterTex.createView() },
-      { binding: 3, resource: grainTex.createView() },
+      { binding: 3, resource: grainLut.createView() },
       { binding: 4, resource: formsTex.createView() },
       { binding: 5, resource: lightTex.createView() },
       { binding: 6, resource: bloomTex.createView() },
       { binding: 7, resource: sampler },
+      { binding: 8, resource: grainSampler },
     ],
   });
 }
@@ -136,10 +148,10 @@ export function writeCompositorParams(params: CompositorParams) {
     params.anchorFalloff,
     params.sunGradeWarmth,
     params.sunGradeIntensity,
-    0, // _pad0
-    0, // _pad1
-    0, // _pad2
-    0, // _pad3
+    params.grainIntensity ?? 0,
+    params.grainAngle ?? 0,
+    params.grainDepth ?? 0.5,
+    params.grainScale ?? 4.0,
   ]));
 }
 
