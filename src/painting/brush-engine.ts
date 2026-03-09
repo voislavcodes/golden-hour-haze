@@ -150,10 +150,10 @@ export function dispatchBrushDabs(encoder: GPUCommandEncoder, x: number, y: numb
   if (load <= 0) {
     reservoir = 0;
   } else {
-    const holdDistance = load * 400;
+    const holdDistance = load * 500;
     const drainDistance = totalDistance - holdDistance;
     if (drainDistance > 0) {
-      const drainRate = (1.0 - load) * 0.003 + 0.0002;
+      const drainRate = (1.0 - load) * 0.002 + 0.00015;
       reservoir = Math.exp(-drainRate * drainDistance);
     } else {
       reservoir = 1.0;
