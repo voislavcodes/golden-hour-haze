@@ -403,7 +403,7 @@ export class LightWells extends BaseControl {
         @pointerup=${this._onCanvasPointerUp}
         @wheel=${this._onWheel}
       >
-        ${this._lights.map(
+        ${this._isActive ? this._lights.map(
           (light, i) => html`
             <div
               class="light ${this._dragIndex === i ? 'dragging' : ''}"
@@ -418,8 +418,8 @@ export class LightWells extends BaseControl {
               @pointerup=${this._onLightPointerUp}
             ></div>
           `
-        )}
-        ${selected ? html`
+        ) : ''}
+        ${this._isActive && selected ? html`
           <div
             class="selection-ring ${this._selectionFaded ? 'faded' : ''}"
             style="
