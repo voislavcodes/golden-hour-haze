@@ -213,7 +213,7 @@ export function writeAtmosphereParams(params: AtmosphereParams, horizonY = 0.5) 
   const humidity = params.density * (1 - Math.abs(params.warmth)) * 0.8;
   const data = new Float32Array([
     params.density, params.warmth, params.grain, params.scatter,
-    params.driftX, params.driftY, params.driftSpeed, params.turbulence,
+    0, 0, 0, 0, // padding (drift fields removed)
     humidity, params.grainDepth, horizonY, 0,
   ]);
   device.queue.writeBuffer(atmosphereParamBuffer, 0, data);

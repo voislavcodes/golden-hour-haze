@@ -8,14 +8,16 @@ interface SurfacePreset {
   grainSize: number;
   directionality: number;
   mode: 'standard' | 'woodblock';
+  absorption: number;
+  drySpeed: number;
 }
 
 const PRESETS: Record<string, SurfacePreset> = {
-  board:     { label: 'board',     grainSize: 0.3, directionality: 0.7, mode: 'standard' },
-  canvas:    { label: 'canvas',    grainSize: 0.7, directionality: 0.8, mode: 'standard' },
-  smooth:    { label: 'smooth',    grainSize: 0.1, directionality: 0.1, mode: 'standard' },
-  paper:     { label: 'paper',     grainSize: 0.5, directionality: 0.2, mode: 'standard' },
-  woodblock: { label: 'woodblock', grainSize: 0.4, directionality: 0.9, mode: 'woodblock' },
+  board:     { label: 'board',     grainSize: 0.3, directionality: 0.7, mode: 'standard',  absorption: 0.15, drySpeed: 1.0 },
+  canvas:    { label: 'canvas',    grainSize: 0.7, directionality: 0.8, mode: 'standard',  absorption: 0.10, drySpeed: 0.9 },
+  smooth:    { label: 'smooth',    grainSize: 0.1, directionality: 0.1, mode: 'standard',  absorption: 0.05, drySpeed: 0.7 },
+  paper:     { label: 'paper',     grainSize: 0.5, directionality: 0.2, mode: 'standard',  absorption: 0.25, drySpeed: 1.4 },
+  woodblock: { label: 'woodblock', grainSize: 0.4, directionality: 0.9, mode: 'woodblock', absorption: 0.20, drySpeed: 1.2 },
 };
 
 @customElement('ghz-surface-pad')
@@ -203,7 +205,7 @@ export class SurfacePad extends BaseControl {
     this._dragX = p.grainSize;
     this._dragY = p.directionality;
     sceneStore.update((s) => ({
-      surface: { ...s.surface, grainSize: p.grainSize, directionality: p.directionality, mode: p.mode },
+      surface: { ...s.surface, grainSize: p.grainSize, directionality: p.directionality, mode: p.mode, absorption: p.absorption, drySpeed: p.drySpeed },
     }));
   }
 

@@ -1,5 +1,5 @@
 // V2 App orchestrator — frame loop, dirty flags, all system wiring
-// No forms, no SDF, no bake. Paint surface + atmosphere + lights + compositor.
+// Paint surface + atmosphere + compositor. Lights/undo removed in v2 redesign.
 
 import { getGPU, onResize } from './gpu/context.js';
 import {
@@ -11,11 +11,10 @@ import {
 import { startLoop } from './gpu/frame-loop.js';
 
 // Painting
-import { initSurface, resizeSurface } from './painting/surface.js';
+import { initSurface, resizeSurface, clearSurface } from './painting/surface.js';
 import { initBrushEngine, beginStroke, endStroke, dispatchBrushDabs, reloadBrush } from './painting/brush-engine.js';
 import { initScrapeEngine, beginScrape, endScrape, dispatchScrapeDabs } from './painting/scrape-engine.js';
 import { initWipeEngine, beginWipe, endWipe, dispatchWipeDabs } from './painting/wipe-engine.js';
-import { pushSnapshot, undo, redo, destroyUndoSystem } from './painting/undo.js';
 
 // Surface texture
 import { initSurfaceGrainLut, updateSurfaceGrainParams, generateSurfaceGrainIfDirty } from './surface/surface-grain-lut.js';
@@ -31,14 +30,6 @@ import {
   dispatchScatter,
 } from './atmosphere/atmosphere.js';
 
-// Lights
-import {
-  initLightLayer,
-  updateLightTextures,
-  writeLightData,
-  dispatchLight,
-} from './light/light-layer.js';
-
 // Compositor
 import {
   initCompositor,
@@ -46,32 +37,29 @@ import {
   rebuildCompositorBindGroup,
   renderComposite,
   writeCompositorParams,
+  updateCompositorSessionTime,
 } from './compositor/compositor.js';
 
 // State
-import { sceneStore, goldenFactor } from './state/scene-state.js';
+import { sceneStore } from './state/scene-state.js';
 import { uiStore, pointerQueue } from './state/ui-state.js';
 import { markDirty, isDirty, clearDirty, isAnyDirty, markAllDirty } from './state/dirty-flags.js';
 
 // Register web components (side-effect imports)
 import './controls/toolbar.js';
 import './controls/canvas-overlay.js';
-import './controls/atmosphere-orb.js';
-import './controls/time-dial.js';
 import './controls/palette-panel.js';
-import './controls/echo-slider.js';
-import './controls/drift-field.js';
-import './controls/anchor-control.js';
-import './controls/velvet-slider.js';
-import './controls/horizon-control.js';
-import './controls/light-wells.js';
 import './controls/surface-pad.js';
 import './controls/export-button.js';
 import './controls/load-slider.js';
+import './controls/thinners-slider.js';
+import './controls/mood-selector.js';
+
+// Session
+import { startSessionTimer, resetSessionTimer, getSessionTime } from './session/session-timer.js';
 
 // Input
 import { initPointerInput } from './input/pointer.js';
-import { initGestureInput } from './input/gesture.js';
 import { initKeyboardInput } from './input/keyboard.js';
 
 let globalUniformBuffer: GPUBuffer;
@@ -99,7 +87,6 @@ export function initApp() {
   initBrushEngine();
   initScrapeEngine();
   initWipeEngine();
-  initLightLayer();
   initCompositor();
 
   // Write initial LUT params before texture allocation
@@ -114,50 +101,35 @@ export function initApp() {
   // Write initial state
   writeAtmosphereParams(scene.atmosphere, scene.horizonY);
   writeScatterParams(scene.sunAngle, scene.sunElevation, scene.horizonY);
-  writeLightData(scene.lights, scene.sunElevation, scene.palette.colors);
-  const gf = goldenFactor(scene.sunElevation);
   writeCompositorParams({
     shadowChroma: scene.shadowChroma,
     grayscale: uiStore.get().grayscalePreview ? 1.0 : 0.0,
-    anchorX: scene.anchor?.x ?? 0.5,
-    anchorY: scene.anchor?.y ?? 0.5,
-    anchorBoost: scene.anchor?.chromaBoost ?? 0,
-    anchorFalloff: scene.anchor ? scene.anchor.muteFalloff : 999.0,
-    sunGradeWarmth: gf * 0.8 - 0.1,
-    sunGradeIntensity: 0.3 + gf * 0.4,
     grainIntensity: scene.atmosphere.grain,
     grainAngle: scene.atmosphere.grainAngle,
     grainDepth: scene.atmosphere.grainDepth,
     grainScale: 1.0 + scene.atmosphere.grain * 3.0,
     surfaceIntensity: scene.surface.intensity,
+    sessionTime: getSessionTime(),
+    surfaceDrySpeed: scene.surface.drySpeed,
   });
 
   // Input
   initPointerInput(canvas);
-  initGestureInput(canvas, (gesture) => {
-    if (gesture.active) {
-      sceneStore.update((s) => ({
-        atmosphere: {
-          ...s.atmosphere,
-          grain: Math.max(0, Math.min(1, s.atmosphere.grain * gesture.pinchScale)),
-          grainAngle: s.atmosphere.grainAngle + gesture.rotation,
-        },
-      }));
-    }
-  });
   initKeyboardInput();
 
-  // Undo/redo keyboard handler
-  document.addEventListener('keydown', (e) => {
-    if (e.metaKey || e.ctrlKey) {
-      if (e.key === 'z' && !e.shiftKey) {
-        e.preventDefault();
-        performUndo();
-      } else if (e.key === 'z' && e.shiftKey) {
-        e.preventDefault();
-        performRedo();
-      }
-    }
+  // Session flow
+  startSessionTimer();
+  document.addEventListener('start-painting', () => {
+    clearSurface();
+    resetSessionTimer();
+    markAllDirty();
+    compositorBGDirty = true;
+  });
+  document.addEventListener('new-painting', () => {
+    clearSurface();
+    resetSessionTimer();
+    markAllDirty();
+    compositorBGDirty = true;
   });
 
   // Painting interaction
@@ -168,9 +140,7 @@ export function initApp() {
   let prevSunAngle = scene.sunAngle;
   let prevSunElevation = scene.sunElevation;
   let prevHorizonY = scene.horizonY;
-  let prevLights = scene.lights;
   let prevShadowChroma = scene.shadowChroma;
-  let prevAnchor = scene.anchor;
   let prevSurface = scene.surface;
   let prevLoad = scene.load;
 
@@ -193,36 +163,24 @@ export function initApp() {
       markDirty('scatter');
     }
 
-    if (state.lights !== prevLights || state.sunElevation !== prevSunElevation) {
-      writeLightData(state.lights, state.sunElevation, state.palette.colors);
-      markDirty('light');
-    }
-
     if (state.surface !== prevSurface) {
       updateSurfaceGrainParams(state.surface.grainSize, state.surface.directionality, state.surface.mode === 'woodblock' ? 1 : 0);
       markDirty('composite');
     }
 
     if (state.shadowChroma !== prevShadowChroma ||
-        state.anchor !== prevAnchor ||
-        state.sunElevation !== prevSunElevation ||
         state.atmosphere !== prevAtmosphere ||
         state.surface !== prevSurface) {
-      const gf = goldenFactor(state.sunElevation);
       writeCompositorParams({
         shadowChroma: state.shadowChroma,
         grayscale: uiStore.get().grayscalePreview ? 1.0 : 0.0,
-        anchorX: state.anchor?.x ?? 0.5,
-        anchorY: state.anchor?.y ?? 0.5,
-        anchorBoost: state.anchor?.chromaBoost ?? 0,
-        anchorFalloff: state.anchor ? state.anchor.muteFalloff : 999.0,
-        sunGradeWarmth: gf * 0.8 - 0.1,
-        sunGradeIntensity: 0.3 + gf * 0.4,
         grainIntensity: state.atmosphere.grain,
         grainAngle: state.atmosphere.grainAngle,
         grainDepth: state.atmosphere.grainDepth,
         grainScale: 1.0 + state.atmosphere.grain * 3.0,
         surfaceIntensity: state.surface.intensity,
+        sessionTime: getSessionTime(),
+        surfaceDrySpeed: state.surface.drySpeed,
       });
       markDirty('composite');
     }
@@ -231,29 +189,22 @@ export function initApp() {
     prevSunAngle = state.sunAngle;
     prevSunElevation = state.sunElevation;
     prevHorizonY = state.horizonY;
-    prevLights = state.lights;
     prevShadowChroma = state.shadowChroma;
-    prevAnchor = state.anchor;
     prevSurface = state.surface;
   });
 
   uiStore.subscribe((_ui) => {
     const state = sceneStore.get();
-    const gf = goldenFactor(state.sunElevation);
     writeCompositorParams({
       shadowChroma: state.shadowChroma,
       grayscale: _ui.grayscalePreview ? 1.0 : 0.0,
-      anchorX: state.anchor?.x ?? 0.5,
-      anchorY: state.anchor?.y ?? 0.5,
-      anchorBoost: state.anchor?.chromaBoost ?? 0,
-      anchorFalloff: state.anchor ? state.anchor.muteFalloff : 999.0,
-      sunGradeWarmth: gf * 0.8 - 0.1,
-      sunGradeIntensity: 0.3 + gf * 0.4,
       grainIntensity: state.atmosphere.grain,
       grainAngle: state.atmosphere.grainAngle,
       grainDepth: state.atmosphere.grainDepth,
       grainScale: 1.0 + state.atmosphere.grain * 3.0,
       surfaceIntensity: state.surface.intensity,
+      sessionTime: getSessionTime(),
+      surfaceDrySpeed: state.surface.drySpeed,
     });
     markDirty('composite');
   });
@@ -262,7 +213,6 @@ export function initApp() {
   onResize((w, h) => {
     allocateAllTextures(w, h);
     resizeSurface(w, h);
-    destroyUndoSystem(); // old snapshots are wrong size
     markAllDirty();
     compositorBGDirty = true;
   });
@@ -275,28 +225,7 @@ export function initApp() {
 
 function allocateAllTextures(width: number, height: number) {
   updateAtmosphereTextures(width, height);
-  updateLightTextures(width, height);
   updateCompositorTextures(width, height);
-}
-
-function performUndo() {
-  const { device } = getGPU();
-  const encoder = device.createCommandEncoder({ label: 'undo-encoder' });
-  if (undo(encoder)) {
-    device.queue.submit([encoder.finish()]);
-    markDirty('surface');
-    compositorBGDirty = true;
-  }
-}
-
-function performRedo() {
-  const { device } = getGPU();
-  const encoder = device.createCommandEncoder({ label: 'redo-encoder' });
-  if (redo(encoder)) {
-    device.queue.submit([encoder.finish()]);
-    markDirty('surface');
-    compositorBGDirty = true;
-  }
 }
 
 function setupPaintingInteraction() {
@@ -309,12 +238,6 @@ function setupPaintingInteraction() {
     const isPaintTool = isBrush || isScrape || isWipe;
 
     if (isPaintTool && ui.mouseDown && !wasDown) {
-      // Stroke begin — push undo snapshot
-      const { device } = getGPU();
-      const encoder = device.createCommandEncoder({ label: 'snapshot-encoder' });
-      pushSnapshot(encoder);
-      device.queue.submit([encoder.finish()]);
-
       // Flush stale pointer positions accumulated before stroke began
       pointerQueue.length = 0;
 
@@ -350,23 +273,26 @@ function setupPaintingInteraction() {
   });
 }
 
+let lastDryingUpdate = 0;
+
 function renderFrame(dt: number, elapsed: number) {
   const gpu = getGPU();
   const { device, context, width, height } = gpu;
   const ui = uiStore.get();
 
-  // Drift animation marks density dirty
-  const scene = sceneStore.get();
-  const drifting = scene.atmosphere.driftSpeed > 0 &&
-    (scene.atmosphere.driftX !== 0 || scene.atmosphere.driftY !== 0);
-  if (drifting) {
-    markDirty('density');
-  }
-
   // Active stroke: always render (don't depend on dirty flag from microtask subscriber)
   const strokeNeedsDispatch = strokeActive && ui.mouseDown;
   if (strokeNeedsDispatch) {
     markDirty('surface');
+  }
+
+  // Periodic drying update — refresh compositor every ~2s so visual drying progresses
+  const sessionTime = getSessionTime();
+  if (sessionTime - lastDryingUpdate > 2.0) {
+    lastDryingUpdate = sessionTime;
+    updateCompositorSessionTime(sessionTime);
+    markDirty('composite');
+    compositorBGDirty = true;
   }
 
   // Full frame skip when nothing is dirty
@@ -420,14 +346,6 @@ function renderFrame(dt: number, elapsed: number) {
     if (painted) {
       compositorBGDirty = true;
     }
-  }
-
-  if (isDirty('light')) {
-    if (scene.lights.length > 0) {
-      dispatchLight(encoder, globalBindGroup);
-    }
-    clearDirty('light');
-    compositorBGDirty = true;
   }
 
   if (isDirty('composite')) {

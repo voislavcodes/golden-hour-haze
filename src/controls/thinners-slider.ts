@@ -1,17 +1,18 @@
+// Thinners slider — master physics variable
 import { html, css } from 'lit';
 import { customElement, property } from 'lit/decorators.js';
 import { BaseControl } from './base-control.js';
 import { sceneStore } from '../state/scene-state.js';
 
-@customElement('ghz-velvet-slider')
-export class VelvetSlider extends BaseControl {
+@customElement('ghz-thinners-slider')
+export class ThinnersSlider extends BaseControl {
   static styles = [
     BaseControl.baseStyles,
     css`
       :host {
         position: fixed;
         bottom: 80px;
-        left: 115px;
+        left: 120px;
         z-index: 100;
         pointer-events: auto;
       }
@@ -47,7 +48,7 @@ export class VelvetSlider extends BaseControl {
         left: 0;
         width: 100%;
         border-radius: 2px;
-        background: linear-gradient(to top, var(--ghz-accent), rgba(232, 168, 64, 0.3));
+        background: linear-gradient(to top, rgba(180, 200, 220, 0.6), rgba(180, 200, 220, 0.15));
       }
 
       .slider-thumb {
@@ -56,9 +57,9 @@ export class VelvetSlider extends BaseControl {
         width: 14px;
         height: 14px;
         border-radius: 50%;
-        background: var(--ghz-accent);
+        background: rgba(180, 200, 220, 0.9);
         border: 2px solid rgba(0, 0, 0, 0.3);
-        box-shadow: 0 0 6px rgba(232, 168, 64, 0.4);
+        box-shadow: 0 0 6px rgba(180, 200, 220, 0.4);
         transform: translate(-50%, 50%);
         cursor: grab;
       }
@@ -69,23 +70,23 @@ export class VelvetSlider extends BaseControl {
 
       .slider-value {
         font-size: 10px;
-        color: var(--ghz-accent);
+        color: rgba(180, 200, 220, 0.8);
         font-variant-numeric: tabular-nums;
       }
     `,
   ];
 
   @property({ type: Number })
-  value: number = 0.6;
+  value: number = 0.25;
 
   private _unsub?: () => void;
   private _dragging = false;
 
   connectedCallback() {
     super.connectedCallback();
-    this.value = sceneStore.get().velvet;
+    this.value = sceneStore.get().thinners;
     this._unsub = sceneStore.select(
-      (s) => s.velvet,
+      (s) => s.thinners,
       (v) => { this.value = v; }
     );
   }
@@ -116,20 +117,26 @@ export class VelvetSlider extends BaseControl {
     const rect = track.getBoundingClientRect();
     const y = 1.0 - this.clamp((e.clientY - rect.top) / rect.height, 0, 1);
     this.value = y;
-    sceneStore.set({ velvet: y });
+    sceneStore.set({ thinners: y });
+  }
+
+  private _onDblClick() {
+    this.value = 0.25;
+    sceneStore.set({ thinners: 0.25 });
   }
 
   render() {
     const fillPercent = this.value * 100;
     return html`
       <div class="slider-container glass">
-        <span class="slider-label">velvet</span>
+        <span class="slider-label">thin</span>
         <div
           class="slider-track"
           @pointerdown=${this._onPointerDown}
           @pointermove=${this._onPointerMove}
           @pointerup=${this._onPointerUp}
           @pointerleave=${this._onPointerUp}
+          @dblclick=${this._onDblClick}
         >
           <div class="slider-fill" style="height: ${fillPercent}%"></div>
           <div class="slider-thumb" style="bottom: ${fillPercent}%"></div>
@@ -142,6 +149,6 @@ export class VelvetSlider extends BaseControl {
 
 declare global {
   interface HTMLElementTagNameMap {
-    'ghz-velvet-slider': VelvetSlider;
+    'ghz-thinners-slider': ThinnersSlider;
   }
 }

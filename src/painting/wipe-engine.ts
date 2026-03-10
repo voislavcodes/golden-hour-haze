@@ -1,12 +1,14 @@
 // Wipe engine — rag removal from the accumulation surface
 // Omnidirectional, grain-aware, patchy cloth texture, per-tool reservoir
+// Phase 6: paint state tracking for wetness-modulated wiping
 
 import { getGPU } from '../gpu/context.js';
 import { createComputePipeline } from '../gpu/pipeline-cache.js';
-import { getAccumPP, swapAccum, getSurfaceWidth, getSurfaceHeight } from './surface.js';
+import { getAccumPP, getStatePP, swapSurface, getSurfaceWidth, getSurfaceHeight } from './surface.js';
 import { getSurfaceGrainTexture } from '../surface/surface-grain-lut.js';
 import { sceneStore } from '../state/scene-state.js';
 import { uiStore, pointerQueue } from '../state/ui-state.js';
+import { getSessionTime } from '../session/session-timer.js';
 import wipeShader from '../shaders/brush/wipe.wgsl';
 
 type Vec2 = [number, number];
@@ -16,9 +18,10 @@ let paramBuffer: GPUBuffer;
 let paramLayout: GPUBindGroupLayout;
 let textureLayout: GPUBindGroupLayout;
 let grainLayout: GPUBindGroupLayout;
+let stateLayout: GPUBindGroupLayout;
 let grainSampler: GPUSampler;
 
-const PARAM_SIZE = 32; // bytes: 2f center + 1f radius + 1f softness + 1f strength + 1f ghost_retention + 1f patchiness + 1f pad
+const PARAM_SIZE = 48; // bytes: 12 floats
 let paramStride = 256;
 const MAX_DABS_PER_FRAME = 256;
 
@@ -56,6 +59,14 @@ export function initWipeEngine() {
     ],
   });
 
+  stateLayout = device.createBindGroupLayout({
+    label: 'wipe-state-layout',
+    entries: [
+      { binding: 0, visibility: GPUShaderStage.COMPUTE, texture: { sampleType: 'unfilterable-float' } },
+      { binding: 1, visibility: GPUShaderStage.COMPUTE, storageTexture: { access: 'write-only', format: 'rg32float' } },
+    ],
+  });
+
   grainSampler = device.createSampler({
     label: 'wipe-grain-sampler',
     magFilter: 'linear',
@@ -64,10 +75,10 @@ export function initWipeEngine() {
     addressModeV: 'repeat',
   });
 
-  pipeline = createComputePipeline('wipe', device, {
+  pipeline = createComputePipeline('wipe-v2', device, {
     label: 'wipe-compute',
     layout: device.createPipelineLayout({
-      bindGroupLayouts: [paramLayout, textureLayout, grainLayout],
+      bindGroupLayouts: [paramLayout, textureLayout, grainLayout, stateLayout],
     }),
     compute: {
       module: device.createShaderModule({ label: 'wipe-shader', code: wipeShader }),
@@ -113,6 +124,7 @@ export function dispatchWipeDabs(encoder: GPUCommandEncoder, x: number, y: numbe
   const scene = sceneStore.get();
   const ui = uiStore.get();
   const radius = ui.brushSize;
+  const sessionTime = getSessionTime();
 
   const waypoints: Vec2[] = pointerQueue.length > 0
     ? pointerQueue.splice(0).map(p => [p.x, p.y] as Vec2)
@@ -134,7 +146,6 @@ export function dispatchWipeDabs(encoder: GPUCommandEncoder, x: number, y: numbe
     points = points.slice(points.length - MAX_DABS_PER_FRAME);
   }
 
-  const softness = scene.velvet * radius;
   const w = getSurfaceWidth();
   const h = getSurfaceHeight();
 
@@ -169,11 +180,13 @@ export function dispatchWipeDabs(encoder: GPUCommandEncoder, x: number, y: numbe
     const data = new Float32Array([
       pt[0], pt[1],    // center
       radius,           // radius
-      softness,         // softness
+      scene.thinners,   // thinners
       reservoir,        // strength
       ghostRetention,   // ghost_retention
       patchiness,       // patchiness
-      0,                // _pad0
+      sessionTime,      // session_time
+      scene.surface.drySpeed, // surface_dry_speed
+      0, 0, 0,          // padding
     ]);
     device.queue.writeBuffer(paramBuffer, i * paramStride, data);
   }
@@ -189,6 +202,7 @@ export function dispatchWipeDabs(encoder: GPUCommandEncoder, x: number, y: numbe
 
   for (let i = 0; i < points.length; i++) {
     const accumPP = getAccumPP();
+    const statePP = getStatePP();
 
     const paramBG = device.createBindGroup({
       layout: paramLayout,
@@ -203,15 +217,24 @@ export function dispatchWipeDabs(encoder: GPUCommandEncoder, x: number, y: numbe
       ],
     });
 
+    const stateBG = device.createBindGroup({
+      layout: stateLayout,
+      entries: [
+        { binding: 0, resource: statePP.readView },
+        { binding: 1, resource: statePP.writeView },
+      ],
+    });
+
     const pass = encoder.beginComputePass({ label: 'wipe-dab' });
     pass.setPipeline(pipeline);
     pass.setBindGroup(0, paramBG);
     pass.setBindGroup(1, texBG);
     pass.setBindGroup(2, grainBG);
+    pass.setBindGroup(3, stateBG);
     pass.dispatchWorkgroups(Math.ceil(w / 8), Math.ceil(h / 8));
     pass.end();
 
-    swapAccum();
+    swapSurface();
   }
 
   return true;

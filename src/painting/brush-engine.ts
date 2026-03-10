@@ -1,12 +1,15 @@
 // Brush engine — stroke interpolation + compute shader dispatch
 // Writes K-M pigment into the accumulation surface
+// Phase 6: thinners-driven, grain-aware, paint state tracking, 64-byte struct
 
 import { getGPU } from '../gpu/context.js';
 import { createComputePipeline } from '../gpu/pipeline-cache.js';
-import { getAccumPP, swapAccum, getSurfaceWidth, getSurfaceHeight } from './surface.js';
-import { getActiveKS } from './palette.js';
+import { getAccumPP, getStatePP, swapSurface, getSurfaceWidth, getSurfaceHeight } from './surface.js';
+import { getActiveKS, getBrushSlot, getActiveBrushSlot } from './palette.js';
+import { getSurfaceGrainTexture } from '../surface/surface-grain-lut.js';
 import { sceneStore } from '../state/scene-state.js';
 import { uiStore, pointerQueue } from '../state/ui-state.js';
+import { getSessionTime } from '../session/session-timer.js';
 import brushShader from '../shaders/brush/brush.wgsl';
 
 type Vec2 = [number, number];
@@ -15,8 +18,10 @@ let pipeline: GPUComputePipeline;
 let paramBuffer: GPUBuffer;
 let paramLayout: GPUBindGroupLayout;
 let textureLayout: GPUBindGroupLayout;
+let auxLayout: GPUBindGroupLayout;  // grain + paint state
+let grainSampler: GPUSampler;
 
-const PARAM_SIZE = 64; // bytes per dab
+const PARAM_SIZE = 64; // bytes per dab (16 floats)
 let paramStride = 256; // aligned stride, set at init from device limits
 const MAX_DABS_PER_FRAME = 256;
 
@@ -48,10 +53,29 @@ export function initBrushEngine() {
     ],
   });
 
-  pipeline = createComputePipeline('brush', device, {
+  // Auxiliary bind group: grain LUT + sampler + paint state read/write
+  auxLayout = device.createBindGroupLayout({
+    label: 'brush-aux-layout',
+    entries: [
+      { binding: 0, visibility: GPUShaderStage.COMPUTE, texture: { sampleType: 'float' } },
+      { binding: 1, visibility: GPUShaderStage.COMPUTE, sampler: { type: 'filtering' } },
+      { binding: 2, visibility: GPUShaderStage.COMPUTE, texture: { sampleType: 'unfilterable-float' } },
+      { binding: 3, visibility: GPUShaderStage.COMPUTE, storageTexture: { access: 'write-only', format: 'rg32float' } },
+    ],
+  });
+
+  grainSampler = device.createSampler({
+    label: 'brush-grain-sampler',
+    magFilter: 'linear',
+    minFilter: 'linear',
+    addressModeU: 'repeat',
+    addressModeV: 'repeat',
+  });
+
+  pipeline = createComputePipeline('brush-v3', device, {
     label: 'brush-compute',
     layout: device.createPipelineLayout({
-      bindGroupLayouts: [paramLayout, textureLayout],
+      bindGroupLayouts: [paramLayout, textureLayout, auxLayout],
     }),
     compute: {
       module: device.createShaderModule({ label: 'brush-shader', code: brushShader }),
@@ -60,7 +84,6 @@ export function initBrushEngine() {
   });
 
   // Pre-allocate buffer large enough for many dabs per frame
-  // Each dab needs PARAM_SIZE bytes, aligned to paramStride
   paramBuffer = device.createBuffer({
     label: 'brush-params',
     size: MAX_DABS_PER_FRAME * paramStride,
@@ -133,9 +156,13 @@ export function dispatchBrushDabs(encoder: GPUCommandEncoder, x: number, y: numb
   }
 
   const ks = getActiveKS();
-  const softness = scene.velvet * radius;
+  const slot = getBrushSlot(getActiveBrushSlot());
   const w = getSurfaceWidth();
   const h = getSurfaceHeight();
+  const sessionTime = getSessionTime();
+
+  // Thinners-derived pigment density
+  const pigmentDensity = 1.0 - scene.thinners * 0.85;
 
   // Accumulate pixel distance for paint depletion
   for (let i = 1; i < points.length; i++) {
@@ -145,7 +172,6 @@ export function dispatchBrushDabs(encoder: GPUCommandEncoder, x: number, y: numb
   }
 
   // Update reservoir based on depletion curve
-  // Reservoir starts at 1.0 (full opacity), load controls how fast it drains.
   const load = scene.load;
   if (load <= 0) {
     reservoir = 0;
@@ -161,22 +187,22 @@ export function dispatchBrushDabs(encoder: GPUCommandEncoder, x: number, y: numb
   }
 
   // Write ALL dab params to the buffer at unique offsets BEFORE encoding dispatches.
-  // This is critical: queue.writeBuffer writes are coalesced before submit(),
-  // so writing to the same offset would make all dispatches see only the last dab.
   for (let i = 0; i < points.length; i++) {
     const pt = points[i];
     const data = new Float32Array([
-      pt[0], pt[1],    // center
-      radius,           // radius
-      softness,         // softness
-      ks.Kr, ks.Kg, ks.Kb, // palette_K (vec3f — per-channel K-M absorption)
-      0,                // pad
-      scene.baseOpacity,    // base_opacity
-      scene.falloff,        // falloff
-      scene.echo,           // echo
-      strokeStartLayers,    // stroke_start_layers
-      reservoir,            // reservoir
-      0, 0, 0,              // padding to 64 bytes
+      pt[0], pt[1],           // center
+      radius,                  // radius
+      scene.thinners,          // thinners
+      ks.Kr, ks.Kg, ks.Kb,    // palette_K
+      pigmentDensity,          // pigment_density
+      scene.falloff,           // falloff
+      reservoir,               // reservoir
+      slot.age,                // age
+      slot.bristleSeed,        // bristle_seed
+      scene.surface.absorption, // surface_absorption
+      sessionTime,             // session_time
+      scene.surface.drySpeed,  // surface_dry_speed
+      strokeStartLayers,       // stroke_start_layers
     ]);
     device.queue.writeBuffer(paramBuffer, i * paramStride, data);
   }
@@ -184,6 +210,7 @@ export function dispatchBrushDabs(encoder: GPUCommandEncoder, x: number, y: numb
   // Encode dispatches — each reads from its own offset in the param buffer
   for (let i = 0; i < points.length; i++) {
     const accumPP = getAccumPP();
+    const statePP = getStatePP();
 
     const paramBG = device.createBindGroup({
       layout: paramLayout,
@@ -198,18 +225,29 @@ export function dispatchBrushDabs(encoder: GPUCommandEncoder, x: number, y: numb
       ],
     });
 
+    const auxBG = device.createBindGroup({
+      layout: auxLayout,
+      entries: [
+        { binding: 0, resource: getSurfaceGrainTexture().createView() },
+        { binding: 1, resource: grainSampler },
+        { binding: 2, resource: statePP.readView },
+        { binding: 3, resource: statePP.writeView },
+      ],
+    });
+
     const pass = encoder.beginComputePass({ label: 'brush-dab' });
     pass.setPipeline(pipeline);
     pass.setBindGroup(0, paramBG);
     pass.setBindGroup(1, texBG);
+    pass.setBindGroup(2, auxBG);
     pass.dispatchWorkgroups(Math.ceil(w / 8), Math.ceil(h / 8));
     pass.end();
 
-    swapAccum();
+    swapSurface();
   }
 
-  // Update CPU-side peak weight estimate (rough: ~1 full-opacity dab's worth per frame)
-  estimatedPeakLayers += scene.baseOpacity;
+  // Update CPU-side peak weight estimate
+  estimatedPeakLayers += pigmentDensity;
 
   return true;
 }

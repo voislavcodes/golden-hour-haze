@@ -8,12 +8,8 @@ const BRUSH_TOOLS = new Set<Tool>(['form', 'scrape', 'wipe']);
 const TOOL_CURSORS: Record<Tool, string> = {
   select:   'default',
   form:     'none',
-  light:    'cell',
   scrape:   'none',
   wipe:     'none',
-  drift:    'grab',
-  palette:  'copy',
-  anchor:   'crosshair',
 };
 
 @customElement('ghz-canvas-overlay')

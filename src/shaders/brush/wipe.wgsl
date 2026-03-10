@@ -1,14 +1,21 @@
 // Wipe brush — rag removal from accumulation surface
 // Omnidirectional, grain-aware, patchy cloth texture, leaves ghost stain
+// Wetness modulates wipe effectiveness — thin wet paint lifts easily, dry paint resists
+
+#include "../common/wetness.wgsl"
 
 struct WipeParams {
   center: vec2f,            // cursor position (normalized 0-1)
   radius: f32,              // wipe area
-  softness: f32,            // from VELVET — edge softness
+  thinners: f32,            // master physics variable (replaces softness)
   strength: f32,            // from reservoir (LOAD depletion)
   ghost_retention: f32,     // 0.15 — how much pigment survives full wipe
   patchiness: f32,          // 0.6 — how uneven the removal is
+  session_time: f32,        // current session time
+  surface_dry_speed: f32,   // drying rate multiplier
   _pad0: f32,
+  _pad1: f32,
+  _pad2: f32,
 }
 
 @group(0) @binding(0) var<uniform> params: WipeParams;
@@ -16,6 +23,8 @@ struct WipeParams {
 @group(1) @binding(1) var accum_write: texture_storage_2d<rgba16float, write>;
 @group(2) @binding(0) var grain_lut: texture_2d<f32>;
 @group(2) @binding(1) var grain_sampler: sampler;
+@group(3) @binding(0) var state_read: texture_2d<f32>;
+@group(3) @binding(1) var state_write: texture_storage_2d<rg32float, write>;
 
 @compute @workgroup_size(8, 8, 1)
 fn main(@builtin(global_invocation_id) gid: vec3u) {
@@ -24,15 +33,22 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
 
   let uv = (vec2f(gid.xy) + 0.5) / vec2f(dims);
   let existing = textureLoad(accum_read, vec2i(gid.xy), 0);
+  let state = textureLoad(state_read, vec2i(gid.xy), 0);
 
   // Distance from cursor — soft circular area
   let dist = length(uv - params.center);
-  let alpha = 1.0 - smoothstep(params.radius - params.softness, params.radius, dist);
+  let alpha = 1.0 - smoothstep(params.radius - params.thinners * params.radius, params.radius, dist);
 
   if (alpha < 0.001 || existing.a < 0.001) {
     textureStore(accum_write, vec2i(gid.xy), existing);
+    textureStore(state_write, vec2i(gid.xy), state);
     return;
   }
+
+  // --- Wetness modulates wipe effectiveness ---
+  let wetness = calculate_wetness(state.r, params.session_time, params.surface_dry_speed, state.g);
+  let wetness_factor = mix(0.05, 1.0, wetness);
+  let thin_lift_bonus = state.g * 0.5;  // thinners makes paint easier to lift
 
   // --- Surface grain interaction ---
   // Same as scrape — peaks lift, valleys hold
@@ -53,7 +69,8 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
   let pressure_curve = pressure * pressure;  // quadratic falloff
 
   // --- Combined removal ---
-  let wipe_amount = alpha * params.strength * grain_lift * cloth_lift * pressure_curve;
+  let base_wipe = alpha * params.strength * grain_lift * cloth_lift * pressure_curve;
+  let wipe_amount = (base_wipe + thin_lift_bonus) * wetness_factor;
 
   // --- Reduce paint weight ---
   let new_weight = max(0.0, existing.a - wipe_amount);
@@ -64,4 +81,6 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
   let wiped_K = max(ghost_floor, existing.rgb * weight_ratio);
 
   textureStore(accum_write, vec2i(gid.xy), vec4f(wiped_K, new_weight));
+  // Wiping doesn't refresh paint — keep existing state
+  textureStore(state_write, vec2i(gid.xy), state);
 }

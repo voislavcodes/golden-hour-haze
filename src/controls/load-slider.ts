@@ -12,7 +12,7 @@ export class LoadSlider extends BaseControl {
       :host {
         position: fixed;
         bottom: 80px;
-        left: 170px;
+        left: 180px;
         z-index: 100;
         pointer-events: auto;
       }

@@ -1,23 +1,21 @@
-// V2 Dirty flag system — no forms, replaced with surface
+// V2 Dirty flag system — light removed in v2 redesign
 
-export type DirtyFlag = 'density' | 'scatter' | 'grain' | 'surface' | 'light' | 'composite';
+export type DirtyFlag = 'density' | 'scatter' | 'grain' | 'surface' | 'composite';
 
 const dirty: Record<DirtyFlag, boolean> = {
   density: true,
   scatter: true,
   grain: true,
   surface: true,
-  light: true,
   composite: true,
 };
 
 // Cascade: marking a flag dirty cascades to downstream consumers
 const cascades: Record<DirtyFlag, DirtyFlag[]> = {
-  density: ['scatter', 'light', 'composite'],
+  density: ['scatter', 'composite'],
   scatter: ['composite'],
   grain: ['composite'],
-  surface: ['light', 'composite'],
-  light: ['composite'],
+  surface: ['composite'],
   composite: [],
 };
 
@@ -39,7 +37,7 @@ export function clearDirty(flag: DirtyFlag) {
 
 export function isAnyDirty(): boolean {
   return dirty.density || dirty.scatter || dirty.grain ||
-    dirty.surface || dirty.light || dirty.composite;
+    dirty.surface || dirty.composite;
 }
 
 export function markAllDirty() {
@@ -47,6 +45,5 @@ export function markAllDirty() {
   dirty.scatter = true;
   dirty.grain = true;
   dirty.surface = true;
-  dirty.light = true;
   dirty.composite = true;
 }

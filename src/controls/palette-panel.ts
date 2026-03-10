@@ -1,18 +1,19 @@
-// Palette panel — 5 tonal column swatches
-// Adapted from V1 mood-ring.ts, renamed to palette-panel.ts
-
+// 15-pile palette panel — 5 hues × 3 values (light/medium/dark) + rag
 import { html, css } from 'lit';
 import { customElement, state } from 'lit/decorators.js';
 import { BaseControl } from './base-control.js';
-import { sceneStore, type PaletteColor } from '../state/scene-state.js';
-import { sampleTonalColumn } from '../painting/palette.js';
+import { sceneStore } from '../state/scene-state.js';
+import { getMoodPiles, dipBrush, wipeOnRag, getActivePile } from '../painting/palette.js';
 import { reloadBrush } from '../painting/brush-engine.js';
+import type { KColor } from '../mood/moods.js';
+
+function colorToCSS(c: KColor): string {
+  return `rgb(${Math.round(c.r * 255)}, ${Math.round(c.g * 255)}, ${Math.round(c.b * 255)})`;
+}
 
 @customElement('ghz-palette-panel')
 export class PalettePanel extends BaseControl {
-  @state() private colors: PaletteColor[] = [];
-  @state() private activeIndex = 0;
-  @state() private tonalValues: number[] = [];
+  @state() private _activePile = 0;
 
   static styles = [
     BaseControl.baseStyles,
@@ -25,102 +26,127 @@ export class PalettePanel extends BaseControl {
         pointer-events: auto;
       }
       .panel {
-        display: grid;
-        grid-template-columns: repeat(3, 1fr);
+        display: flex;
+        flex-direction: column;
         gap: 4px;
         padding: 6px;
-        width: 120px;
+      }
+      .pile-grid {
+        display: grid;
+        grid-template-columns: repeat(5, 1fr);
+        gap: 3px;
       }
       .swatch {
-        width: 32px;
-        height: 32px;
-        border-radius: 6px;
+        width: 24px;
+        height: 24px;
+        border-radius: 4px;
         border: 2px solid transparent;
         cursor: pointer;
-        position: relative;
         transition: border-color 180ms ease;
+      }
+      .swatch:hover {
+        border-color: rgba(255, 200, 120, 0.3);
       }
       .swatch.active {
         border-color: var(--ghz-accent);
         box-shadow: 0 0 8px rgba(232, 168, 64, 0.4);
       }
-      .value-line {
-        position: absolute;
-        bottom: 0;
-        left: 2px;
-        right: 2px;
-        height: 2px;
-        background: rgba(255, 255, 255, 0.6);
-        border-radius: 1px;
-        pointer-events: none;
+      .rag {
+        margin-top: 4px;
+        padding: 6px;
+        font-size: 10px;
+        text-align: center;
+        letter-spacing: 0.5px;
+        text-transform: uppercase;
+        cursor: pointer;
+      }
+      .label {
+        font-size: 8px;
+        text-align: center;
+        color: var(--ghz-text-dim);
+        letter-spacing: 0.5px;
+        margin-top: 2px;
+      }
+      .row-labels {
+        display: flex;
+        flex-direction: column;
+        gap: 3px;
+        justify-content: center;
+        padding-right: 4px;
+      }
+      .row-label {
+        font-size: 7px;
+        color: var(--ghz-text-dim);
+        letter-spacing: 0.3px;
+        height: 24px;
+        display: flex;
+        align-items: center;
+      }
+      .grid-area {
+        display: flex;
       }
     `,
   ];
 
+  private _unsub?: () => void;
+
   connectedCallback() {
     super.connectedCallback();
-    const scene = sceneStore.get();
-    this.colors = scene.palette.colors;
-    this.activeIndex = scene.palette.activeIndex;
-    this.tonalValues = scene.palette.tonalValues;
-
-    sceneStore.subscribe((s) => {
-      this.colors = s.palette.colors;
-      this.activeIndex = s.palette.activeIndex;
-      this.tonalValues = s.palette.tonalValues;
-    });
+    this._activePile = getActivePile();
+    this._unsub = sceneStore.select(
+      (s) => s.mood,
+      () => { this.requestUpdate(); }
+    );
   }
 
-  private selectSwatch(index: number) {
-    sceneStore.update((s) => ({
-      palette: { ...s.palette, activeIndex: index },
-    }));
+  disconnectedCallback() {
+    super.disconnectedCallback();
+    this._unsub?.();
+  }
+
+  private _onPileClick(index: number) {
+    dipBrush(index);
     reloadBrush();
+    this._activePile = index;
   }
 
-  private handleWheel(e: WheelEvent, index: number) {
-    e.preventDefault();
-    e.stopPropagation();
-    const delta = Math.sign(e.deltaY) * Math.min(Math.abs(e.deltaY) * 0.002, 0.05);
-    sceneStore.update((s) => {
-      const newValues = [...s.palette.tonalValues];
-      newValues[index] = Math.max(0, Math.min(1, newValues[index] + delta));
-      return { palette: { ...s.palette, tonalValues: newValues } };
-    });
-    reloadBrush();
-  }
-
-  private handleDblClick(index: number) {
-    sceneStore.update((s) => {
-      const newValues = [...s.palette.tonalValues];
-      newValues[index] = 0.5;
-      return { palette: { ...s.palette, tonalValues: newValues } };
-    });
-    reloadBrush();
-  }
-
-  private getSwatchColor(index: number): string {
-    const base = this.colors[index];
-    if (!base) return '#333';
-    const value = this.tonalValues[index] ?? 0.5;
-    const sampled = sampleTonalColumn(base, value);
-    return `rgb(${Math.round(sampled.r * 255)}, ${Math.round(sampled.g * 255)}, ${Math.round(sampled.b * 255)})`;
+  private _onRagClick() {
+    wipeOnRag();
+    this.requestUpdate();
   }
 
   render() {
+    const piles = getMoodPiles();
+    // Build 15 swatches: 3 rows (light/medium/dark) × 5 hues
+    const rows = [
+      piles.map(p => p.light),
+      piles.map(p => p.medium),
+      piles.map(p => p.dark),
+    ];
+    const rowLabels = ['LT', 'MD', 'DK'];
+
     return html`
       <div class="panel glass">
-        ${this.colors.map((_, i) => html`
-          <div
-            class="swatch ${i === this.activeIndex ? 'active' : ''}"
-            style="background: ${this.getSwatchColor(i)}"
-            @click=${() => this.selectSwatch(i)}
-            @wheel=${(e: WheelEvent) => this.handleWheel(e, i)}
-            @dblclick=${() => this.handleDblClick(i)}
-          >
-            <div class="value-line" style="bottom: ${(this.tonalValues[i] ?? 0.5) * 100}%"></div>
+        <div class="grid-area">
+          <div class="row-labels">
+            ${rowLabels.map(l => html`<div class="row-label">${l}</div>`)}
           </div>
-        `)}
+          <div class="pile-grid">
+            ${rows.flatMap((row, rowIdx) =>
+              row.map((color, colIdx) => {
+                const idx = colIdx * 3 + rowIdx; // 0-14 pile index
+                return html`
+                  <div
+                    class="swatch ${this._activePile === idx ? 'active' : ''}"
+                    style="background: ${colorToCSS(color)}"
+                    @click=${() => this._onPileClick(idx)}
+                  ></div>
+                `;
+              })
+            )}
+          </div>
+        </div>
+        <button class="glass-button rag" @click=${this._onRagClick}>rag (X)</button>
       </div>
     `;
   }

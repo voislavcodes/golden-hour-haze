@@ -1,7 +1,6 @@
-// Atmosphere density compute shader
-// Reads previous density (ping), writes new density (pong)
+// Atmosphere density compute shader — simplified, static (no drift/advection)
+// Reads depth, writes density once from mood params
 // R=density, G=warmth, B=grain_local, A=scatter_local
-// Uses pre-baked noise LUT instead of inline FBM
 
 struct Globals {
   resolution: vec2f,
@@ -17,14 +16,14 @@ struct AtmosphereParams {
   warmth: f32,
   grain: f32,
   scatter: f32,
-  drift_x: f32,
-  drift_y: f32,
-  drift_speed: f32,
-  turbulence: f32,
+  _pad0: f32,
+  _pad1: f32,
+  _pad2: f32,
+  _pad3: f32,
   humidity: f32,
   grain_depth: f32,
   horizon_y: f32,
-  _pad2: f32,
+  _pad4: f32,
 };
 
 @group(0) @binding(0) var<uniform> globals: Globals;
@@ -46,12 +45,7 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
   // Dense fog suppression: kills all spatial variation by density ~0.8
   let fog_suppress = smoothstep(0.2, 0.7, params.density);
 
-  // Read previous density via sampler for drift advection
-  let drift = vec2f(params.drift_x, params.drift_y) * params.drift_speed * globals.dt * (1.0 - fog_suppress);
-  let prev_uv = uv - drift;
-  let prev = textureSampleLevel(prev_density, density_sampler, prev_uv, 0.0);
-
-  // Read depth (use density sampler for bilinear — works if depth is half-res or full-res)
+  // Read depth (use density sampler for bilinear)
   let depth = textureSampleLevel(depth_tex, density_sampler, uv, 0.0).r;
 
   // Base density from depth (deeper = more atmosphere)
@@ -60,21 +54,14 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
   var depth_density = flat_depth * effective_density + effective_density * 0.3;
   depth_density *= 1.0 + params.humidity * 0.5;
 
-  // Sample noise LUT instead of computing FBM inline
-  // Drift offset creates temporal animation without recomputing noise
-  let effective_turb = params.turbulence * (1.0 - params.humidity * 0.3) * (1.0 - fog_suppress);
+  // Sample noise LUT for spatial variation (static — no drift offset)
   let noise_data = textureSampleLevel(noise_lut, noise_sampler, uv * 4.0, 0.0);
-  let turb = noise_data.r * effective_turb;
 
   // Gentle horizon haze
   let horizon_dist = abs((1.0 - uv.y) - params.horizon_y);
   let horizon_haze = select(0.0, exp(-horizon_dist * horizon_dist * 20.0) * params.density * 0.15 * (1.0 - fog_suppress), params.horizon_y >= 0.0);
 
-  // Evolve density: blend previous with new computation
-  // Skip temporal blend when prev is uninitialized (first frame) so density converges immediately
-  let has_prev = step(0.0001, abs(prev.r) + abs(prev.g) + abs(prev.b) + abs(prev.a));
-  let temporal_blend = mix(0.85, 0.15, fog_suppress) * has_prev;
-  let new_density = mix(depth_density + turb * 0.3 + horizon_haze, prev.r, temporal_blend);
+  let new_density = depth_density + horizon_haze;
 
   // Warmth
   let warmth = mix(params.warmth, params.warmth * (1.0 - flat_depth * 0.5), 0.5);

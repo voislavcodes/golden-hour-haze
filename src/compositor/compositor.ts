@@ -1,12 +1,11 @@
-// V2 Compositor — reads sky, paint surface, lights, outputs final frame
-// Adapted from V1 compositor.ts — V2 binds accum_tex instead of forms_tex
+// V3 Compositor — reads sky + paint surface + paint state, outputs final frame
+// Light wells and bloom removed in v2. Paint state (drying) added in v3.
 
 import { getGPU } from '../gpu/context.js';
 import { allocTexture, allocPingPong } from '../gpu/texture-pool.js';
 import { createRenderPipeline } from '../gpu/pipeline-cache.js';
 import { getGlobalBindGroupLayout } from '../gpu/bind-groups.js';
-import { getReadTexture } from '../painting/surface.js';
-import { getBloomTexture } from '../light/light-layer.js';
+import { getReadTexture, getStateReadTexture } from '../painting/surface.js';
 import { getGrainLutTexture, getNoiseLutSampler } from '../atmosphere/noise-lut.js';
 import { getSurfaceGrainTexture } from '../surface/surface-grain-lut.js';
 import type { CompositorParams } from '../state/scene-state.js';
@@ -30,7 +29,7 @@ export function initCompositor() {
     minFilter: 'linear',
   });
 
-  // V2 texture layout: density, scatter, grain_lut, accum, light, bloom, sampler, grain_sampler
+  // Texture layout: density, scatter, grain_lut, accum, tex_sampler, grain_sampler, surface_lut, paint_state
   textureLayout = device.createBindGroupLayout({
     label: 'composite-tex-layout',
     entries: [
@@ -38,11 +37,10 @@ export function initCompositor() {
       { binding: 1, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: 'float' } },  // scatter
       { binding: 2, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: 'float' } },  // grain LUT
       { binding: 3, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: 'float' } },  // accum (paint surface)
-      { binding: 4, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: 'float' } },  // light
-      { binding: 5, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: 'float' } },  // bloom
-      { binding: 6, visibility: GPUShaderStage.FRAGMENT, sampler: { type: 'filtering' } },     // tex sampler
-      { binding: 7, visibility: GPUShaderStage.FRAGMENT, sampler: { type: 'filtering' } },     // grain repeat sampler
-      { binding: 8, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: 'float' } },  // surface grain LUT
+      { binding: 4, visibility: GPUShaderStage.FRAGMENT, sampler: { type: 'filtering' } },     // tex sampler
+      { binding: 5, visibility: GPUShaderStage.FRAGMENT, sampler: { type: 'filtering' } },     // grain repeat sampler
+      { binding: 6, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: 'float' } },  // surface grain LUT
+      { binding: 7, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: 'unfilterable-float' } },  // paint state
     ],
   });
 
@@ -68,7 +66,7 @@ export function initCompositor() {
   });
 
   const mod = device.createShaderModule({ label: 'composite-shader', code: compositeShader });
-  pipeline = createRenderPipeline('composite', device, {
+  pipeline = createRenderPipeline('composite-v3', device, {
     label: 'composite-render',
     layout: device.createPipelineLayout({
       bindGroupLayouts: [getGlobalBindGroupLayout(device), textureLayout, compositorParamLayout],
@@ -104,19 +102,7 @@ export function rebuildCompositorBindGroup() {
   const grainSampler = getNoiseLutSampler();
 
   const accumTex = getReadTexture();
-
-  const lightTex = allocTexture('light-scatter', 'rgba16float', currentWidth, currentHeight,
-    GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.RENDER_ATTACHMENT);
-
-  let bloomTex = getBloomTexture();
-  if (!bloomTex) {
-    bloomTex = device.createTexture({
-      label: 'bloom-fallback',
-      size: { width: 1, height: 1 },
-      format: 'rgba16float',
-      usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.RENDER_ATTACHMENT,
-    });
-  }
+  const stateTex = getStateReadTexture();
 
   textureBG = device.createBindGroup({
     label: 'composite-tex-bg',
@@ -126,11 +112,10 @@ export function rebuildCompositorBindGroup() {
       { binding: 1, resource: scatterTex.createView() },
       { binding: 2, resource: grainLut.createView() },
       { binding: 3, resource: accumTex.createView() },
-      { binding: 4, resource: lightTex.createView() },
-      { binding: 5, resource: bloomTex.createView() },
-      { binding: 6, resource: sampler },
-      { binding: 7, resource: grainSampler },
-      { binding: 8, resource: getSurfaceGrainTexture().createView() },
+      { binding: 4, resource: sampler },
+      { binding: 5, resource: grainSampler },
+      { binding: 6, resource: getSurfaceGrainTexture().createView() },
+      { binding: 7, resource: stateTex.createView() },
     ],
   });
 }
@@ -140,19 +125,21 @@ export function writeCompositorParams(params: CompositorParams) {
   device.queue.writeBuffer(compositorParamBuffer, 0, new Float32Array([
     params.shadowChroma,
     params.grayscale,
-    params.anchorX,
-    params.anchorY,
-    params.anchorBoost,
-    params.anchorFalloff,
-    params.sunGradeWarmth,
-    params.sunGradeIntensity,
     params.grainIntensity ?? 0,
     params.grainAngle ?? 0,
     params.grainDepth ?? 0.5,
     params.grainScale ?? 4.0,
     params.surfaceIntensity ?? 0,
-    0, 0, 0,
+    params.sessionTime ?? 0,
+    params.surfaceDrySpeed ?? 1.0,
+    0, 0, 0, 0, 0, 0, 0,
   ]));
+}
+
+export function updateCompositorSessionTime(sessionTime: number) {
+  const { device } = getGPU();
+  // Write just the session_time field at offset 7*4=28 bytes
+  device.queue.writeBuffer(compositorParamBuffer, 28, new Float32Array([sessionTime]));
 }
 
 export function renderComposite(encoder: GPUCommandEncoder, targetView: GPUTextureView, globalBG: GPUBindGroup) {

@@ -1,13 +1,20 @@
 // Scrape brush — palette knife removal from accumulation surface
 // Rectangular blade, behind-cursor bias, side ridges, directional scratches
+// Wetness modulates scrape effectiveness — wet lifts cleanly, dry resists
+
+#include "../common/wetness.wgsl"
 
 struct ScrapeParams {
   center: vec2f,            // cursor position (normalized 0-1)
   radius: f32,              // scrape width
-  softness: f32,            // from VELVET — edge hardness
+  thinners: f32,            // master physics variable (replaces softness)
   scrape_direction: vec2f,  // normalized gesture direction
   strength: f32,            // from reservoir (LOAD depletion)
   ghost_retention: f32,     // 0.15 — how much pigment survives full scrape
+  session_time: f32,        // current session time
+  surface_dry_speed: f32,   // drying rate multiplier
+  _pad0: f32,
+  _pad1: f32,
 }
 
 @group(0) @binding(0) var<uniform> params: ScrapeParams;
@@ -15,6 +22,8 @@ struct ScrapeParams {
 @group(1) @binding(1) var accum_write: texture_storage_2d<rgba16float, write>;
 @group(2) @binding(0) var grain_lut: texture_2d<f32>;
 @group(2) @binding(1) var grain_sampler: sampler;
+@group(3) @binding(0) var state_read: texture_2d<f32>;
+@group(3) @binding(1) var state_write: texture_storage_2d<rg32float, write>;
 
 @compute @workgroup_size(8, 8, 1)
 fn main(@builtin(global_invocation_id) gid: vec3u) {
@@ -23,6 +32,7 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
 
   let uv = (vec2f(gid.xy) + 0.5) / vec2f(dims);
   let existing = textureLoad(accum_read, vec2i(gid.xy), 0);
+  let state = textureLoad(state_read, vec2i(gid.xy), 0);
 
   // --- Blade coordinate system ---
   let stroke_dir = params.scrape_direction;
@@ -35,7 +45,7 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
   // --- Rectangular blade shape ---
   let blade_half_width = params.radius;
   let blade_depth = params.radius * 0.3;
-  let softness = params.softness;
+  let softness = params.thinners * params.radius;
 
   let in_blade_across = 1.0 - smoothstep(blade_half_width - softness, blade_half_width, abs(across));
   let in_blade_along = 1.0 - smoothstep(blade_depth, blade_depth + softness * 0.5, abs(along));
@@ -43,12 +53,19 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
 
   if (blade_mask < 0.001 || existing.a < 0.001) {
     textureStore(accum_write, vec2i(gid.xy), existing);
+    textureStore(state_write, vec2i(gid.xy), state);
     return;
   }
 
+  // --- Wetness modulates scrape effectiveness ---
+  let wetness = calculate_wetness(state.r, params.session_time, params.surface_dry_speed, state.g);
+  let scrape_power = mix(0.3, 1.0, wetness);
+  let paint_thickness = existing.a * (1.0 - state.g * 0.5);
+  let scrape_effectiveness = smoothstep(0.05, 0.3, paint_thickness) * scrape_power;
+
   // --- Behind-cursor bias ---
   let behind_factor = smoothstep(0.0, blade_depth, -along);
-  let removal_strength = blade_mask * params.strength * behind_factor;
+  let removal_strength = blade_mask * params.strength * behind_factor * scrape_effectiveness;
 
   // --- Surface grain interaction ---
   let grain_uv = uv * vec2f(f32(dims.x) / 512.0, f32(dims.y) / 512.0);
@@ -78,4 +95,6 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
   let final_K = mix(scraped_K, existing.rgb, ridge_factor);
 
   textureStore(accum_write, vec2i(gid.xy), vec4f(final_K, final_weight));
+  // Scraping doesn't refresh paint — keep existing state
+  textureStore(state_write, vec2i(gid.xy), state);
 }

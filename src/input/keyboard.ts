@@ -1,15 +1,11 @@
 import { uiStore, type Tool } from '../state/ui-state.js';
-import { sceneStore } from '../state/scene-state.js';
+import { wipeOnRag } from '../painting/palette.js';
 
 const toolKeys: Record<string, Tool> = {
   v: 'select',
   f: 'form',
-  l: 'light',
   d: 'scrape',
   w: 'wipe',
-  r: 'drift',
-  p: 'palette',
-  a: 'anchor',
 };
 
 export function initKeyboardInput() {
@@ -33,16 +29,9 @@ export function initKeyboardInput() {
       return;
     }
 
-    // Horizon cycle: current → 0.5 (center) → -1.0 (off) → 0.5
-    if (e.key.toLowerCase() === 'h') {
-      const cur = sceneStore.get().horizonY;
-      if (cur < 0) {
-        sceneStore.set({ horizonY: 0.5 });
-      } else if (Math.abs(cur - 0.5) < 0.01) {
-        sceneStore.set({ horizonY: -1.0 });
-      } else {
-        sceneStore.set({ horizonY: 0.5 });
-      }
+    // Rag wipe
+    if (e.key.toLowerCase() === 'x' && !e.ctrlKey && !e.metaKey) {
+      wipeOnRag();
       return;
     }
 
@@ -58,6 +47,5 @@ export function initKeyboardInput() {
       uiStore.update((s) => ({ showUI: !s.showUI }));
     }
 
-    // Undo/Redo handled in app.ts (requires GPU encoder)
   });
 }

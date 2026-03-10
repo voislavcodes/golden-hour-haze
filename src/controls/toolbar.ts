@@ -10,14 +10,9 @@ interface ToolEntry {
 }
 
 const TOOLS: ToolEntry[] = [
-  { id: 'select',   label: 'SEL',  shortcut: 'V' },
   { id: 'form',     label: 'FRM',  shortcut: 'F' },
-  { id: 'light',    label: 'LGT',  shortcut: 'L' },
   { id: 'scrape',   label: 'SCRP', shortcut: 'D' },
   { id: 'wipe',     label: 'WIPE', shortcut: 'W' },
-  { id: 'drift',    label: 'DRFT', shortcut: 'R' },
-  { id: 'palette',  label: 'PAL',  shortcut: 'P' },
-  { id: 'anchor',   label: 'ANCR', shortcut: 'A' },
 ];
 
 @customElement('ghz-toolbar')
