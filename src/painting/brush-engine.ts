@@ -34,7 +34,7 @@ let maskHeight = 0;
 let needMaskClear = true;
 
 const UNIFORM_SIZE = 80;    // bytes — BrushParams struct
-const MAX_VERTICES = 256;
+const MAX_VERTICES = 512;
 const VERTEX_STRIDE = 16;   // bytes per StrokeVertex (vec2f + f32 + pad)
 const TOUCH_RAMP_SEGS = 5;
 const GHOST_COUNT = 3;
@@ -52,6 +52,21 @@ let reservoir = 0.5;
 let lastReservoir = 1.0;
 let totalDistance = 0;
 let strokeDabCount = 0;
+
+// Cumulative polyline — grows over the entire stroke lifetime
+// Each frame re-renders the full stroke from a pre-stroke snapshot
+type BakedVert = { pos: Vec2; radius: number; reservoir: number };
+let cumulativeVerts: BakedVert[] = [];
+
+// Snapshot re-render — save pre-stroke surface, re-render full stroke each frame
+// Eliminates frame boundary ridges (no incremental K-M mixing nonlinearity)
+let snapshotAccum: GPUTexture | null = null;
+let snapshotState: GPUTexture | null = null;
+let snapshotW = 0;
+let snapshotH = 0;
+let needSnapshotCapture = false;
+type AABB = { minX: number; minY: number; maxX: number; maxY: number };
+let strokeAABB: AABB = { minX: 0, minY: 0, maxX: 0, maxY: 0 };
 
 // Ghost state
 let ghostAnchor: SegPoint | null = null;
@@ -148,6 +163,23 @@ function ensureMaskTextures() {
   needMaskClear = false; // fresh textures are zero-initialized
 }
 
+/** Ensure snapshot textures exist and match surface dimensions */
+function ensureSnapshotTextures() {
+  const { device } = getGPU();
+  const w = getSurfaceWidth();
+  const h = getSurfaceHeight();
+  if (snapshotAccum && snapshotW === w && snapshotH === h) return;
+
+  if (snapshotAccum) snapshotAccum.destroy();
+  if (snapshotState) snapshotState.destroy();
+
+  const usage = GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST;
+  snapshotAccum = device.createTexture({ label: 'snapshot-accum', size: [w, h], format: 'rgba16float', usage });
+  snapshotState = device.createTexture({ label: 'snapshot-state', size: [w, h], format: 'rg32float', usage });
+  snapshotW = w;
+  snapshotH = h;
+}
+
 export function reloadBrush() {
   const load = sceneStore.get().load;
   reservoir = load > 0 ? 1.0 : 0;
@@ -191,6 +223,9 @@ export function beginStroke(x: number, y: number, pressure: number) {
   strokeDabCount = 0;
   ghostsPending = false;
   needMaskClear = true;
+  needSnapshotCapture = true;
+  cumulativeVerts = [];
+  strokeAABB = { minX: Infinity, minY: Infinity, maxX: -Infinity, maxY: -Infinity };
 }
 
 export function endStroke() {
@@ -214,7 +249,10 @@ export function endStroke() {
   lastPos = null;
 }
 
-/** Write uniform + vertex buffers and dispatch a single compute pass */
+/** Write uniform + vertex buffers and dispatch a single compute pass.
+ *  useSnapshot: read from pre-stroke snapshot instead of current accum/state.
+ *  This re-renders the full stroke from scratch each frame, eliminating
+ *  incremental K-M mixing nonlinearity that causes dab ridges. */
 function dispatchPolyline(
   encoder: GPUCommandEncoder,
   verts: { pos: Vec2; radius: number; reservoir: number }[],
@@ -222,6 +260,8 @@ function dispatchPolyline(
   slot: ReturnType<typeof getBrushSlot>,
   ks: { Kr: number; Kg: number; Kb: number },
   label: string,
+  aabb?: AABB,
+  useSnapshot = false,
 ) {
   if (verts.length === 0) return;
 
@@ -234,7 +274,21 @@ function dispatchPolyline(
   // Ensure mask textures exist
   ensureMaskTextures();
 
-  // Clear mask read texture at stroke start
+  // Capture pre-stroke snapshot on first dispatch of a stroke
+  if (needSnapshotCapture && useSnapshot) {
+    ensureSnapshotTextures();
+    const accumPP = getAccumPP();
+    const statePP = getStatePP();
+    encoder.copyTextureToTexture(
+      { texture: accumPP.read }, { texture: snapshotAccum! }, [w, h],
+    );
+    encoder.copyTextureToTexture(
+      { texture: statePP.read }, { texture: snapshotState! }, [w, h],
+    );
+    needSnapshotCapture = false;
+  }
+
+  // Clear mask — snapshot mode clears every frame (delta = alpha, not incremental)
   if (needMaskClear) {
     const clearPass = encoder.beginRenderPass({
       colorAttachments: [{
@@ -251,15 +305,23 @@ function dispatchPolyline(
   // Clamp vertex count to buffer capacity
   const vertexCount = Math.min(verts.length, MAX_VERTICES);
 
-  // Compute AABB from vertices
-  let bbMinX = Infinity, bbMinY = Infinity;
-  let bbMaxX = -Infinity, bbMaxY = -Infinity;
-  for (let i = 0; i < vertexCount; i++) {
-    const v = verts[i];
-    bbMinX = Math.min(bbMinX, v.pos[0] - v.radius);
-    bbMinY = Math.min(bbMinY, v.pos[1] - v.radius);
-    bbMaxX = Math.max(bbMaxX, v.pos[0] + v.radius);
-    bbMaxY = Math.max(bbMaxY, v.pos[1] + v.radius);
+  // AABB for early pixel rejection
+  let bbMinX: number, bbMinY: number, bbMaxX: number, bbMaxY: number;
+  if (aabb) {
+    bbMinX = aabb.minX;
+    bbMinY = aabb.minY;
+    bbMaxX = aabb.maxX;
+    bbMaxY = aabb.maxY;
+  } else {
+    bbMinX = Infinity; bbMinY = Infinity;
+    bbMaxX = -Infinity; bbMaxY = -Infinity;
+    for (let i = 0; i < vertexCount; i++) {
+      const v = verts[i];
+      bbMinX = Math.min(bbMinX, v.pos[0] - v.radius);
+      bbMinY = Math.min(bbMinY, v.pos[1] - v.radius);
+      bbMaxX = Math.max(bbMaxX, v.pos[0] + v.radius);
+      bbMaxY = Math.max(bbMaxY, v.pos[1] + v.radius);
+    }
   }
 
   // Write uniform buffer (80 bytes) — mixed f32/u32
@@ -300,9 +362,13 @@ function dispatchPolyline(
   }
   device.queue.writeBuffer(vertexBuffer, 0, vertData);
 
-  // Create bind groups
+  // Create bind groups — snapshot mode reads from pre-stroke snapshot
   const accumPP = getAccumPP();
   const statePP = getStatePP();
+  const accumReadView = useSnapshot && snapshotAccum
+    ? snapshotAccum.createView() : accumPP.readView;
+  const stateReadView = useSnapshot && snapshotState
+    ? snapshotState.createView() : statePP.readView;
 
   const paramBG = device.createBindGroup({
     layout: paramLayout,
@@ -314,7 +380,7 @@ function dispatchPolyline(
   const texBG = device.createBindGroup({
     layout: textureLayout,
     entries: [
-      { binding: 0, resource: accumPP.readView },
+      { binding: 0, resource: accumReadView },
       { binding: 1, resource: accumPP.writeView },
     ],
   });
@@ -323,7 +389,7 @@ function dispatchPolyline(
     entries: [
       { binding: 0, resource: getSurfaceHeightTexture().createView() },
       { binding: 1, resource: grainSampler },
-      { binding: 2, resource: statePP.readView },
+      { binding: 2, resource: stateReadView },
       { binding: 3, resource: statePP.writeView },
       { binding: 4, resource: maskTextures![maskIndex].createView() },
       { binding: 5, resource: maskTextures![1 - maskIndex].createView() },
@@ -461,8 +527,33 @@ export function dispatchBrushDabs(encoder: GPUCommandEncoder, x: number, y: numb
     lastRadius = verts[verts.length - 1].radius;
   }
 
-  // Single dispatch for entire polyline
-  dispatchPolyline(encoder, verts, scene, slot, ks, 'brush-stroke');
+  // Accumulate into cumulative polyline — one continuous stroke
+  if (cumulativeVerts.length === 0) {
+    cumulativeVerts = [...verts];
+  } else if (verts.length > 0) {
+    // First new vert is at lastPos junction (same as cumulativeVerts tail) — skip it
+    cumulativeVerts.push(...verts.slice(1));
+  }
+
+  // Sliding window — keep tail when buffer fills
+  if (cumulativeVerts.length > MAX_VERTICES) {
+    cumulativeVerts = cumulativeVerts.slice(cumulativeVerts.length - MAX_VERTICES);
+  }
+
+  // Expand cumulative stroke AABB with new vertices
+  for (const v of verts) {
+    strokeAABB.minX = Math.min(strokeAABB.minX, v.pos[0] - v.radius);
+    strokeAABB.minY = Math.min(strokeAABB.minY, v.pos[1] - v.radius);
+    strokeAABB.maxX = Math.max(strokeAABB.maxX, v.pos[0] + v.radius);
+    strokeAABB.maxY = Math.max(strokeAABB.maxY, v.pos[1] + v.radius);
+  }
+
+  // Clear mask every frame — re-render from scratch (delta = alpha, not incremental)
+  needMaskClear = true;
+
+  // Dispatch full cumulative polyline against pre-stroke snapshot
+  dispatchPolyline(encoder, cumulativeVerts, scene, slot, ks, 'brush-stroke',
+    strokeAABB, true);
   lastReservoir = reservoir;
 
   // Update CPU-side peak weight estimate

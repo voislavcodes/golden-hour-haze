@@ -113,9 +113,25 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
     local_reservoir = mix(vertices[best_seg].reservoir, vertices[best_seg + 1u].reservoir, best_t);
     let seg_vec = vertices[best_seg + 1u].pos - vertices[best_seg].pos;
     let seg_len = length(seg_vec);
-    dir = select(vec2f(1.0, 0.0), seg_vec / seg_len, seg_len > 0.0001);
-    perp = vec2f(-dir.y, dir.x);
+    let seg_dir = select(vec2f(1.0, 0.0), seg_vec / seg_len, seg_len > 0.0001);
     nearest = vertices[best_seg].pos + seg_vec * best_t;
+
+    // Smooth tangent — interpolate between vertex tangents to eliminate
+    // bristle pattern discontinuities at segment joints
+    var tan0 = seg_dir;
+    if (best_seg > 0u) {
+      let pv = vertices[best_seg].pos - vertices[best_seg - 1u].pos;
+      let pl = length(pv);
+      if (pl > 0.0001) { tan0 = normalize(pv / pl + seg_dir); }
+    }
+    var tan1 = seg_dir;
+    if (best_seg + 2u < params.vertex_count) {
+      let nv = vertices[best_seg + 2u].pos - vertices[best_seg + 1u].pos;
+      let nl = length(nv);
+      if (nl > 0.0001) { tan1 = normalize(seg_dir + nv / nl); }
+    }
+    dir = normalize(mix(tan0, tan1, best_t));
+    perp = vec2f(-dir.y, dir.x);
   }
 
   // Bristle clump density — irregular groups via non-harmonic sines
