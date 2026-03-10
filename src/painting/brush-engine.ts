@@ -34,7 +34,7 @@ let maskHeight = 0;
 let needMaskClear = true;
 
 const UNIFORM_SIZE = 80;    // bytes — BrushParams struct
-const MAX_VERTICES = 512;
+const MAX_VERTICES = 4096;
 const VERTEX_STRIDE = 16;   // bytes per StrokeVertex (vec2f + f32 + pad)
 const TOUCH_RAMP_SEGS = 5;
 const GHOST_COUNT = 3;
@@ -527,6 +527,50 @@ export function dispatchBrushDabs(encoder: GPUCommandEncoder, x: number, y: numb
     lastRadius = verts[verts.length - 1].radius;
   }
 
+  // Self-intersection detection — if new vertices are near old ones (far back
+  // in the polyline), the SDF would pick the wrong segment and erase paint.
+  // Auto-commit: bake current result into snapshot so old segments leave the SDF.
+  const SELF_INTERSECT_GAP = 20;
+  let commitNeeded = false;
+  if (cumulativeVerts.length > SELF_INTERSECT_GAP && verts.length > 0) {
+    const checkEnd = cumulativeVerts.length - SELF_INTERSECT_GAP;
+    outer:
+    for (const nv of verts) {
+      for (let i = 0; i < checkEnd; i += 4) {
+        const ov = cumulativeVerts[i];
+        const threshold = nv.radius + ov.radius;
+        const dx = nv.pos[0] - ov.pos[0];
+        const dy = nv.pos[1] - ov.pos[1];
+        if (dx * dx + dy * dy < threshold * threshold) {
+          commitNeeded = true;
+          break outer;
+        }
+      }
+    }
+  }
+
+  // Auto-commit before self-intersection corrupts the SDF
+  if (commitNeeded && snapshotAccum) {
+    const accumPP = getAccumPP();
+    const statePP = getStatePP();
+    const h = getSurfaceHeight();
+    encoder.copyTextureToTexture(
+      { texture: accumPP.read }, { texture: snapshotAccum }, [w, h],
+    );
+    encoder.copyTextureToTexture(
+      { texture: statePP.read }, { texture: snapshotState! }, [w, h],
+    );
+    // Keep last 2 verts for tangent continuity at the junction
+    cumulativeVerts = cumulativeVerts.slice(-2);
+    strokeAABB = { minX: Infinity, minY: Infinity, maxX: -Infinity, maxY: -Infinity };
+    for (const v of cumulativeVerts) {
+      strokeAABB.minX = Math.min(strokeAABB.minX, v.pos[0] - v.radius);
+      strokeAABB.minY = Math.min(strokeAABB.minY, v.pos[1] - v.radius);
+      strokeAABB.maxX = Math.max(strokeAABB.maxX, v.pos[0] + v.radius);
+      strokeAABB.maxY = Math.max(strokeAABB.maxY, v.pos[1] + v.radius);
+    }
+  }
+
   // Accumulate into cumulative polyline — one continuous stroke
   if (cumulativeVerts.length === 0) {
     cumulativeVerts = [...verts];
@@ -535,9 +579,9 @@ export function dispatchBrushDabs(encoder: GPUCommandEncoder, x: number, y: numb
     cumulativeVerts.push(...verts.slice(1));
   }
 
-  // Sliding window — keep tail when buffer fills
+  // Hard cap — safety net
   if (cumulativeVerts.length > MAX_VERTICES) {
-    cumulativeVerts = cumulativeVerts.slice(cumulativeVerts.length - MAX_VERTICES);
+    cumulativeVerts = cumulativeVerts.slice(0, MAX_VERTICES);
   }
 
   // Expand cumulative stroke AABB with new vertices
