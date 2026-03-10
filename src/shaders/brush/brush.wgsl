@@ -185,7 +185,9 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
 
   // Diminishing returns — per-stroke only; new strokes arrive at full opacity
   let layers_this_stroke = max(existing.a - params.stroke_start_layers, 0.0);
-  let effective_alpha = delta * params.pigment_density * pow(params.falloff, layers_this_stroke) * final_reservoir * grain_interaction;
+  // Thick paint is more opaque — covers in fewer passes
+  let opacity_boost = mix(2.2, 1.0, params.thinners);
+  let effective_alpha = delta * params.pigment_density * opacity_boost * pow(params.falloff, layers_this_stroke) * final_reservoir * grain_interaction;
 
   if (effective_alpha < 0.001) {
     textureStore(accum_write, vec2i(gid.xy), existing);
@@ -220,7 +222,9 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
 
   // K-M mixing — wetness modulates blend mode
   let new_weight = existing.a + deposited;
-  let paint_depth = min(existing.a, 2.0);
+  // Thick incoming paint covers existing layers more easily
+  let depth_cap = mix(0.8, 2.0, params.thinners);
+  let paint_depth = min(existing.a, depth_cap);
   let blend_factor = deposited / (paint_depth + deposited + 0.001);
 
   // Wet paint: full K-M mixing. Dry paint: overlay (less subtractive blend)
