@@ -47,6 +47,12 @@ fn hash_noise(angle: f32, seed: f32) -> f32 {
   return fract(s);
 }
 
+// Per-bristle hash — decorrelated from hash_noise via different constants
+fn bristle_hash(bristle_id: f32, salt: f32) -> f32 {
+  let s = sin(bristle_id * 213.7 + salt * 971.3) * 29743.1257;
+  return fract(s);
+}
+
 // Capsule SDF: returns (signed_distance, t_along_segment)
 // Negative distance = inside. Degenerates to circle when a == b.
 fn capsule_sdf(p: vec2f, a: vec2f, b: vec2f, ra: f32, rb: f32) -> vec2f {
@@ -115,21 +121,49 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
     nearest = vertices[best_seg].pos + seg_vec * best_t;
   }
 
-  // Bristle pattern (fract grooves for sharper bristle marks)
+  // Per-bristle identity & random properties
   let bristle_angle = dot(uv - nearest, perp) / max(local_r, 0.0001);
   let bristle_count = mix(8.0, 16.0, params.age);
   let bristle_pos = bristle_angle * bristle_count + params.bristle_seed * 6.28;
-  let groove = smoothstep(0.0, 0.12, fract(bristle_pos))
-             * smoothstep(1.0, 0.88, fract(bristle_pos));
+  let bristle_id = floor(bristle_pos);
+  let b_depth_var = bristle_hash(bristle_id, 0.0);    // depth variation
+  let b_capacity  = bristle_hash(bristle_id, 1.0);    // paint capacity
+  let b_groove_w  = bristle_hash(bristle_id, 2.0);    // groove width
+  let b_jitter    = bristle_hash(bristle_id, 3.0);    // angular jitter
+
+  // Irregular bristle spacing — jitter scales with age
+  let jitter_amount = (b_jitter - 0.5) * (0.1 + params.age * 0.3);
+  let jittered_pos = bristle_pos + jitter_amount;
+
+  // Varied groove shape per bristle
+  let groove_half_w = 0.10 + b_groove_w * 0.08;       // 0.10–0.18 half-width
+  let groove = smoothstep(0.0, groove_half_w, fract(jittered_pos))
+             * smoothstep(1.0, 1.0 - groove_half_w, fract(jittered_pos));
   let depth = max(-min_dist, 0.0) / max(local_r, 0.0001);
   let edge_emphasis = smoothstep(0.2, 0.85, 1.0 - depth);
-  let bristle_strength = 0.35 + params.age * 0.45;
+  let depth_mult = 0.6 + b_depth_var * 0.8;           // 0.6–1.4x per bristle
+  let bristle_strength = (0.35 + params.age * 0.45) * depth_mult;
   let bristle_pattern = 1.0 - edge_emphasis * (1.0 - groove) * bristle_strength;
 
-  // Edge softness + roughness
+  // Per-bristle paint depletion
+  let radial_pos = min(abs(bristle_angle), 1.0);
+  let edge_drain = 1.0 + radial_pos * radial_pos * 2.0;
+  let capacity = 0.5 + b_capacity * 0.7;
+  let bristle_reservoir = saturate(pow(params.reservoir, edge_drain / capacity));
+  // Binary dropout — individual bristles go fully dry
+  let dropout_threshold = (1.0 - capacity) * 0.5 + radial_pos * 0.3;
+  let final_reservoir = select(0.0, bristle_reservoir, params.reservoir > dropout_threshold);
+
+  // Edge softness + roughness with depletion-driven break-up
+  let depletion = 1.0 - final_reservoir;
   let edge_softness = local_r * (0.08 + params.thinners * 0.4);
-  let roughness_strength = 0.06 + params.age * 0.14;
-  let edge_roughness = hash_noise(bristle_angle * 6.28, params.bristle_seed) * roughness_strength * local_r;
+  let roughness_strength = 0.06 + params.age * 0.14 + depletion * 0.25;
+  let coarse_noise = hash_noise(bristle_angle * 3.0, params.bristle_seed);
+  let fine_noise = hash_noise(bristle_angle * 12.0, params.bristle_seed + 5.0);
+  let edge_noise = coarse_noise * 0.7 + fine_noise * 0.3;
+  // Per-bristle edge recession — low-capacity bristles lose edges first
+  let edge_recession = (1.0 - b_capacity) * depletion * 0.5 * local_r;
+  let edge_roughness = edge_noise * roughness_strength * local_r + edge_recession;
   let alpha = (1.0 - smoothstep(-edge_softness - edge_roughness, 0.0, min_dist)) * bristle_pattern;
 
   // Stroke mask — only deposit the incremental coverage since last frame
@@ -146,7 +180,7 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
 
   // Diminishing returns — per-stroke only; new strokes arrive at full opacity
   let layers_this_stroke = max(existing.a - params.stroke_start_layers, 0.0);
-  let effective_alpha = delta * params.pigment_density * pow(params.falloff, layers_this_stroke) * params.reservoir * grain_interaction;
+  let effective_alpha = delta * params.pigment_density * pow(params.falloff, layers_this_stroke) * final_reservoir * grain_interaction;
 
   if (effective_alpha < 0.001) {
     textureStore(accum_write, vec2i(gid.xy), existing);
@@ -170,8 +204,8 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
   let absorbed = effective_alpha * thinners_absorption * bare_surface;
   let deposited = effective_alpha - absorbed;
 
-  // Emergent color pickup — four variables, all from earlier phases
-  let pickup = wetness * params.reservoir
+  // Emergent color pickup — dry bristles pick up less existing paint
+  let pickup = wetness * bristle_reservoir
              * (0.3 + params.age * 0.7)
              * (0.2 + params.thinners * 0.8);
   let input_K = mix(params.palette_K, existing.rgb, pickup);
