@@ -81,7 +81,7 @@ fn hash1(n: f32) -> f32 {
 // Roughness controls weave depth, crimp height, and gap visibility.
 fn generate_canvas(uv: vec2f) -> vec2f {
   let rough = params.grain_scale;
-  let thread_count = mix(35.0, 20.0, params.grain_size);
+  let thread_count = mix(140.0, 70.0, params.grain_size);
   let s = params.seed;
 
   // Per-thread wobble — more irregular at higher roughness
