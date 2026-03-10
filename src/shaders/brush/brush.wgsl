@@ -140,7 +140,7 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
   // === Paint physics uses delta (incremental alpha) ===
 
   // Grain-aware deposition
-  let grain_uv = uv * vec2f(f32(dims.x) / 512.0, f32(dims.y) / 512.0);
+  let grain_uv = uv * vec2f(f32(dims.x) / 2048.0, f32(dims.y) / 2048.0);
   let grain = textureSampleLevel(surface_height, grain_sampler, grain_uv, 0.0).r;
   let grain_interaction = mix(1.0, grain, params.thinners * 0.5);
 

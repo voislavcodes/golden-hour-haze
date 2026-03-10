@@ -1,4 +1,4 @@
-// Surface material generator — 512×512 height (r16float) + color (rgba8unorm)
+// Surface material generator — 2048×2048 height (r16float) + color (rgba8unorm)
 // 4 material types: board, canvas, paper, gesso
 
 fn mod289v3(x: vec3f) -> vec3f { return x - floor(x * (1.0 / 289.0)) * 289.0; }
@@ -44,33 +44,30 @@ struct SurfaceGenParams {
 @group(0) @binding(1) var height_out: texture_storage_2d<rgba8unorm, write>;
 @group(0) @binding(2) var color_out: texture_storage_2d<rgba8unorm, write>;
 
-// Board — domain-warped horizontal grain with knots
-// grain_scale = roughness: sanded smooth (0) → raw wood grain (1)
-// grain_size = frequency: tight grain (0) → wide grain (1), range 55→35
+// Board — compressed fiber board (masonite / hardboard / MDF)
+// grain_scale = roughness: sanded smooth (0) → raw pressed fiber (1)
+// grain_size = fiber scale: tight fibers (0) → wider fiber spacing (1)
 fn generate_board(uv: vec2f) -> vec2f {
   let rough = params.grain_scale;
-  let base_freq = mix(55.0, 35.0, params.grain_size);
+  let freq = mix(60.0, 30.0, params.grain_size);
 
-  // Primary warp — large-scale curves
-  let warp1 = snoise2d(uv * vec2f(3.0, 0.5) + params.seed) * 0.4;
-  let warp2 = snoise2d(uv * vec2f(8.0, 1.5) + params.seed * 2.0) * 0.1;
-  let warped_uv = uv + vec2f(0.0, warp1 + warp2);
+  // Horizontal fibers — stretched wide in X, tight in Y
+  let fiber1 = snoise2d(uv * vec2f(3.0, freq) + params.seed);
+  let fiber2 = snoise2d(uv * vec2f(5.0, freq * 2.0) + params.seed * 2.0) * 0.4;
+  let fiber3 = snoise2d(uv * vec2f(8.0, freq * 3.5) + params.seed * 3.0) * 0.15;
+  let fibers = fiber1 * 0.5 + fiber2 + fiber3;
 
-  // Primary grain lines
-  let grain = snoise2d(warped_uv * vec2f(2.0, base_freq));
+  // Subtle large-scale tonal drift
+  let tone_drift = snoise2d(uv * vec2f(2.0, 1.5) + params.seed * 4.0) * 0.04;
 
-  // Heartwood/sapwood variation — broad color bands
-  let band = snoise2d(uv * vec2f(1.5, 0.3) + params.seed * 0.5) * 0.5 + 0.5;
-  let color_var = (band - 0.5) * mix(0.05, 0.18, rough);
+  // Fine surface tooth from compressed fibers
+  let tooth = snoise2d(uv * 120.0 + params.seed * 5.0) * 0.1;
 
-  // Occasional knots — more visible at higher roughness
-  let knot_chance = snoise2d(uv * 4.0 + params.seed * 3.0);
-  let knot = select(0.0, snoise2d(uv * 40.0) * 0.3, knot_chance > 0.85);
+  // Roughness scales fiber visibility
+  let depth = mix(0.1, 0.4, rough);
+  let height = (fibers * depth + tooth * rough) * 0.5 + 0.5;
 
-  // Roughness scales grain depth
-  let depth = mix(0.15, 0.7, rough);
-  let height = (grain * depth + knot * rough) * 0.5 + 0.5;
-  return vec2f(height, color_var);
+  return vec2f(height, tone_drift);
 }
 
 // Fast hash for per-thread variation (no trig, pure ALU)

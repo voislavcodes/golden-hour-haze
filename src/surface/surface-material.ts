@@ -7,7 +7,7 @@ import { getMaterial } from './materials.js';
 import type { SurfaceParams } from '../state/scene-state.js';
 import surfaceMaterialShader from '../shaders/surface/surface-material-gen.wgsl';
 
-const SURFACE_SIZE = 512;
+const SURFACE_SIZE = 2048;
 const PARAM_SIZE = 48; // bytes, 16-byte aligned
 
 let pipeline: GPUComputePipeline;

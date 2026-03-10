@@ -101,7 +101,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4f {
   let paint_rgb = km_to_rgb(accum.r * depth_scale, accum.g * depth_scale, accum.b * depth_scale);
 
   // 3. Surface color — physical material between atmosphere and paint
-  let surface_tiling = globals.resolution / 512.0;
+  let surface_tiling = globals.resolution / 2048.0;
   let surface_uv = uv * surface_tiling;
   let surface_color = textureSample(surface_color_tex, grain_sampler, surface_uv).rgb;
   let behind_paint = mix(sky, surface_color, 0.95);
