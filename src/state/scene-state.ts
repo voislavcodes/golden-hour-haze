@@ -33,7 +33,8 @@ export type MaterialType = 'board' | 'canvas' | 'paper' | 'gesso';
 export interface SurfaceParams {
   material: MaterialType;
   tone: number;           // 0–1 (light → dark within material range)
-  grainScale: number;     // 0–1 (fine → coarse)
+  grainScale: number;     // 0–1 roughness (smooth → rough texture depth)
+  grainSize: number;      // 0–1 (fine → coarse, narrow per-material range)
   seed: number;           // random per session
   intensity: number;      // 0–0.2 (grain visibility in compositor)
   absorption: number;     // derived from material
@@ -98,6 +99,7 @@ export const sceneStore = createStore<SceneState>({
     material: 'board' as const,
     tone: 0.3,
     grainScale: 0.5,
+    grainSize: 0.5,
     seed: Math.random() * 1000,
     intensity: 0.08,
     absorption: 0.15,

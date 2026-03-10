@@ -99,7 +99,7 @@ export async function loadProject(file: File): Promise<void> {
 
   // Backward compat — migrate old surface params to new material system
   const surf = header.scene.surface as any;
-  if (!surf || surf.grainSize !== undefined) {
+  if (!surf || surf.directionality !== undefined || surf.mode !== undefined) {
     // Old format: grainSize/directionality/mode → new material system
     let material: 'board' | 'canvas' | 'paper' | 'gesso' = 'board';
     if (surf) {
@@ -118,6 +118,7 @@ export async function loadProject(file: File): Promise<void> {
         material,
         tone: 0.3,
         grainScale: surf?.grainSize ?? 0.5,
+        grainSize: 0.5,
         seed: Math.random() * 1000,
         intensity: surf?.intensity ?? 0.08,
         absorption: surf?.absorption ?? 0.15,
@@ -131,6 +132,7 @@ export async function loadProject(file: File): Promise<void> {
         material: 'board' as const,
         tone: 0.3,
         grainScale: 0.5,
+        grainSize: 0.5,
         seed: Math.random() * 1000,
         intensity: 0.08,
         absorption: 0.15,

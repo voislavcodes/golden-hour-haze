@@ -163,7 +163,8 @@ export class MaterialSelector extends BaseControl {
   @state() private _material: MaterialType = 'board';
   @state() private _tone = 0.3;
   @state() private _grainScale = 0.5;
-  private _dragging: 'tone' | 'grain' | null = null;
+  @state() private _grainSize = 0.5;
+  private _dragging: 'tone' | 'rough' | 'size' | null = null;
   private _unsubscribe?: () => void;
 
   connectedCallback() {
@@ -172,12 +173,14 @@ export class MaterialSelector extends BaseControl {
     this._material = s.material;
     this._tone = s.tone;
     this._grainScale = s.grainScale;
+    this._grainSize = s.grainSize;
     this._unsubscribe = sceneStore.select(
       (s) => s.surface,
       (surface) => {
         this._material = surface.material;
         this._tone = surface.tone;
         this._grainScale = surface.grainScale;
+        this._grainSize = surface.grainSize;
       },
     );
   }
@@ -199,13 +202,13 @@ export class MaterialSelector extends BaseControl {
     }));
   }
 
-  private _onSliderDown(which: 'tone' | 'grain', e: PointerEvent) {
+  private _onSliderDown(which: 'tone' | 'rough' | 'size', e: PointerEvent) {
     this._dragging = which;
     (e.target as HTMLElement).setPointerCapture(e.pointerId);
     this._updateSlider(which, e);
   }
 
-  private _onSliderMove(which: 'tone' | 'grain', e: PointerEvent) {
+  private _onSliderMove(which: 'tone' | 'rough' | 'size', e: PointerEvent) {
     if (this._dragging !== which) return;
     this._updateSlider(which, e);
   }
@@ -214,16 +217,19 @@ export class MaterialSelector extends BaseControl {
     this._dragging = null;
   }
 
-  private _updateSlider(which: 'tone' | 'grain', e: PointerEvent) {
+  private _updateSlider(which: 'tone' | 'rough' | 'size', e: PointerEvent) {
     const track = (e.currentTarget as HTMLElement);
     const rect = track.getBoundingClientRect();
     const val = this.clamp((e.clientX - rect.left) / rect.width, 0, 1);
     if (which === 'tone') {
       this._tone = val;
       sceneStore.update((s) => ({ surface: { ...s.surface, tone: val } }));
-    } else {
+    } else if (which === 'rough') {
       this._grainScale = val;
       sceneStore.update((s) => ({ surface: { ...s.surface, grainScale: val } }));
+    } else {
+      this._grainSize = val;
+      sceneStore.update((s) => ({ surface: { ...s.surface, grainSize: val } }));
     }
   }
 
@@ -264,14 +270,25 @@ export class MaterialSelector extends BaseControl {
           </div>
         </div>
         <div class="slider-row">
-          <span class="slider-label">grain</span>
+          <span class="slider-label">rough</span>
           <div class="slider-track"
-               @pointerdown=${(e: PointerEvent) => this._onSliderDown('grain', e)}
-               @pointermove=${(e: PointerEvent) => this._onSliderMove('grain', e)}
+               @pointerdown=${(e: PointerEvent) => this._onSliderDown('rough', e)}
+               @pointermove=${(e: PointerEvent) => this._onSliderMove('rough', e)}
                @pointerup=${this._onSliderUp}
                @pointerleave=${this._onSliderUp}>
             <div class="slider-fill" style="width: ${this._grainScale * 100}%"></div>
             <div class="slider-thumb" style="left: ${this._grainScale * 100}%"></div>
+          </div>
+        </div>
+        <div class="slider-row">
+          <span class="slider-label">size</span>
+          <div class="slider-track"
+               @pointerdown=${(e: PointerEvent) => this._onSliderDown('size', e)}
+               @pointermove=${(e: PointerEvent) => this._onSliderMove('size', e)}
+               @pointerup=${this._onSliderUp}
+               @pointerleave=${this._onSliderUp}>
+            <div class="slider-fill" style="width: ${this._grainSize * 100}%"></div>
+            <div class="slider-thumb" style="left: ${this._grainSize * 100}%"></div>
           </div>
         </div>
       </div>

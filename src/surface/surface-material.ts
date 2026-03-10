@@ -18,6 +18,7 @@ let layout: GPUBindGroupLayout;
 
 let lastMaterial = '';
 let lastGrainScale = -1;
+let lastGrainSize = -1;
 let lastTone = -1;
 let lastSeed = -1;
 let dirty = true;
@@ -69,11 +70,13 @@ export function initSurfaceMaterial() {
 export function updateSurfaceMaterialParams(surface: SurfaceParams) {
   if (surface.material === lastMaterial &&
       surface.grainScale === lastGrainScale &&
+      surface.grainSize === lastGrainSize &&
       surface.tone === lastTone &&
       surface.seed === lastSeed) return;
 
   lastMaterial = surface.material;
   lastGrainScale = surface.grainScale;
+  lastGrainSize = surface.grainSize;
   lastTone = surface.tone;
   lastSeed = surface.seed;
   dirty = true;
@@ -96,7 +99,7 @@ export function generateSurfaceMaterialIfDirty(encoder: GPUCommandEncoder): bool
   f32[4] = mat.colorLight[0];     // color_light.r
   f32[5] = mat.colorLight[1];     // color_light.g
   f32[6] = mat.colorLight[2];     // color_light.b
-  f32[7] = 0;                     // _pad0
+  f32[7] = lastGrainSize;         // grain_size
   f32[8] = mat.colorDark[0];      // color_dark.r
   f32[9] = mat.colorDark[1];      // color_dark.g
   f32[10] = mat.colorDark[2];     // color_dark.b

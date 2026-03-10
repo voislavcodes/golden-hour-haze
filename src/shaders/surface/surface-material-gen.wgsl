@@ -30,12 +30,12 @@ fn snoise2d(v: vec2f) -> f32 {
 }
 
 struct SurfaceGenParams {
-  grain_scale: f32,
+  grain_scale: f32,   // roughness (texture depth)
   tone: f32,
   seed: f32,
   material: u32,
   color_light: vec3f,
-  _pad0: f32,
+  grain_size: f32,    // 0-1, fine→coarse (narrow per-material range)
   color_dark: vec3f,
   _pad1: f32,
 };
@@ -45,12 +45,14 @@ struct SurfaceGenParams {
 @group(0) @binding(2) var color_out: texture_storage_2d<rgba8unorm, write>;
 
 // Board — domain-warped horizontal grain with knots
+// grain_scale = roughness: sanded smooth (0) → raw wood grain (1)
+// grain_size = frequency: tight grain (0) → wide grain (1), range 55→35
 fn generate_board(uv: vec2f) -> vec2f {
-  let base_freq = mix(80.0, 25.0, params.grain_scale);
+  let rough = params.grain_scale;
+  let base_freq = mix(55.0, 35.0, params.grain_size);
 
   // Primary warp — large-scale curves
   let warp1 = snoise2d(uv * vec2f(3.0, 0.5) + params.seed) * 0.4;
-  // Secondary warp — smaller wobbles
   let warp2 = snoise2d(uv * vec2f(8.0, 1.5) + params.seed * 2.0) * 0.1;
   let warped_uv = uv + vec2f(0.0, warp1 + warp2);
 
@@ -59,74 +61,158 @@ fn generate_board(uv: vec2f) -> vec2f {
 
   // Heartwood/sapwood variation — broad color bands
   let band = snoise2d(uv * vec2f(1.5, 0.3) + params.seed * 0.5) * 0.5 + 0.5;
-  let color_var = (band - 0.5) * 0.15;
+  let color_var = (band - 0.5) * mix(0.05, 0.18, rough);
 
-  // Occasional knots
+  // Occasional knots — more visible at higher roughness
   let knot_chance = snoise2d(uv * 4.0 + params.seed * 3.0);
   let knot = select(0.0, snoise2d(uv * 40.0) * 0.3, knot_chance > 0.85);
 
-  let height = (grain * 0.7 + knot) * 0.5 + 0.5;
+  // Roughness scales grain depth
+  let depth = mix(0.15, 0.7, rough);
+  let height = (grain * depth + knot * rough) * 0.5 + 0.5;
   return vec2f(height, color_var);
 }
 
-// Canvas — periodic woven thread pattern
+// Fast hash for per-thread variation (no trig, pure ALU)
+fn hash1(n: f32) -> f32 {
+  return fract(sin(n) * 43758.5453);
+}
+
+// Canvas — physically-based plain weave (Irawan & Marschner model)
+// grain_scale = roughness: heavily gessoed/primed (0) → raw canvas (1)
+// grain_size = thread density: fine weave (0, ~35 threads) → coarse weave (1, ~20 threads)
+// Roughness controls weave depth, crimp height, and gap visibility.
 fn generate_canvas(uv: vec2f) -> vec2f {
-  let freq = mix(100.0, 40.0, params.grain_scale);
+  let rough = params.grain_scale;
+  let thread_count = mix(35.0, 20.0, params.grain_size);
+  let s = params.seed;
 
-  // Warp and weft threads with wobble
-  let wobble_x = snoise2d(uv * 3.0 + params.seed) * 0.02;
-  let wobble_y = snoise2d(uv * 3.0 + params.seed + 100.0) * 0.02;
-  let warp = sin((uv.x + wobble_x) * freq * 6.283);
-  let weft = sin((uv.y + wobble_y) * freq * 6.283);
+  // Per-thread wobble — more irregular at higher roughness
+  let wobble_amp = mix(0.001, 0.004, rough);
+  let wobble = vec2f(
+    snoise2d(uv * vec2f(2.0, thread_count * 0.12) + s) * wobble_amp,
+    snoise2d(uv * vec2f(thread_count * 0.12, 2.0) + s + 73.0) * wobble_amp
+  );
+  let p = (uv + wobble) * thread_count;
 
-  // Crossings — where threads overlap creates texture
-  let crossing = warp * weft;
-  let thread_height = crossing * 0.5 + 0.5;
+  let cell = floor(p);
+  let f = fract(p);
+  let ix = i32(cell.x);
+  let iy = i32(cell.y);
 
-  // Slight random variation in thread thickness
-  let variation = snoise2d(uv * freq * 0.5 + params.seed * 2.0) * 0.1;
-  let color_var = variation;
+  // Per-thread thickness variation — more at higher roughness
+  let thick_var = mix(0.04, 0.16, rough);
+  let warp_thick = 1.0 + (hash1(cell.x * 7.31 + s) - 0.5) * thick_var;
+  let weft_thick = 1.0 + (hash1(cell.y * 13.17 + s + 50.0) - 0.5) * thick_var;
 
-  return vec2f(thread_height, color_var);
+  // Thread half-width: primed canvas fills gaps, raw canvas has open gaps
+  let base_hw = mix(0.44, 0.33, rough);
+  let warp_hw = base_hw * warp_thick;
+  let weft_hw = base_hw * weft_thick;
+
+  let dx = abs(f.x - 0.5);
+  let dy = abs(f.y - 0.5);
+
+  // Cross-section sharpness: primed = rounded soft, raw = sharp lenticular
+  let sharpness = mix(1.2, 2.2, rough);
+  let warp_t = clamp(dx / warp_hw, 0.0, 1.0);
+  let weft_t = clamp(dy / weft_hw, 0.0, 1.0);
+  let warp_profile = pow(max(0.0, cos(warp_t * 1.5707963)), sharpness);
+  let weft_profile = pow(max(0.0, cos(weft_t * 1.5707963)), sharpness);
+
+  let warp_on_top = ((ix + iy) & 1) == 0;
+
+  // Crimp height scales with roughness: primed fills, raw weave undulates
+  let crimp = mix(0.05, 0.22, rough);
+  let warp_undulate = cos(f.y * 6.2831853) * crimp;
+  let weft_undulate = cos(f.x * 6.2831853) * crimp;
+
+  let base_h = 0.4;
+  var h_warp: f32;
+  var h_weft: f32;
+  if (warp_on_top) {
+    h_warp = warp_profile * (base_h + warp_undulate);
+    h_weft = weft_profile * (base_h - weft_undulate);
+  } else {
+    h_warp = warp_profile * (base_h - warp_undulate);
+    h_weft = weft_profile * (base_h + weft_undulate);
+  }
+
+  var height = max(h_warp, h_weft);
+
+  // Micro-fiber noise — more visible on raw canvas
+  let fiber = snoise2d(p * 10.0 + s * 3.0) * mix(0.01, 0.03, rough);
+  height += fiber * step(0.05, height);
+
+  // Normalize to 0-1: primed canvas is flatter (compressed range)
+  let range = mix(0.3, 0.85, rough);
+  height = saturate(height / (base_h + crimp) * range + (1.0 - range) * 0.5);
+
+  // Color variation
+  let is_warp = h_warp > h_weft;
+  var color_var = select(-0.02, 0.02, is_warp) * rough;
+  color_var += (hash1(cell.x * 3.71 + s * 2.0) - 0.5) * mix(0.01, 0.05, rough);
+  color_var += (hash1(cell.y * 5.13 + s * 3.0) - 0.5) * mix(0.01, 0.05, rough);
+  // Darker in gaps — more visible on raw canvas
+  let gap_dark = mix(0.01, 0.08, rough);
+  let in_gap = 1.0 - saturate(height * 4.0);
+  color_var -= in_gap * gap_dark;
+
+  return vec2f(height, color_var);
 }
 
 // Paper — isotropic multi-octave fbm
+// grain_scale = roughness: hot-pressed smooth (0) → cold-pressed rough tooth (1)
+// grain_size = fiber scale: fine tooth (0, freq 60) → coarse tooth (1, freq 35)
 fn generate_paper(uv: vec2f) -> vec2f {
-  let base_freq = mix(120.0, 30.0, params.grain_scale);
+  let rough = params.grain_scale;
+  let base_freq = mix(60.0, 35.0, params.grain_size);
   let s = params.seed;
 
   var height = 0.0;
   height += snoise2d(uv * base_freq + s) * 0.5;
-  height += snoise2d(uv * base_freq * 2.0 + s * 2.0) * 0.25;
-  height += snoise2d(uv * base_freq * 4.0 + s * 3.0) * 0.125;
-  height += snoise2d(uv * base_freq * 8.0 + s * 4.0) * 0.0625;
+  height += snoise2d(uv * base_freq * 2.0 + s * 2.0) * 0.3;
+  height += snoise2d(uv * base_freq * 4.0 + s * 3.0) * 0.15;
+  height += snoise2d(uv * base_freq * 8.0 + s * 4.0) * 0.08;
 
-  // Soft shaping
-  height = smoothstep(-0.6, 0.6, height);
+  // Roughness controls how the noise is shaped into tooth
+  // Hot-pressed: very compressed, almost flat
+  // Cold-pressed: full tooth depth, crisp peaks and valleys
+  let shaping = mix(0.8, 0.4, rough);
+  height = smoothstep(-shaping, shaping, height);
 
-  // Paper has very subtle color variation (fiber flecks)
-  let fleck = snoise2d(uv * base_freq * 1.5 + s * 5.0) * 0.05;
+  // Roughness scales the final depth
+  let depth = mix(0.15, 1.0, rough);
+  height = mix(0.5, height, depth);
 
-  return vec2f(height, fleck);
+  // Fiber flecks — more visible on rougher paper
+  let fleck = snoise2d(uv * base_freq * 1.5 + s * 5.0) * mix(0.02, 0.12, rough);
+  let fiber = snoise2d(uv * base_freq * 0.3 + s * 6.0) * mix(0.01, 0.06, rough);
+
+  return vec2f(height, fleck + fiber);
 }
 
-// Gesso — subtle directional brush strokes + fine tooth
+// Gesso — directional brush strokes + fine tooth
+// grain_scale = roughness: sanded multi-coat (0) → single thick coat with marks (1)
+// grain_size = stroke scale: fine marks (0, freq 45) → broad strokes (1, freq 25)
 fn generate_gesso(uv: vec2f) -> vec2f {
-  let base_freq = mix(80.0, 30.0, params.grain_scale);
+  let rough = params.grain_scale;
+  let base_freq = mix(45.0, 25.0, params.grain_size);
   let s = params.seed;
 
-  // Directional brush strokes (applied with a wide brush)
-  let stroke_dir = snoise2d(uv * 2.0 + s) * 0.3;
+  // Directional brush strokes — more visible at higher roughness
+  let stroke_dir = snoise2d(uv * 2.0 + s) * mix(0.1, 0.4, rough);
   let stroke_uv = uv + vec2f(stroke_dir, 0.0);
-  let strokes = snoise2d(stroke_uv * vec2f(base_freq * 0.3, base_freq)) * 0.4;
+  let strokes = snoise2d(stroke_uv * vec2f(base_freq * 0.3, base_freq)) * mix(0.1, 0.5, rough);
 
-  // Fine tooth — high-frequency isotropic texture
-  let tooth = snoise2d(uv * base_freq * 2.0 + s * 2.0) * 0.3;
+  // Fine tooth — present at all roughness levels but scales
+  let tooth = snoise2d(uv * base_freq * 2.5 + s * 2.0) * mix(0.08, 0.35, rough);
 
   let height = (strokes + tooth) * 0.5 + 0.5;
 
-  // Very subtle color variation from brush application
-  let color_var = snoise2d(uv * base_freq * 0.2 + s * 3.0) * 0.03;
+  // Color variation from uneven application thickness
+  let color_var = snoise2d(uv * base_freq * 0.3 + s * 3.0) * mix(0.02, 0.08, rough)
+                + strokes * mix(0.01, 0.04, rough);
 
   return vec2f(height, color_var);
 }

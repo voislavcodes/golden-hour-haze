@@ -39,6 +39,10 @@ export class MoodSelector extends BaseControl {
         pointer-events: auto;
       }
 
+      :host(.surface-overlay) {
+        pointer-events: auto;
+      }
+
       :host([hidden]) {
         display: none;
       }
@@ -137,16 +141,12 @@ export class MoodSelector extends BaseControl {
       }
 
       /* Surface selection sub-phase */
-      .surface-grid {
+      .surface-panel {
         display: flex;
-        gap: 8px;
-        margin-top: 16px;
-      }
-
-      .surface-btn {
-        padding: 8px 20px;
-        font-size: 11px;
-        letter-spacing: 0.5px;
+        flex-direction: column;
+        align-items: center;
+        gap: 16px;
+        padding: 28px 36px;
       }
 
       /* Test/paint phase controls */
@@ -207,8 +207,9 @@ export class MoodSelector extends BaseControl {
   }
 
   private _updateOverlayClass() {
-    const isOverlay = this._phase === 'prepare-mood' || this._phase === 'prepare-surface';
+    const isOverlay = this._phase === 'prepare-mood';
     this.classList.toggle('overlay', isOverlay);
+    this.classList.toggle('surface-overlay', this._phase === 'prepare-surface');
   }
 
   willUpdate(changed: Map<string, unknown>) {
@@ -332,11 +333,13 @@ export class MoodSelector extends BaseControl {
 
     if (this._phase === 'prepare-surface') {
       return html`
-        <span class="phase-label">choose a surface</span>
-        <ghz-material-selector></ghz-material-selector>
-        <div class="actions">
-          <button class="glass-button action-btn" @click=${this._back}>back</button>
-          <button class="glass-button action-btn" @click=${this._confirmSurface}>test canvas</button>
+        <div class="surface-panel glass">
+          <span class="phase-label">choose a surface</span>
+          <ghz-material-selector></ghz-material-selector>
+          <div class="actions">
+            <button class="glass-button action-btn" @click=${this._back}>back</button>
+            <button class="glass-button action-btn" @click=${this._confirmSurface}>test canvas</button>
+          </div>
         </div>
       `;
     }
