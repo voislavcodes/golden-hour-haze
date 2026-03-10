@@ -1,37 +1,45 @@
-// Form brush — capsule segment K-M pigment into accumulation surface
+// Polyline SDF brush — single-pass K-M pigment into accumulation surface
 // Accumulation texture layout: R=K_r, G=K_g, B=K_b, A=paint_weight
 // Paint state texture: R=session_time_painted, G=thinners_at_paint_time
-// Capsule SDF between consecutive stroke points with pressure-varying radius
-// Bristle streaks aligned to stroke direction
+// Stroke mask: R=max geometric alpha (prevents re-deposition across frames)
+// Entire stroke polyline in storage buffer; one dispatch finds global min SDF per pixel
 
 #include "../common/wetness.wgsl"
 
 struct BrushParams {
-  seg_start: vec2f,           // offset 0   — segment start position
-  seg_end: vec2f,             // offset 8   — segment end position
-  start_radius: f32,          // offset 16  — radius at seg_start (pressure-modulated)
-  end_radius: f32,            // offset 20  — radius at seg_end
-  thinners: f32,              // offset 24  — master physics variable
-  pigment_density: f32,       // offset 28
-  palette_K: vec3f,           // offset 32  — K-M absorption (16-byte aligned)
-  falloff: f32,               // offset 44
-  reservoir: f32,             // offset 48
-  age: f32,                   // offset 52
-  bristle_seed: f32,          // offset 56
-  stroke_start_layers: f32,   // offset 60
-  surface_absorption: f32,    // offset 64
-  session_time: f32,          // offset 68
-  surface_dry_speed: f32,     // offset 72
-  _pad: f32,                  // offset 76
+  bb_min: vec2f,                // offset  0  — AABB for early reject
+  bb_max: vec2f,                // offset  8
+  palette_K: vec3f,             // offset 16  — K-M absorption (16-byte aligned)
+  thinners: f32,                // offset 28
+  falloff: f32,                 // offset 32
+  pigment_density: f32,         // offset 36
+  reservoir: f32,               // offset 40
+  age: f32,                     // offset 44
+  bristle_seed: f32,            // offset 48
+  stroke_start_layers: f32,     // offset 52
+  surface_absorption: f32,      // offset 56
+  session_time: f32,            // offset 60
+  surface_dry_speed: f32,       // offset 64
+  vertex_count: u32,            // offset 68
+  _pad: vec2f,                  // offset 72  — pad to 80
+};
+
+struct StrokeVertex {
+  pos: vec2f,      // offset 0
+  radius: f32,     // offset 8   — pre-baked: pressure × taper × spread × splay
+  _pad: f32,       // offset 12  — stride 16
 };
 
 @group(0) @binding(0) var<uniform> params: BrushParams;
+@group(0) @binding(1) var<storage, read> vertices: array<StrokeVertex>;
 @group(1) @binding(0) var accum_read: texture_2d<f32>;
 @group(1) @binding(1) var accum_write: texture_storage_2d<rgba16float, write>;
 @group(2) @binding(0) var grain_lut: texture_2d<f32>;
 @group(2) @binding(1) var grain_sampler: sampler;
 @group(2) @binding(2) var state_read: texture_2d<f32>;
 @group(2) @binding(3) var state_write: texture_storage_2d<rg32float, write>;
+@group(2) @binding(4) var mask_read: texture_2d<f32>;
+@group(2) @binding(5) var mask_write: texture_storage_2d<r32float, write>;
 
 // Simple hash noise for edge roughness
 fn hash_noise(angle: f32, seed: f32) -> f32 {
@@ -60,57 +68,76 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
   let uv = (vec2f(gid.xy) + 0.5) / vec2f(dims);
   let existing = textureLoad(accum_read, vec2i(gid.xy), 0);
   let state = textureLoad(state_read, vec2i(gid.xy), 0);
+  let prev_mask = textureLoad(mask_read, vec2i(gid.xy), 0).r;
 
-  // Thinners-driven spread and age-driven splay
-  let spread = 1.0 + params.thinners * 0.4;
-  let splay = 1.0 + params.age * 0.3;
-
-  // Effective radii with spread + splay
-  let eff_sr = params.start_radius * spread * splay;
-  let eff_er = params.end_radius * spread * splay;
-
-  // AABB early reject
-  let max_r = max(eff_sr, eff_er);
-  let bb_min = min(params.seg_start, params.seg_end) - vec2f(max_r);
-  let bb_max = max(params.seg_start, params.seg_end) + vec2f(max_r);
-  if (uv.x < bb_min.x || uv.x > bb_max.x || uv.y < bb_min.y || uv.y > bb_max.y) {
+  // AABB early reject (entire polyline bounding box)
+  if (uv.x < params.bb_min.x || uv.x > params.bb_max.x ||
+      uv.y < params.bb_min.y || uv.y > params.bb_max.y) {
     textureStore(accum_write, vec2i(gid.xy), existing);
     textureStore(state_write, vec2i(gid.xy), state);
+    textureStore(mask_write, vec2i(gid.xy), vec4f(prev_mask, 0.0, 0.0, 0.0));
     return;
   }
 
-  // Capsule SDF
-  let sdf = capsule_sdf(uv, params.seg_start, params.seg_end, eff_sr, eff_er);
-  let dist = sdf.x;       // negative inside, positive outside
-  let t_along = sdf.y;    // 0..1 along segment
+  var min_dist: f32 = 999.0;
+  var best_seg: u32 = 0u;
+  var best_t: f32 = 0.0;
+  var local_r: f32;
+  var dir: vec2f;
+  var perp: vec2f;
+  var nearest: vec2f;
 
-  // Stroke direction for bristle alignment
-  let seg_vec = params.seg_end - params.seg_start;
-  let seg_len = length(seg_vec);
-  let dir = select(vec2f(1.0, 0.0), seg_vec / seg_len, seg_len > 0.0001);
-  let perp = vec2f(-dir.y, dir.x);
+  if (params.vertex_count == 1u) {
+    // Single vertex → circle SDF
+    min_dist = length(uv - vertices[0].pos) - vertices[0].radius;
+    local_r = vertices[0].radius;
+    dir = vec2f(1.0, 0.0);
+    perp = vec2f(0.0, 1.0);
+    nearest = vertices[0].pos;
+  } else {
+    // Polyline SDF: find global minimum distance across ALL segments
+    let seg_count = params.vertex_count - 1u;
+    for (var i: u32 = 0u; i < seg_count; i = i + 1u) {
+      let sdf = capsule_sdf(uv, vertices[i].pos, vertices[i + 1u].pos,
+                             vertices[i].radius, vertices[i + 1u].radius);
+      if (sdf.x < min_dist) {
+        min_dist = sdf.x;
+        best_seg = i;
+        best_t = sdf.y;
+      }
+    }
+    // Derive local properties at closest point
+    local_r = mix(vertices[best_seg].radius, vertices[best_seg + 1u].radius, best_t);
+    let seg_vec = vertices[best_seg + 1u].pos - vertices[best_seg].pos;
+    let seg_len = length(seg_vec);
+    dir = select(vec2f(1.0, 0.0), seg_vec / seg_len, seg_len > 0.0001);
+    perp = vec2f(-dir.y, dir.x);
+    nearest = vertices[best_seg].pos + seg_vec * best_t;
+  }
 
-  // Project pixel perpendicular to stroke for bristle angle
-  let local_r = mix(eff_sr, eff_er, t_along);
-  let nearest = params.seg_start + seg_vec * t_along;
-  let to_px = uv - nearest;
-  let across = dot(to_px, perp);
-  let bristle_angle = across / max(local_r, 0.0001);
+  // Bristle pattern (fract grooves for sharper bristle marks)
+  let bristle_angle = dot(uv - nearest, perp) / max(local_r, 0.0001);
+  let bristle_count = mix(8.0, 16.0, params.age);
+  let bristle_pos = bristle_angle * bristle_count + params.bristle_seed * 6.28;
+  let groove = smoothstep(0.0, 0.12, fract(bristle_pos))
+             * smoothstep(1.0, 0.88, fract(bristle_pos));
+  let depth = max(-min_dist, 0.0) / max(local_r, 0.0001);
+  let edge_emphasis = smoothstep(0.2, 0.85, 1.0 - depth);
+  let bristle_strength = 0.35 + params.age * 0.45;
+  let bristle_pattern = 1.0 - edge_emphasis * (1.0 - groove) * bristle_strength;
 
-  // Edge softness from local radius
-  let edge_softness = local_r * params.thinners * 0.5;
-  let edge_roughness = hash_noise(bristle_angle * 6.28, params.bristle_seed) * params.age * 0.15 * local_r;
+  // Edge softness + roughness
+  let edge_softness = local_r * (0.08 + params.thinners * 0.4);
+  let roughness_strength = 0.06 + params.age * 0.14;
+  let edge_roughness = hash_noise(bristle_angle * 6.28, params.bristle_seed) * roughness_strength * local_r;
+  let alpha = (1.0 - smoothstep(-edge_softness - edge_roughness, 0.0, min_dist)) * bristle_pattern;
 
-  // Bristle streaks run parallel to stroke
-  let bristle_count = mix(5.0, 14.0, params.age);
-  let depth = max(-dist, 0.0) / max(local_r, 0.0001);
-  let edge_emphasis = smoothstep(0.3, 0.9, 1.0 - depth);
-  let bristle_pattern = 1.0 - edge_emphasis
-      * (0.5 + 0.5 * sin(bristle_angle * bristle_count + params.bristle_seed * 6.28))
-      * params.age;
+  // Stroke mask — only deposit the incremental coverage since last frame
+  let new_mask = max(alpha, prev_mask);
+  let delta = max(0.0, alpha - prev_mask);
+  textureStore(mask_write, vec2i(gid.xy), vec4f(new_mask, 0.0, 0.0, 0.0));
 
-  // Alpha from capsule SDF (negative inside -> smoothstep from -softness to 0)
-  let alpha = (1.0 - smoothstep(-edge_softness - edge_roughness, 0.0, dist)) * bristle_pattern;
+  // === Paint physics uses delta (incremental alpha) ===
 
   // Grain-aware deposition
   let grain_uv = uv * vec2f(f32(dims.x) / 512.0, f32(dims.y) / 512.0);
@@ -119,7 +146,7 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
 
   // Diminishing returns — per-stroke only; new strokes arrive at full opacity
   let layers_this_stroke = max(existing.a - params.stroke_start_layers, 0.0);
-  let effective_alpha = alpha * params.pigment_density * pow(params.falloff, layers_this_stroke) * params.reservoir * grain_interaction;
+  let effective_alpha = delta * params.pigment_density * pow(params.falloff, layers_this_stroke) * params.reservoir * grain_interaction;
 
   if (effective_alpha < 0.001) {
     textureStore(accum_write, vec2i(gid.xy), existing);
@@ -145,8 +172,8 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
 
   // Emergent color pickup — four variables, all from earlier phases
   let pickup = wetness * params.reservoir
-             * (0.3 + params.age * 0.7)       // age 0->0.3, age 1->1.0
-             * (0.2 + params.thinners * 0.8);  // thinners 0->0.2, thinners 1->1.0
+             * (0.3 + params.age * 0.7)
+             * (0.2 + params.thinners * 0.8);
   let input_K = mix(params.palette_K, existing.rgb, pickup);
 
   // Absorbed paint leaves deep stain
