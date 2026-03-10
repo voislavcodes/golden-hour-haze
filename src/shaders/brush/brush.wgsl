@@ -27,7 +27,7 @@ struct BrushParams {
 struct StrokeVertex {
   pos: vec2f,      // offset 0
   radius: f32,     // offset 8   — pre-baked: pressure × taper × spread × splay
-  _pad: f32,       // offset 12  — stride 16
+  reservoir: f32,  // offset 12  — per-vertex reservoir for smooth depletion
 };
 
 @group(0) @binding(0) var<uniform> params: BrushParams;
@@ -83,6 +83,7 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
   var best_seg: u32 = 0u;
   var best_t: f32 = 0.0;
   var local_r: f32;
+  var local_reservoir: f32;
   var dir: vec2f;
   var perp: vec2f;
   var nearest: vec2f;
@@ -91,6 +92,7 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
     // Single vertex → circle SDF
     min_dist = length(uv - vertices[0].pos) - vertices[0].radius;
     local_r = vertices[0].radius;
+    local_reservoir = vertices[0].reservoir;
     dir = vec2f(1.0, 0.0);
     perp = vec2f(0.0, 1.0);
     nearest = vertices[0].pos;
@@ -108,6 +110,7 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
     }
     // Derive local properties at closest point
     local_r = mix(vertices[best_seg].radius, vertices[best_seg + 1u].radius, best_t);
+    local_reservoir = mix(vertices[best_seg].reservoir, vertices[best_seg + 1u].reservoir, best_t);
     let seg_vec = vertices[best_seg + 1u].pos - vertices[best_seg].pos;
     let seg_len = length(seg_vec);
     dir = select(vec2f(1.0, 0.0), seg_vec / seg_len, seg_len > 0.0001);
@@ -135,13 +138,13 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
 
   // Radial bias — outer edges thin slightly faster, only when depleting
   let radial_pos = min(abs(bristle_angle), 1.0);
-  let radial_bias = 1.0 - radial_pos * 0.3 * (1.0 - params.reservoir);
+  let radial_bias = 1.0 - radial_pos * 0.3 * (1.0 - local_reservoir);
 
   // Squared depletion ramp — gentle change at high reservoir (no visible dab
   // boundaries), progressive separation at low reservoir (dry-brush effect).
-  let reservoir_depletion = pow(1.0 - params.reservoir, 2.0);
+  let reservoir_depletion = pow(1.0 - local_reservoir, 2.0);
   let variation = reservoir_depletion;
-  let bristle_reservoir = params.reservoir * mix(1.0, bristle_load, variation) * radial_bias;
+  let bristle_reservoir = local_reservoir * mix(1.0, bristle_load, variation) * radial_bias;
   let final_reservoir = bristle_reservoir;
 
   // Fine bristle texture — subtle surface marks, not the dominant pattern

@@ -49,6 +49,7 @@ let estimatedPeakLayers = 0;
 
 // Paint depletion state
 let reservoir = 0.5;
+let lastReservoir = 1.0;
 let totalDistance = 0;
 let strokeDabCount = 0;
 
@@ -150,6 +151,7 @@ function ensureMaskTextures() {
 export function reloadBrush() {
   const load = sceneStore.get().load;
   reservoir = load > 0 ? 1.0 : 0;
+  lastReservoir = reservoir;
   totalDistance = 0;
 }
 
@@ -215,7 +217,7 @@ export function endStroke() {
 /** Write uniform + vertex buffers and dispatch a single compute pass */
 function dispatchPolyline(
   encoder: GPUCommandEncoder,
-  verts: { pos: Vec2; radius: number }[],
+  verts: { pos: Vec2; radius: number; reservoir: number }[],
   scene: ReturnType<typeof sceneStore.get>,
   slot: ReturnType<typeof getBrushSlot>,
   ks: { Kr: number; Kg: number; Kb: number },
@@ -294,7 +296,7 @@ function dispatchPolyline(
     vertData[off] = v.pos[0];
     vertData[off + 1] = v.pos[1];
     vertData[off + 2] = v.radius;
-    vertData[off + 3] = 0;
+    vertData[off + 3] = v.reservoir;
   }
   device.queue.writeBuffer(vertexBuffer, 0, vertData);
 
@@ -356,9 +358,10 @@ export function dispatchPendingGhosts(encoder: GPUCommandEncoder): boolean {
 
   // Build vertices: anchor + ghost points
   const chain = [ghostAnchor, ...ghostPoints];
-  const verts: { pos: Vec2; radius: number }[] = chain.map(pt => ({
+  const verts: { pos: Vec2; radius: number; reservoir: number }[] = chain.map(pt => ({
     pos: pt.pos,
     radius: pressureRadius(ui.brushSize, pt.pressure) * spread * splay,
+    reservoir: reservoir,
   }));
 
   dispatchPolyline(encoder, verts, scene, slot, ks, 'brush-ghost');
@@ -426,15 +429,18 @@ export function dispatchBrushDabs(encoder: GPUCommandEncoder, x: number, y: numb
     }
   }
 
-  // Build StrokeVertex array with pre-baked radii
+  // Build StrokeVertex array with pre-baked radii and per-vertex reservoir
   const spread = 1.0 + scene.thinners * 0.4;
   const splay = 1.0 + slot.age * 0.3;
-  const verts: { pos: Vec2; radius: number }[] = [];
+  const verts: { pos: Vec2; radius: number; reservoir: number }[] = [];
 
   for (let i = 0; i < points.length; i++) {
     const taper = 0.3 + 0.7 * Math.min(1.0, (strokeSegIndex + i) / TOUCH_RAMP_SEGS);
     const r = pressureRadius(radius, points[i].pressure) * taper * spread * splay;
-    verts.push({ pos: points[i].pos, radius: r });
+    // Interpolate reservoir from lastReservoir (overlap point) to current reservoir
+    const t = points.length > 1 ? i / (points.length - 1) : 1.0;
+    const vertRes = lastReservoir + (reservoir - lastReservoir) * t;
+    verts.push({ pos: points[i].pos, radius: r, reservoir: vertRes });
   }
 
   // Track direction for ghost segments
@@ -457,6 +463,7 @@ export function dispatchBrushDabs(encoder: GPUCommandEncoder, x: number, y: numb
 
   // Single dispatch for entire polyline
   dispatchPolyline(encoder, verts, scene, slot, ks, 'brush-stroke');
+  lastReservoir = reservoir;
 
   // Update CPU-side peak weight estimate
   const pigmentDensity = Math.pow(1.0 - scene.thinners * 0.9, 1.5);
