@@ -3,6 +3,7 @@ import { html, css, nothing } from 'lit';
 import { customElement, state } from 'lit/decorators.js';
 import { BaseControl } from './base-control.js';
 import { type Mood, type KColor } from '../mood/moods.js';
+import { sampleTonalColumn } from '../painting/palette.js';
 import { getAllMoods, loadCustomMoods } from '../mood/custom-moods.js';
 import { sessionStore, advancePhase, retreatPhase, resetToPrepareMood, type SessionPhase } from '../session/session-state.js';
 import { sceneStore } from '../state/scene-state.js';
@@ -99,9 +100,9 @@ export class MoodSelector extends BaseControl {
         gap: 2px;
       }
 
-      .pile-swatch {
+      .pile-gradient {
         width: 100%;
-        height: 12px;
+        height: 32px;
         border-radius: 2px;
       }
 
@@ -247,6 +248,11 @@ export class MoodSelector extends BaseControl {
         absorption: mat.absorption,
         drySpeed: mat.drySpeed,
       },
+      palette: {
+        colors: mood.piles.map(p => ({ r: p.medium.r, g: p.medium.g, b: p.medium.b, a: 1 })),
+        activeIndex: 0,
+        tonalValues: [0.5, 0.5, 0.5, 0.5, 0.5],
+      },
     }));
   }
 
@@ -292,9 +298,8 @@ export class MoodSelector extends BaseControl {
   }
 
   private _renderSkyGradient(mood: Mood): string {
-    // Approximate sky gradient from mood's lightest warm and cool hues
-    const warmLight = mood.piles[0].light;
-    const coolLight = mood.piles[3].light;
+    const warmLight = sampleTonalColumn(mood.piles[0].medium, 0.0);
+    const coolLight = sampleTonalColumn(mood.piles[3].medium, 0.0);
     return `linear-gradient(to top, ${colorToCSS(warmLight)}, ${colorToCSS(coolLight)})`;
   }
 
@@ -310,13 +315,15 @@ export class MoodSelector extends BaseControl {
                  @click=${() => this._selectMood(i)}>
               <div class="sky-preview" style="background: ${this._renderSkyGradient(mood)}"></div>
               <div class="piles">
-                ${mood.piles.map(pile => html`
-                  <div class="pile-column">
-                    <div class="pile-swatch" style="background: ${colorToCSS(pile.light)}"></div>
-                    <div class="pile-swatch" style="background: ${colorToCSS(pile.medium)}"></div>
-                    <div class="pile-swatch" style="background: ${colorToCSS(pile.dark)}"></div>
-                  </div>
-                `)}
+                ${mood.piles.map(pile => {
+                  const light = sampleTonalColumn(pile.medium, 0.0);
+                  const dark = sampleTonalColumn(pile.medium, 1.0);
+                  return html`
+                    <div class="pile-column">
+                      <div class="pile-gradient" style="background: linear-gradient(to bottom, ${colorToCSS(light)}, ${colorToCSS(pile.medium)} 50%, ${colorToCSS(dark)})"></div>
+                    </div>
+                  `;
+                })}
               </div>
               <div class="card-name">${mood.name}</div>
               <div class="card-desc">${mood.description}</div>

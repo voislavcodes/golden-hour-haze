@@ -6,6 +6,7 @@ import { huesToMoodPiles } from '../mood/oklch.js';
 import { addCustomMood } from '../mood/custom-moods.js';
 import { extractHuesFromImage } from '../mood/photo-extract.js';
 import type { KColor } from '../mood/moods.js';
+import { sampleTonalColumn } from '../painting/palette.js';
 
 function colorToCSS(c: KColor): string {
   return `rgb(${Math.round(c.r * 255)}, ${Math.round(c.g * 255)}, ${Math.round(c.b * 255)})`;
@@ -58,7 +59,7 @@ export class MoodCreator extends BaseControl {
 
       .hue-swatch {
         width: 36px;
-        height: 20px;
+        height: 56px;
         border-radius: 3px;
       }
 
@@ -250,9 +251,11 @@ export class MoodCreator extends BaseControl {
         ${this._hues.map((hue, i) => html`
           <div class="hue-column">
             <div class="hue-preview">
-              <div class="hue-swatch" style="background: ${colorToCSS(piles[i].light)}"></div>
-              <div class="hue-swatch" style="background: ${colorToCSS(piles[i].medium)}"></div>
-              <div class="hue-swatch" style="background: ${colorToCSS(piles[i].dark)}"></div>
+              ${(() => {
+                const light = sampleTonalColumn(piles[i].medium, 0.0);
+                const dark = sampleTonalColumn(piles[i].medium, 1.0);
+                return html`<div class="hue-swatch" style="background: linear-gradient(to bottom, ${colorToCSS(light)}, ${colorToCSS(piles[i].medium)} 50%, ${colorToCSS(dark)})"></div>`;
+              })()}
             </div>
             <input type="range" min="0" max="360" .value=${String(hue)}
                    @input=${(e: Event) => this._onHueChange(i, e)} />

@@ -1,9 +1,9 @@
-// 15-pile palette panel — 5 hues × 3 values (light/medium/dark) + rag
+// 5 scrollable tonal column swatches + rag
 import { html, css } from 'lit';
 import { customElement, state } from 'lit/decorators.js';
 import { BaseControl } from './base-control.js';
 import { sceneStore } from '../state/scene-state.js';
-import { getMoodPiles, dipBrush, wipeOnRag, getActivePile } from '../painting/palette.js';
+import { dipBrush, wipeOnRag, getActiveHue, sampleTonalColumn } from '../painting/palette.js';
 import { reloadBrush } from '../painting/brush-engine.js';
 import type { KColor } from '../mood/moods.js';
 
@@ -13,7 +13,8 @@ function colorToCSS(c: KColor): string {
 
 @customElement('ghz-palette-panel')
 export class PalettePanel extends BaseControl {
-  @state() private _activePile = 0;
+  @state() private _activeHue = 0;
+  @state() private _tonalValues = [0.5, 0.5, 0.5, 0.5, 0.5];
 
   static styles = [
     BaseControl.baseStyles,
@@ -31,25 +32,36 @@ export class PalettePanel extends BaseControl {
         gap: 4px;
         padding: 6px;
       }
-      .pile-grid {
-        display: grid;
-        grid-template-columns: repeat(5, 1fr);
-        gap: 3px;
+      .columns {
+        display: flex;
+        gap: 4px;
+        justify-content: center;
       }
-      .swatch {
-        width: 24px;
-        height: 24px;
+      .column {
+        position: relative;
+        width: 20px;
+        height: 48px;
         border-radius: 4px;
         border: 2px solid transparent;
         cursor: pointer;
         transition: border-color 180ms ease;
+        overflow: hidden;
       }
-      .swatch:hover {
+      .column:hover {
         border-color: rgba(255, 200, 120, 0.3);
       }
-      .swatch.active {
+      .column.active {
         border-color: var(--ghz-accent);
         box-shadow: 0 0 8px rgba(232, 168, 64, 0.4);
+      }
+      .indicator {
+        position: absolute;
+        left: 0;
+        right: 0;
+        height: 2px;
+        background: rgba(255, 255, 255, 0.9);
+        box-shadow: 0 0 3px rgba(0, 0, 0, 0.5);
+        pointer-events: none;
       }
       .rag {
         margin-top: 4px;
@@ -60,31 +72,6 @@ export class PalettePanel extends BaseControl {
         text-transform: uppercase;
         cursor: pointer;
       }
-      .label {
-        font-size: 8px;
-        text-align: center;
-        color: var(--ghz-text-dim);
-        letter-spacing: 0.5px;
-        margin-top: 2px;
-      }
-      .row-labels {
-        display: flex;
-        flex-direction: column;
-        gap: 3px;
-        justify-content: center;
-        padding-right: 4px;
-      }
-      .row-label {
-        font-size: 7px;
-        color: var(--ghz-text-dim);
-        letter-spacing: 0.3px;
-        height: 24px;
-        display: flex;
-        align-items: center;
-      }
-      .grid-area {
-        display: flex;
-      }
     `,
   ];
 
@@ -92,10 +79,15 @@ export class PalettePanel extends BaseControl {
 
   connectedCallback() {
     super.connectedCallback();
-    this._activePile = getActivePile();
+    this._activeHue = getActiveHue();
+    const palette = sceneStore.get().palette;
+    this._tonalValues = [...palette.tonalValues];
     this._unsub = sceneStore.select(
-      (s) => s.mood,
-      () => { this.requestUpdate(); }
+      (s) => s.palette,
+      (palette) => {
+        this._tonalValues = [...palette.tonalValues];
+        this.requestUpdate();
+      }
     );
   }
 
@@ -104,10 +96,46 @@ export class PalettePanel extends BaseControl {
     this._unsub?.();
   }
 
-  private _onPileClick(index: number) {
+  private _gradientCSS(baseColor: KColor): string {
+    const light = sampleTonalColumn(baseColor, 0.0);
+    const mid = sampleTonalColumn(baseColor, 0.5);
+    const dark = sampleTonalColumn(baseColor, 1.0);
+    return `linear-gradient(to bottom, ${colorToCSS(light)}, ${colorToCSS(mid)} 50%, ${colorToCSS(dark)})`;
+  }
+
+  private _onColumnClick(index: number) {
     dipBrush(index);
     reloadBrush();
-    this._activePile = index;
+    this._activeHue = index;
+    sceneStore.update((s) => ({
+      palette: { ...s.palette, activeIndex: index },
+    }));
+  }
+
+  private _onColumnWheel(index: number, e: WheelEvent) {
+    e.preventDefault();
+    const delta = e.deltaY * 0.002;
+    const palette = sceneStore.get().palette;
+    const newValues = [...palette.tonalValues];
+    newValues[index] = Math.max(0, Math.min(1, newValues[index] + delta));
+    sceneStore.update((s) => ({
+      palette: { ...s.palette, tonalValues: newValues, activeIndex: index },
+    }));
+    dipBrush(index);
+    reloadBrush();
+    this._activeHue = index;
+  }
+
+  private _onColumnDblClick(index: number) {
+    const palette = sceneStore.get().palette;
+    const newValues = [...palette.tonalValues];
+    newValues[index] = 0.5;
+    sceneStore.update((s) => ({
+      palette: { ...s.palette, tonalValues: newValues, activeIndex: index },
+    }));
+    dipBrush(index);
+    reloadBrush();
+    this._activeHue = index;
   }
 
   private _onRagClick() {
@@ -116,35 +144,27 @@ export class PalettePanel extends BaseControl {
   }
 
   render() {
-    const piles = getMoodPiles();
-    // Build 15 swatches: 3 rows (light/medium/dark) × 5 hues
-    const rows = [
-      piles.map(p => p.light),
-      piles.map(p => p.medium),
-      piles.map(p => p.dark),
-    ];
-    const rowLabels = ['LT', 'MD', 'DK'];
+    const palette = sceneStore.get().palette;
+    const colors = palette.colors;
 
     return html`
       <div class="panel glass">
-        <div class="grid-area">
-          <div class="row-labels">
-            ${rowLabels.map(l => html`<div class="row-label">${l}</div>`)}
-          </div>
-          <div class="pile-grid">
-            ${rows.flatMap((row, rowIdx) =>
-              row.map((color, colIdx) => {
-                const idx = colIdx * 3 + rowIdx; // 0-14 pile index
-                return html`
-                  <div
-                    class="swatch ${this._activePile === idx ? 'active' : ''}"
-                    style="background: ${colorToCSS(color)}"
-                    @click=${() => this._onPileClick(idx)}
-                  ></div>
-                `;
-              })
-            )}
-          </div>
+        <div class="columns">
+          ${colors.map((color, i) => {
+            const baseColor: KColor = { r: color.r, g: color.g, b: color.b };
+            const indicatorY = this._tonalValues[i] * 44; // 48px height - 4px border
+            return html`
+              <div
+                class="column ${this._activeHue === i ? 'active' : ''}"
+                style="background: ${this._gradientCSS(baseColor)}"
+                @click=${() => this._onColumnClick(i)}
+                @wheel=${(e: WheelEvent) => this._onColumnWheel(i, e)}
+                @dblclick=${() => this._onColumnDblClick(i)}
+              >
+                <div class="indicator" style="top: ${indicatorY}px"></div>
+              </div>
+            `;
+          })}
         </div>
         <button class="glass-button rag" @click=${this._onRagClick}>rag (X)</button>
       </div>

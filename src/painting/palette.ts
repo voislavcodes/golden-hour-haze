@@ -1,9 +1,9 @@
-// 15-pile palette + per-slot brush contamination
-// Each mood provides 5 hues × 3 values (light/medium/dark)
+// 5-hue tonal column palette + per-slot brush contamination
+// Each mood provides 5 base hues; continuous tonal value (0=light, 1=dark) per swatch
 // Brush slots carry residue from previous colors
 
 import { sceneStore } from '../state/scene-state.js';
-import { MOODS, type KColor, type MoodPile } from '../mood/moods.js';
+import type { KColor } from '../mood/moods.js';
 
 function clamp(v: number, lo: number, hi: number): number {
   return Math.max(lo, Math.min(hi, v));
@@ -54,6 +54,42 @@ export function rgbToKS(color: KColor): { Kr: number; Kg: number; Kb: number } {
   };
 }
 
+// --- Tonal column sampling ---
+
+function lerpColor(a: KColor, b: KColor, t: number): KColor {
+  return {
+    r: a.r + (b.r - a.r) * t,
+    g: a.g + (b.g - a.g) * t,
+    b: a.b + (b.b - a.b) * t,
+  };
+}
+
+function saturateAndDarken(c: KColor, amount: number): KColor {
+  const max = Math.max(c.r, c.g, c.b);
+  const factor = 1 - amount;
+  return {
+    r: c.r * factor * (c.r / Math.max(max, 0.001)),
+    g: c.g * factor * (c.g / Math.max(max, 0.001)),
+    b: c.b * factor * (c.b / Math.max(max, 0.001)),
+  };
+}
+
+export const WARM_WHITE: KColor = { r: 0.95, g: 0.93, b: 0.88 };
+
+export function sampleTonalColumn(baseColor: KColor, value: number): KColor {
+  // value 0.0 = lightest (warm white tinted with hue)
+  // value 0.5 = base color (mood's medium)
+  // value 1.0 = darkest (saturated dark pigment)
+  if (value < 0.5) {
+    const t = value * 2.0;
+    return lerpColor(WARM_WHITE, baseColor, t);
+  } else {
+    const t = (value - 0.5) * 2.0;
+    const darkEnd = saturateAndDarken(baseColor, 0.7);
+    return lerpColor(baseColor, darkEnd, t);
+  }
+}
+
 // --- Per-slot brush contamination ---
 
 export interface BrushSlot {
@@ -71,17 +107,17 @@ const brushSlots: BrushSlot[] = Array.from({ length: NUM_BRUSH_SLOTS }, () => ({
   bristleSeed: Math.random(),
 }));
 
-// Active pile index (0-14 for the 15 piles in the 5×3 grid)
-let activePileIndex = 0;
+// Active hue index (0-4 for the 5 tonal columns)
+let activeHueIndex = 0;
 // Active brush size slot (0-4, maps to brush sizes)
 let activeBrushSlot = 0;
 
-export function setActivePile(index: number) {
-  activePileIndex = clamp(index, 0, 14);
+export function setActiveHue(index: number) {
+  activeHueIndex = clamp(index, 0, 4);
 }
 
-export function getActivePile(): number {
-  return activePileIndex;
+export function getActiveHue(): number {
+  return activeHueIndex;
 }
 
 export function setActiveBrushSlot(slot: number) {
@@ -110,54 +146,46 @@ export function wipeOnRag() {
   slot.residueAmount *= 0.15;
 }
 
-/** Get the current mood's piles */
-export function getMoodPiles(): MoodPile[] {
-  const moodName = sceneStore.get().mood;
-  const mood = MOODS.find(m => m.name === moodName);
-  return mood?.piles ?? MOODS[0].piles;
-}
-
-/** Get a specific pile color from the 15-pile grid */
-export function getPileColor(pileIndex: number): KColor {
-  const piles = getMoodPiles();
-  const hueIdx = Math.floor(pileIndex / 3);
-  const valueIdx = pileIndex % 3; // 0=light, 1=medium, 2=dark
-  const pile = piles[clamp(hueIdx, 0, piles.length - 1)];
-  return valueIdx === 0 ? pile.light : valueIdx === 1 ? pile.medium : pile.dark;
+/** Get color at current tonal value for a hue index */
+function getColorAtValue(hueIndex: number): KColor {
+  const palette = sceneStore.get().palette;
+  const baseColor = palette.colors[clamp(hueIndex, 0, palette.colors.length - 1)];
+  const value = palette.tonalValues[clamp(hueIndex, 0, palette.tonalValues.length - 1)];
+  return sampleTonalColumn(baseColor, value);
 }
 
 /**
- * Dip brush — set active color from pile, apply contamination, reload reservoir.
+ * Dip brush — set active color from tonal column, apply contamination, reload reservoir.
  * The dipped color mixes with existing brush residue.
  */
-export function dipBrush(pileIndex: number) {
-  activePileIndex = clamp(pileIndex, 0, 14);
-  const pileColor = getPileColor(activePileIndex);
+export function dipBrush(hueIndex: number) {
+  activeHueIndex = clamp(hueIndex, 0, 4);
+  const color = getColorAtValue(activeHueIndex);
   const slot = brushSlots[activeBrushSlot];
 
   // Mix pile color with existing residue (contamination)
   if (slot.residueAmount > 0.05) {
-    slot.residueK = kmMixCPU(pileColor, slot.residueK, slot.residueAmount * 0.3);
+    slot.residueK = kmMixCPU(color, slot.residueK, slot.residueAmount * 0.3);
   } else {
-    slot.residueK = { ...pileColor };
+    slot.residueK = { ...color };
   }
   slot.residueAmount = Math.min(1.0, slot.residueAmount + 0.3);
 }
 
 /**
  * Get active palette K-M coefficients for the brush shader.
- * Reads from 15-pile mood system + per-slot contamination.
+ * Reads from tonal column system + per-slot contamination.
  */
 export function getActiveKS(): { Kr: number; Kg: number; Kb: number; color: KColor } {
-  const pileColor = getPileColor(activePileIndex);
+  const color = getColorAtValue(activeHueIndex);
   const slot = brushSlots[activeBrushSlot];
 
   // Apply contamination
   let finalColor: KColor;
   if (slot.residueAmount > 0.05) {
-    finalColor = kmMixCPU(pileColor, slot.residueK, slot.residueAmount * 0.15);
+    finalColor = kmMixCPU(color, slot.residueK, slot.residueAmount * 0.15);
   } else {
-    finalColor = pileColor;
+    finalColor = color;
   }
 
   const ks = rgbToKS(finalColor);
