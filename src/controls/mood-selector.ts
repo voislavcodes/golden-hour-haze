@@ -27,8 +27,13 @@ export class MoodSelector extends BaseControl {
         flex-direction: column;
         align-items: center;
         justify-content: center;
-        background: rgba(5, 3, 10, 0.92);
         transition: opacity 0.3s;
+        pointer-events: none;
+      }
+
+      :host(.overlay) {
+        background: rgba(5, 3, 10, 0.92);
+        pointer-events: auto;
       }
 
       :host([hidden]) {
@@ -151,6 +156,7 @@ export class MoodSelector extends BaseControl {
         display: flex;
         gap: 8px;
         align-items: center;
+        pointer-events: auto;
       }
 
       .session-btn {
@@ -182,6 +188,7 @@ export class MoodSelector extends BaseControl {
     const s = sessionStore.get();
     this._phase = s.phase;
     this._selectedMood = s.moodIndex;
+    this._updateOverlayClass();
     this._unsubscribe = sessionStore.subscribe((state) => {
       this._phase = state.phase;
       this._selectedMood = state.moodIndex;
@@ -194,6 +201,17 @@ export class MoodSelector extends BaseControl {
   disconnectedCallback() {
     super.disconnectedCallback();
     this._unsubscribe?.();
+  }
+
+  private _updateOverlayClass() {
+    const isOverlay = this._phase === 'prepare-mood' || this._phase === 'prepare-surface';
+    this.classList.toggle('overlay', isOverlay);
+  }
+
+  willUpdate(changed: Map<string, unknown>) {
+    if (changed.has('_phase')) {
+      this._updateOverlayClass();
+    }
   }
 
   private _selectMood(index: number) {
