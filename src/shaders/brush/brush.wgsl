@@ -47,12 +47,6 @@ fn hash_noise(angle: f32, seed: f32) -> f32 {
   return fract(s);
 }
 
-// Per-bristle hash — decorrelated from hash_noise via different constants
-fn bristle_hash(bristle_id: f32, salt: f32) -> f32 {
-  let s = sin(bristle_id * 213.7 + salt * 971.3) * 29743.1257;
-  return fract(s);
-}
-
 // Capsule SDF: returns (signed_distance, t_along_segment)
 // Negative distance = inside. Degenerates to circle when a == b.
 fn capsule_sdf(p: vec2f, a: vec2f, b: vec2f, ra: f32, rb: f32) -> vec2f {
@@ -121,49 +115,53 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
     nearest = vertices[best_seg].pos + seg_vec * best_t;
   }
 
-  // Per-bristle identity & random properties
+  // Bristle clump density — irregular groups via non-harmonic sines
+  // Creates ~3-5 wide clump peaks across brush width, not uniform grooves
   let bristle_angle = dot(uv - nearest, perp) / max(local_r, 0.0001);
+  let ba = bristle_angle * 6.28;
+  let clump_cross = 0.5
+    + 0.28 * sin(ba * 2.7 + params.bristle_seed * 5.1)
+    + 0.15 * sin(ba * 6.3 + params.bristle_seed * 3.7)
+    + 0.07 * sin(ba * 11.1 + params.bristle_seed * 8.3);
+
+  // Along-stroke variation — ADDITIVE so gaps can bridge and reopen
+  let along_uv = dot(uv, dir);
+  let along_freq = 1.0 / max(local_r * 2.0, 0.001);
+  let along_variation =
+      0.12 * sin(along_uv * along_freq * 1.7 + ba * 3.1 + params.bristle_seed * 2.3)
+    + 0.06 * sin(along_uv * along_freq * 4.3 + ba * 6.7 + params.bristle_seed * 6.1);
+
+  let bristle_load = saturate(clump_cross + along_variation);
+
+  // Radial bias — outer edges thin slightly faster, only when depleting
+  let radial_pos = min(abs(bristle_angle), 1.0);
+  let radial_bias = 1.0 - radial_pos * 0.3 * (1.0 - params.reservoir);
+
+  // Squared depletion ramp — gentle change at high reservoir (no visible dab
+  // boundaries), progressive separation at low reservoir (dry-brush effect).
+  let reservoir_depletion = pow(1.0 - params.reservoir, 2.0);
+  let variation = reservoir_depletion;
+  let bristle_reservoir = params.reservoir * mix(1.0, bristle_load, variation) * radial_bias;
+  let final_reservoir = bristle_reservoir;
+
+  // Fine bristle texture — subtle surface marks, not the dominant pattern
   let bristle_count = mix(8.0, 16.0, params.age);
-  let bristle_pos = bristle_angle * bristle_count + params.bristle_seed * 6.28;
-  let bristle_id = floor(bristle_pos);
-  let b_depth_var = bristle_hash(bristle_id, 0.0);    // depth variation
-  let b_capacity  = bristle_hash(bristle_id, 1.0);    // paint capacity
-  let b_groove_w  = bristle_hash(bristle_id, 2.0);    // groove width
-  let b_jitter    = bristle_hash(bristle_id, 3.0);    // angular jitter
-
-  // Irregular bristle spacing — jitter scales with age
-  let jitter_amount = (b_jitter - 0.5) * (0.1 + params.age * 0.3);
-  let jittered_pos = bristle_pos + jitter_amount;
-
-  // Varied groove shape per bristle
-  let groove_half_w = 0.10 + b_groove_w * 0.08;       // 0.10–0.18 half-width
-  let groove = smoothstep(0.0, groove_half_w, fract(jittered_pos))
-             * smoothstep(1.0, 1.0 - groove_half_w, fract(jittered_pos));
+  let fine_pos = bristle_angle * bristle_count + params.bristle_seed * 6.28;
+  let fine_groove = smoothstep(0.0, 0.15, fract(fine_pos))
+                  * smoothstep(1.0, 0.85, fract(fine_pos));
   let depth = max(-min_dist, 0.0) / max(local_r, 0.0001);
   let edge_emphasis = smoothstep(0.2, 0.85, 1.0 - depth);
-  let depth_mult = 0.6 + b_depth_var * 0.8;           // 0.6–1.4x per bristle
-  let bristle_strength = (0.35 + params.age * 0.45) * depth_mult;
-  let bristle_pattern = 1.0 - edge_emphasis * (1.0 - groove) * bristle_strength;
-
-  // Per-bristle paint depletion
-  let radial_pos = min(abs(bristle_angle), 1.0);
-  let edge_drain = 1.0 + radial_pos * radial_pos * 2.0;
-  let capacity = 0.5 + b_capacity * 0.7;
-  let bristle_reservoir = saturate(pow(params.reservoir, edge_drain / capacity));
-  // Binary dropout — individual bristles go fully dry
-  let dropout_threshold = (1.0 - capacity) * 0.5 + radial_pos * 0.3;
-  let final_reservoir = select(0.0, bristle_reservoir, params.reservoir > dropout_threshold);
-
-  // Edge softness + roughness with depletion-driven break-up
+  // Fine texture — very subtle, grain does the real dry-brush work
   let depletion = 1.0 - final_reservoir;
+  let fine_vis = smoothstep(0.5, 1.0, depletion) * (0.05 + params.age * 0.15);
+  let bristle_pattern = 1.0 - edge_emphasis * (1.0 - fine_groove) * fine_vis;
+
+  // Edge softness + roughness
   let edge_softness = local_r * (0.08 + params.thinners * 0.4);
-  let roughness_strength = 0.06 + params.age * 0.14 + depletion * 0.25;
-  let coarse_noise = hash_noise(bristle_angle * 3.0, params.bristle_seed);
-  let fine_noise = hash_noise(bristle_angle * 12.0, params.bristle_seed + 5.0);
-  let edge_noise = coarse_noise * 0.7 + fine_noise * 0.3;
-  // Per-bristle edge recession — low-capacity bristles lose edges first
-  let edge_recession = (1.0 - b_capacity) * depletion * 0.5 * local_r;
-  let edge_roughness = edge_noise * roughness_strength * local_r + edge_recession;
+  let roughness_strength = 0.06 + params.age * 0.14 + depletion * 0.15;
+  let edge_noise = hash_noise(bristle_angle * 3.0, params.bristle_seed) * 0.7
+                 + hash_noise(bristle_angle * 12.0, params.bristle_seed + 5.0) * 0.3;
+  let edge_roughness = edge_noise * roughness_strength * local_r;
   let alpha = (1.0 - smoothstep(-edge_softness - edge_roughness, 0.0, min_dist)) * bristle_pattern;
 
   // Stroke mask — only deposit the incremental coverage since last frame
@@ -173,10 +171,14 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
 
   // === Paint physics uses delta (incremental alpha) ===
 
-  // Grain-aware deposition
+  // Grain-aware deposition — thin paint catches only on raised surface peaks
+  // As paint depletes, surface texture increasingly gates where paint deposits
   let grain_uv = uv * vec2f(f32(dims.x) / 2048.0, f32(dims.y) / 2048.0);
   let grain = textureSampleLevel(surface_height, grain_sampler, grain_uv, 0.0).r;
-  let grain_interaction = mix(1.0, grain, params.thinners * 0.5);
+  // Use reservoir directly (uniform per frame) — avoids visible dab ridges
+  // Per-pixel depletion amplified frame-to-frame differences at capsule boundaries
+  let grain_factor = params.thinners * 0.1 + reservoir_depletion * 0.85;
+  let grain_interaction = mix(1.0, grain, grain_factor);
 
   // Diminishing returns — per-stroke only; new strokes arrive at full opacity
   let layers_this_stroke = max(existing.a - params.stroke_start_layers, 0.0);
