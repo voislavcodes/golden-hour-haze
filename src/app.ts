@@ -17,7 +17,7 @@ import { initScrapeEngine, beginScrape, endScrape, dispatchScrapeDabs } from './
 import { initWipeEngine, beginWipe, endWipe, dispatchWipeDabs } from './painting/wipe-engine.js';
 
 // Surface texture
-import { initSurfaceGrainLut, updateSurfaceGrainParams, generateSurfaceGrainIfDirty } from './surface/surface-grain-lut.js';
+import { initSurfaceMaterial, updateSurfaceMaterialParams, generateSurfaceMaterialIfDirty } from './surface/surface-material.js';
 
 // Atmosphere
 import { initNoiseLut, updateNoiseLutParams, updateGrainLutParams, generateLutsIfDirty } from './atmosphere/noise-lut.js';
@@ -49,7 +49,7 @@ import { markDirty, isDirty, clearDirty, isAnyDirty, markAllDirty } from './stat
 import './controls/toolbar.js';
 import './controls/canvas-overlay.js';
 import './controls/palette-panel.js';
-import './controls/surface-pad.js';
+import './controls/material-selector.js';
 import './controls/export-button.js';
 import './controls/load-slider.js';
 import './controls/thinners-slider.js';
@@ -81,7 +81,7 @@ export function initApp() {
 
   // Init all systems
   initNoiseLut();
-  initSurfaceGrainLut();
+  initSurfaceMaterial();
   initAtmosphere();
   initSurface(width, height);
   initBrushEngine();
@@ -93,7 +93,7 @@ export function initApp() {
   const scene = sceneStore.get();
   updateNoiseLutParams(scene.atmosphere.turbulence);
   updateGrainLutParams(1.0 + scene.atmosphere.grain * 3.0, scene.atmosphere.grainAngle);
-  updateSurfaceGrainParams(scene.surface.grainSize, scene.surface.directionality, scene.surface.mode === 'woodblock' ? 1 : 0);
+  updateSurfaceMaterialParams(scene.surface);
 
   // Allocate textures at initial size
   allocateAllTextures(width, height);
@@ -164,7 +164,7 @@ export function initApp() {
     }
 
     if (state.surface !== prevSurface) {
-      updateSurfaceGrainParams(state.surface.grainSize, state.surface.directionality, state.surface.mode === 'woodblock' ? 1 : 0);
+      updateSurfaceMaterialParams(state.surface);
       markDirty('composite');
     }
 
@@ -313,7 +313,7 @@ function renderFrame(dt: number, elapsed: number) {
   generateLutsIfDirty(encoder);
 
   // Generate surface grain LUT if dirty
-  if (generateSurfaceGrainIfDirty(encoder)) {
+  if (generateSurfaceMaterialIfDirty(encoder)) {
     compositorBGDirty = true;
   }
 

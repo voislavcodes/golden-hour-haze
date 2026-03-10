@@ -9,6 +9,9 @@ import { sceneStore } from '../state/scene-state.js';
 import { deriveAtmosphere } from '../mood/derive-atmosphere.js';
 import './mood-creator.js';
 import type { MoodCreator } from './mood-creator.js';
+import './material-selector.js';
+import { getMaterial } from '../surface/materials.js';
+import type { MaterialType } from '../state/scene-state.js';
 
 function colorToCSS(c: KColor): string {
   return `rgb(${Math.round(c.r * 255)}, ${Math.round(c.g * 255)}, ${Math.round(c.b * 255)})`;
@@ -229,12 +232,20 @@ export class MoodSelector extends BaseControl {
 
   private _applyMoodPreview(mood: Mood) {
     const atmosphere = deriveAtmosphere(mood);
-    sceneStore.update(() => ({
+    const materialType = (mood.defaultSurface || 'board') as MaterialType;
+    const mat = getMaterial(materialType);
+    sceneStore.update((s) => ({
       mood: mood.name,
       atmosphere,
       sunAngle: mood.sunAngle,
       sunElevation: mood.sunElevation,
       horizonY: mood.horizonY,
+      surface: {
+        ...s.surface,
+        material: materialType,
+        absorption: mat.absorption,
+        drySpeed: mat.drySpeed,
+      },
     }));
   }
 
@@ -322,13 +333,7 @@ export class MoodSelector extends BaseControl {
     if (this._phase === 'prepare-surface') {
       return html`
         <span class="phase-label">choose a surface</span>
-        <div class="surface-grid">
-          <button class="glass-button surface-btn" @click=${() => this._applySurface('board')}>board</button>
-          <button class="glass-button surface-btn" @click=${() => this._applySurface('canvas')}>canvas</button>
-          <button class="glass-button surface-btn" @click=${() => this._applySurface('paper')}>paper</button>
-          <button class="glass-button surface-btn" @click=${() => this._applySurface('smooth')}>smooth</button>
-          <button class="glass-button surface-btn" @click=${() => this._applySurface('woodblock')}>woodblock</button>
-        </div>
+        <ghz-material-selector></ghz-material-selector>
         <div class="actions">
           <button class="glass-button action-btn" @click=${this._back}>back</button>
           <button class="glass-button action-btn" @click=${this._confirmSurface}>test canvas</button>
@@ -372,20 +377,6 @@ export class MoodSelector extends BaseControl {
     return nothing;
   }
 
-  private _applySurface(name: string) {
-    const presets: Record<string, { grainSize: number; directionality: number; mode: 'standard' | 'woodblock'; absorption: number; drySpeed: number }> = {
-      board:     { grainSize: 0.3, directionality: 0.7, mode: 'standard',  absorption: 0.15, drySpeed: 1.0 },
-      canvas:    { grainSize: 0.7, directionality: 0.8, mode: 'standard',  absorption: 0.10, drySpeed: 0.9 },
-      smooth:    { grainSize: 0.1, directionality: 0.1, mode: 'standard',  absorption: 0.05, drySpeed: 0.7 },
-      paper:     { grainSize: 0.5, directionality: 0.2, mode: 'standard',  absorption: 0.25, drySpeed: 1.4 },
-      woodblock: { grainSize: 0.4, directionality: 0.9, mode: 'woodblock', absorption: 0.20, drySpeed: 1.2 },
-    };
-    const p = presets[name];
-    if (!p) return;
-    sceneStore.update((s) => ({
-      surface: { ...s.surface, ...p, intensity: s.surface.intensity },
-    }));
-  }
 }
 
 declare global {

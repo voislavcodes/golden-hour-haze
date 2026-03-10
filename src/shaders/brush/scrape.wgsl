@@ -20,7 +20,7 @@ struct ScrapeParams {
 @group(0) @binding(0) var<uniform> params: ScrapeParams;
 @group(1) @binding(0) var accum_read: texture_2d<f32>;
 @group(1) @binding(1) var accum_write: texture_storage_2d<rgba16float, write>;
-@group(2) @binding(0) var grain_lut: texture_2d<f32>;
+@group(2) @binding(0) var surface_height: texture_2d<f32>;
 @group(2) @binding(1) var grain_sampler: sampler;
 @group(3) @binding(0) var state_read: texture_2d<f32>;
 @group(3) @binding(1) var state_write: texture_storage_2d<rg32float, write>;
@@ -69,7 +69,7 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
 
   // --- Surface grain interaction ---
   let grain_uv = uv * vec2f(f32(dims.x) / 512.0, f32(dims.y) / 512.0);
-  let grain = textureSampleLevel(grain_lut, grain_sampler, grain_uv, 0.0).r;
+  let grain = textureSampleLevel(surface_height, grain_sampler, grain_uv, 0.0).r;
   let grain_lift = smoothstep(0.35, 0.75, grain);
 
   // --- Knife scratches (prominent, parallel to blade) ---

@@ -28,13 +28,16 @@ export interface PaletteState {
   tonalValues: number[];  // per-swatch value, 0=light 1=dark, default 0.5
 }
 
+export type MaterialType = 'board' | 'canvas' | 'paper' | 'gesso';
+
 export interface SurfaceParams {
-  grainSize: number;        // 0-1, fine→coarse (X axis)
-  directionality: number;   // 0-1, isotropic→directional (Y axis)
-  intensity: number;        // 0-0.2, texture visibility
-  mode: 'standard' | 'woodblock';
-  absorption: number;       // 0.05-0.25, how much surface absorbs first stroke
-  drySpeed: number;         // 0.7-1.4, multiplier for paint drying rate
+  material: MaterialType;
+  tone: number;           // 0–1 (light → dark within material range)
+  grainScale: number;     // 0–1 (fine → coarse)
+  seed: number;           // random per session
+  intensity: number;      // 0–0.2 (grain visibility in compositor)
+  absorption: number;     // derived from material
+  drySpeed: number;       // derived from material
 }
 
 export interface CompositorParams {
@@ -92,10 +95,11 @@ export const sceneStore = createStore<SceneState>({
     grainDepth: 0.5,
   },
   surface: {
-    grainSize: 0.3,
-    directionality: 0.7,
+    material: 'board' as const,
+    tone: 0.3,
+    grainScale: 0.5,
+    seed: Math.random() * 1000,
     intensity: 0.08,
-    mode: 'standard',
     absorption: 0.15,
     drySpeed: 1.0,
   },

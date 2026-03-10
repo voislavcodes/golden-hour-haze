@@ -7,7 +7,7 @@ import { createRenderPipeline } from '../gpu/pipeline-cache.js';
 import { getGlobalBindGroupLayout } from '../gpu/bind-groups.js';
 import { getReadTexture, getStateReadTexture } from '../painting/surface.js';
 import { getGrainLutTexture, getNoiseLutSampler } from '../atmosphere/noise-lut.js';
-import { getSurfaceGrainTexture } from '../surface/surface-grain-lut.js';
+import { getSurfaceHeightTexture, getSurfaceColorTexture } from '../surface/surface-material.js';
 import type { CompositorParams } from '../state/scene-state.js';
 import compositeShader from '../shaders/composite/composite.wgsl';
 
@@ -41,6 +41,7 @@ export function initCompositor() {
       { binding: 5, visibility: GPUShaderStage.FRAGMENT, sampler: { type: 'filtering' } },     // grain repeat sampler
       { binding: 6, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: 'float' } },  // surface grain LUT
       { binding: 7, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: 'unfilterable-float' } },  // paint state
+      { binding: 8, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: 'float' } },  // surface color
     ],
   });
 
@@ -66,7 +67,7 @@ export function initCompositor() {
   });
 
   const mod = device.createShaderModule({ label: 'composite-shader', code: compositeShader });
-  pipeline = createRenderPipeline('composite-v3', device, {
+  pipeline = createRenderPipeline('composite-v4', device, {
     label: 'composite-render',
     layout: device.createPipelineLayout({
       bindGroupLayouts: [getGlobalBindGroupLayout(device), textureLayout, compositorParamLayout],
@@ -114,8 +115,9 @@ export function rebuildCompositorBindGroup() {
       { binding: 3, resource: accumTex.createView() },
       { binding: 4, resource: sampler },
       { binding: 5, resource: grainSampler },
-      { binding: 6, resource: getSurfaceGrainTexture().createView() },
+      { binding: 6, resource: getSurfaceHeightTexture().createView() },
       { binding: 7, resource: stateTex.createView() },
+      { binding: 8, resource: getSurfaceColorTexture().createView() },
     ],
   });
 }

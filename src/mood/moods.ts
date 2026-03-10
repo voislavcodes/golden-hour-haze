@@ -54,7 +54,7 @@ export const MOODS: Mood[] = [
       pile('#b8c8e0', '#3a5a8a', '#152840'),  // twilight blue
       pile('#f0ebe0', '#c8b898', '#5a5040'),  // warm cream
     ],
-    defaultSurface: 'board',
+    defaultSurface: 'board',   // warm wood grain
   },
   {
     name: 'Blue Hour',
@@ -71,7 +71,7 @@ export const MOODS: Mood[] = [
       pile('#c0d8d0', '#408070', '#103830'),  // teal
       pile('#d8d4d0', '#8a8688', '#383438'),  // cool grey
     ],
-    defaultSurface: 'canvas',
+    defaultSurface: 'board',   // cool board
   },
   {
     name: 'Foggy Morning',
@@ -88,7 +88,7 @@ export const MOODS: Mood[] = [
       pile('#dce0e4', '#8898a8', '#303848'),  // blue haze
       pile('#e8e0d8', '#c0a890', '#584830'),  // sand
     ],
-    defaultSurface: 'paper',
+    defaultSurface: 'board',   // board with high tone
   },
   {
     name: 'Midday Haze',
@@ -105,7 +105,7 @@ export const MOODS: Mood[] = [
       pile('#e0e8f0', '#7898c0', '#284068'),  // sky blue
       pile('#f0f0e8', '#d0d0c0', '#686860'),  // light neutral
     ],
-    defaultSurface: 'smooth',
+    defaultSurface: 'gesso',
   },
   {
     name: 'Dusk',
@@ -122,7 +122,7 @@ export const MOODS: Mood[] = [
       pile('#a0b8d8', '#305090', '#101838'),  // navy
       pile('#e0d0c0', '#a08868', '#483828'),  // dusk earth
     ],
-    defaultSurface: 'board',
+    defaultSurface: 'board',   // dark warm board
   },
   {
     name: 'Overcast',
@@ -139,7 +139,7 @@ export const MOODS: Mood[] = [
       pile('#d8dcd0', '#809070', '#303828'),  // olive
       pile('#e0dcd8', '#b0a898', '#504840'),  // putty
     ],
-    defaultSurface: 'canvas',
+    defaultSurface: 'canvas',  // canvas weave
   },
   {
     name: 'Night',
@@ -156,7 +156,7 @@ export const MOODS: Mood[] = [
       pile('#404858', '#181828', '#080810'),  // midnight blue
       pile('#504840', '#282018', '#100c08'),  // dark earth
     ],
-    defaultSurface: 'smooth',
+    defaultSurface: 'gesso',   // bright gesso
   },
 ];
 

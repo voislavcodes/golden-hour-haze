@@ -34,7 +34,7 @@ struct StrokeVertex {
 @group(0) @binding(1) var<storage, read> vertices: array<StrokeVertex>;
 @group(1) @binding(0) var accum_read: texture_2d<f32>;
 @group(1) @binding(1) var accum_write: texture_storage_2d<rgba16float, write>;
-@group(2) @binding(0) var grain_lut: texture_2d<f32>;
+@group(2) @binding(0) var surface_height: texture_2d<f32>;
 @group(2) @binding(1) var grain_sampler: sampler;
 @group(2) @binding(2) var state_read: texture_2d<f32>;
 @group(2) @binding(3) var state_write: texture_storage_2d<rg32float, write>;
@@ -141,7 +141,7 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
 
   // Grain-aware deposition
   let grain_uv = uv * vec2f(f32(dims.x) / 512.0, f32(dims.y) / 512.0);
-  let grain = textureSampleLevel(grain_lut, grain_sampler, grain_uv, 0.0).r;
+  let grain = textureSampleLevel(surface_height, grain_sampler, grain_uv, 0.0).r;
   let grain_interaction = mix(1.0, grain, params.thinners * 0.5);
 
   // Diminishing returns — per-stroke only; new strokes arrive at full opacity

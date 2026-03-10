@@ -40,6 +40,7 @@ struct CompositorParams {
 @group(1) @binding(5) var grain_sampler: sampler;
 @group(1) @binding(6) var surface_lut: texture_2d<f32>;
 @group(1) @binding(7) var paint_state_tex: texture_2d<f32>;
+@group(1) @binding(8) var surface_color_tex: texture_2d<f32>;
 @group(2) @binding(0) var<uniform> comp_params: CompositorParams;
 
 struct VertexOutput {
@@ -99,18 +100,22 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4f {
   let depth_scale = 1.0 + depth_factor / (depth_factor + 1.5);
   let paint_rgb = km_to_rgb(accum.r * depth_scale, accum.g * depth_scale, accum.b * depth_scale);
 
-  // 3. Blend paint over sky based on weight
-  let paint_opacity = clamp(paint_weight * 2.0, 0.0, 1.0);
-  var color = mix(sky, paint_rgb, paint_opacity);
-
-  // 4. Surface texture — grain shows through thin paint, buried by thick
+  // 3. Surface color — physical material between atmosphere and paint
   let surface_tiling = globals.resolution / 512.0;
   let surface_uv = uv * surface_tiling;
+  let surface_color = textureSample(surface_color_tex, grain_sampler, surface_uv).rgb;
+  let behind_paint = mix(sky, surface_color, 0.95);
+
+  // 4. Blend paint over surface color based on weight
+  let paint_opacity = clamp(paint_weight * 2.0, 0.0, 1.0);
+  var color = mix(behind_paint, paint_rgb, paint_opacity);
+
+  // 5. Surface texture — grain shows through thin paint, buried by thick
   let surface_grain = textureSample(surface_lut, grain_sampler, surface_uv).r;
   let grain_fill = saturate(paint_weight * 2.0);
   let grain_visibility = (1.0 - saturate(paint_weight * 1.5)) * comp_params.surface_intensity * (1.0 - grain_fill * 0.7);
   let grain_offset = (surface_grain - 0.5) * 2.0 * grain_visibility;
-  let grain_tint = mix(vec3f(grain_offset), sky * grain_offset * 2.0, 0.3);
+  let grain_tint = mix(vec3f(grain_offset), surface_color * grain_offset * 2.0, 0.5);
   color += grain_tint;
 
   // 5. Visual drying — wet sheen, dry matte

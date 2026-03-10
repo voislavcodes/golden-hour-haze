@@ -8,7 +8,7 @@ import { getGPU } from '../gpu/context.js';
 import { createComputePipeline } from '../gpu/pipeline-cache.js';
 import { getAccumPP, getStatePP, swapSurface, getSurfaceWidth, getSurfaceHeight } from './surface.js';
 import { getActiveKS, getBrushSlot, getActiveBrushSlot } from './palette.js';
-import { getSurfaceGrainTexture } from '../surface/surface-grain-lut.js';
+import { getSurfaceHeightTexture } from '../surface/surface-material.js';
 import { sceneStore } from '../state/scene-state.js';
 import { uiStore, pointerQueue } from '../state/ui-state.js';
 import { getSessionTime } from '../session/session-timer.js';
@@ -319,7 +319,7 @@ function dispatchPolyline(
   const auxBG = device.createBindGroup({
     layout: auxLayout,
     entries: [
-      { binding: 0, resource: getSurfaceGrainTexture().createView() },
+      { binding: 0, resource: getSurfaceHeightTexture().createView() },
       { binding: 1, resource: grainSampler },
       { binding: 2, resource: statePP.readView },
       { binding: 3, resource: statePP.writeView },

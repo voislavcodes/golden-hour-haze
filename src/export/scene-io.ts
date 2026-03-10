@@ -97,14 +97,45 @@ export async function loadProject(file: File): Promise<void> {
   // Restore scene state
   sceneStore.set(header.scene);
 
-  // Backward compat — old files without surface params or new fields
-  if (!header.scene.surface) {
+  // Backward compat — migrate old surface params to new material system
+  const surf = header.scene.surface as any;
+  if (!surf || surf.grainSize !== undefined) {
+    // Old format: grainSize/directionality/mode → new material system
+    let material: 'board' | 'canvas' | 'paper' | 'gesso' = 'board';
+    if (surf) {
+      if (surf.mode === 'woodblock') {
+        material = 'board';
+      } else if (surf.directionality > 0.6) {
+        material = surf.grainSize > 0.5 ? 'canvas' : 'board';
+      } else if (surf.grainSize < 0.2) {
+        material = 'gesso';
+      } else {
+        material = 'paper';
+      }
+    }
     sceneStore.update(() => ({
-      surface: { grainSize: 0.3, directionality: 0.7, intensity: 0.08, mode: 'standard' as const, absorption: 0.15, drySpeed: 1.0 },
+      surface: {
+        material,
+        tone: 0.3,
+        grainScale: surf?.grainSize ?? 0.5,
+        seed: Math.random() * 1000,
+        intensity: surf?.intensity ?? 0.08,
+        absorption: surf?.absorption ?? 0.15,
+        drySpeed: surf?.drySpeed ?? 1.0,
+      },
     }));
-  } else if (header.scene.surface.absorption === undefined) {
-    sceneStore.update((s) => ({
-      surface: { ...s.surface, absorption: 0.15, drySpeed: 1.0 },
+  } else if (surf.material === undefined) {
+    // Partially migrated — fill defaults
+    sceneStore.update(() => ({
+      surface: {
+        material: 'board' as const,
+        tone: 0.3,
+        grainScale: 0.5,
+        seed: Math.random() * 1000,
+        intensity: 0.08,
+        absorption: 0.15,
+        drySpeed: 1.0,
+      },
     }));
   }
   // Ensure mood field exists
