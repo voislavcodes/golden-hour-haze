@@ -217,6 +217,10 @@ export function initApp() {
     compositorBGDirty = true;
   });
 
+  // Trigger initial render
+  markAllDirty();
+  compositorBGDirty = true;
+
   // Start render loop
   startLoop((dt, elapsed) => {
     renderFrame(dt, elapsed);
