@@ -46,6 +46,7 @@ function onPointerMove(e: PointerEvent) {
     pointerQueue.push({
       x: (ce.clientX - rect.left) / rect.width,
       y: (ce.clientY - rect.top) / rect.height,
+      pressure: ce.pressure > 0 ? ce.pressure : 0.5,
     });
   }
 

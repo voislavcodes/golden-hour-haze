@@ -109,14 +109,14 @@ export class CanvasOverlay extends BaseControl {
     this._activeTool = uiStore.get().activeTool;
     this._cursor = TOOL_CURSORS[this._activeTool];
     this._showBrushCircle = BRUSH_TOOLS.has(this._activeTool);
-    this._updateBrushDiameter(uiStore.get().brushSize);
+    this._updateBrushDiameter(uiStore.get().brushSize, uiStore.get().pressure || 0.5);
     this._unsubscribe = uiStore.subscribe((s) => {
       if (s.activeTool !== this._activeTool) {
         this._activeTool = s.activeTool;
         this._cursor = TOOL_CURSORS[this._activeTool];
         this._showBrushCircle = BRUSH_TOOLS.has(this._activeTool);
       }
-      this._updateBrushDiameter(s.brushSize);
+      this._updateBrushDiameter(s.brushSize, s.pressure || 0.5);
     });
     document.addEventListener('horizon-drag', this._horizonHandler);
   }
@@ -128,10 +128,11 @@ export class CanvasOverlay extends BaseControl {
     clearTimeout(this._horizonFadeTimer);
   }
 
-  private _updateBrushDiameter(brushSize: number) {
+  private _updateBrushDiameter(brushSize: number, pressure: number = 0.5) {
     // brushSize is radius in normalized-Y space (0-1 of height)
-    // At default pressure 0.5, effective size = brushSize * (0.5 + 0.5) = brushSize
-    this._brushDiameter = brushSize * 2 * window.innerHeight;
+    // Pressure modulates effective radius: 0.3 + 0.7 * pressure
+    const effectiveRadius = brushSize * (0.3 + 0.7 * pressure);
+    this._brushDiameter = effectiveRadius * 2 * window.innerHeight;
   }
 
   private _normalizeCoords(e: PointerEvent): { x: number; y: number } {
@@ -153,6 +154,7 @@ export class CanvasOverlay extends BaseControl {
       pointerQueue.push({
         x: ce.clientX / window.innerWidth,
         y: ce.clientY / window.innerHeight,
+        pressure: this._normalizePressure(ce),
       });
     }
 

@@ -32,4 +32,4 @@ export const uiStore = createStore<UIState>({
 
 // Pointer position queue — captures coalesced events for smooth brush strokes
 // Consumed by brush engine each frame
-export const pointerQueue: Array<{ x: number; y: number }> = [];
+export const pointerQueue: Array<{ x: number; y: number; pressure: number }> = [];

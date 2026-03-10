@@ -1,28 +1,28 @@
-// Form brush — paint K-M pigment into accumulation surface
+// Form brush — capsule segment K-M pigment into accumulation surface
 // Accumulation texture layout: R=K_r, G=K_g, B=K_b, A=paint_weight
 // Paint state texture: R=session_time_painted, G=thinners_at_paint_time
-// Thinners modulates: pigment density, edge softness, grain interaction
-// Bristle physics: age controls splay, edge roughness, bristle streaks
+// Capsule SDF between consecutive stroke points with pressure-varying radius
+// Bristle streaks aligned to stroke direction
 
 #include "../common/wetness.wgsl"
 
 struct BrushParams {
-  center: vec2f,              // offset 0   — cursor position
-  radius: f32,                // offset 8   — brush size
-  thinners: f32,              // offset 12  — master physics variable
-
-  palette_K: vec3f,           // offset 16  — K-M absorption
-  pigment_density: f32,       // offset 28  — replaces base_opacity
-
-  falloff: f32,               // offset 32  — per-stroke diminishing
-  reservoir: f32,             // offset 36  — paint remaining
-  age: f32,                   // offset 40  — 0=new, 0.5=worn, 1.0=old
-  bristle_seed: f32,          // offset 44  — random per session
-
-  surface_absorption: f32,    // offset 48  — surface absorbs first stroke
-  session_time: f32,          // offset 52  — current session time
-  surface_dry_speed: f32,     // offset 56  — drying rate multiplier
-  stroke_start_layers: f32,   // offset 60  — existing (for diminishing returns)
+  seg_start: vec2f,           // offset 0   — segment start position
+  seg_end: vec2f,             // offset 8   — segment end position
+  start_radius: f32,          // offset 16  — radius at seg_start (pressure-modulated)
+  end_radius: f32,            // offset 20  — radius at seg_end
+  thinners: f32,              // offset 24  — master physics variable
+  pigment_density: f32,       // offset 28
+  palette_K: vec3f,           // offset 32  — K-M absorption (16-byte aligned)
+  falloff: f32,               // offset 44
+  reservoir: f32,             // offset 48
+  age: f32,                   // offset 52
+  bristle_seed: f32,          // offset 56
+  stroke_start_layers: f32,   // offset 60
+  surface_absorption: f32,    // offset 64
+  session_time: f32,          // offset 68
+  surface_dry_speed: f32,     // offset 72
+  _pad: f32,                  // offset 76
 };
 
 @group(0) @binding(0) var<uniform> params: BrushParams;
@@ -39,6 +39,19 @@ fn hash_noise(angle: f32, seed: f32) -> f32 {
   return fract(s);
 }
 
+// Capsule SDF: returns (signed_distance, t_along_segment)
+// Negative distance = inside. Degenerates to circle when a == b.
+fn capsule_sdf(p: vec2f, a: vec2f, b: vec2f, ra: f32, rb: f32) -> vec2f {
+  let ab = b - a;
+  let len_sq = dot(ab, ab);
+  if (len_sq < 0.0000001) {
+    return vec2f(length(p - a) - ra, 0.0);
+  }
+  let t = clamp(dot(p - a, ab) / len_sq, 0.0, 1.0);
+  let r = mix(ra, rb, t);
+  return vec2f(length(p - a - ab * t) - r, t);
+}
+
 @compute @workgroup_size(8, 8, 1)
 fn main(@builtin(global_invocation_id) gid: vec3u) {
   let dims = textureDimensions(accum_read);
@@ -48,30 +61,56 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
   let existing = textureLoad(accum_read, vec2i(gid.xy), 0);
   let state = textureLoad(state_read, vec2i(gid.xy), 0);
 
-  // Vector from cursor to pixel
-  let to_pixel = uv - params.center;
-  let dist = length(to_pixel);
-
-  // Angle for bristle pattern
-  let angle = atan2(to_pixel.y, to_pixel.x);
-
-  // Thinners-driven edge softness and spread
+  // Thinners-driven spread and age-driven splay
   let spread = 1.0 + params.thinners * 0.4;
-
-  // Bristle physics: age controls splay and roughness
   let splay = 1.0 + params.age * 0.3;
-  let effective_radius = params.radius * spread * splay;
-  let edge_softness = params.radius * params.thinners * 0.5;
-  let edge_roughness = hash_noise(angle, params.bristle_seed) * params.age * 0.15 * params.radius;
 
-  // Bristle streak pattern
+  // Effective radii with spread + splay
+  let eff_sr = params.start_radius * spread * splay;
+  let eff_er = params.end_radius * spread * splay;
+
+  // AABB early reject
+  let max_r = max(eff_sr, eff_er);
+  let bb_min = min(params.seg_start, params.seg_end) - vec2f(max_r);
+  let bb_max = max(params.seg_start, params.seg_end) + vec2f(max_r);
+  if (uv.x < bb_min.x || uv.x > bb_max.x || uv.y < bb_min.y || uv.y > bb_max.y) {
+    textureStore(accum_write, vec2i(gid.xy), existing);
+    textureStore(state_write, vec2i(gid.xy), state);
+    return;
+  }
+
+  // Capsule SDF
+  let sdf = capsule_sdf(uv, params.seg_start, params.seg_end, eff_sr, eff_er);
+  let dist = sdf.x;       // negative inside, positive outside
+  let t_along = sdf.y;    // 0..1 along segment
+
+  // Stroke direction for bristle alignment
+  let seg_vec = params.seg_end - params.seg_start;
+  let seg_len = length(seg_vec);
+  let dir = select(vec2f(1.0, 0.0), seg_vec / seg_len, seg_len > 0.0001);
+  let perp = vec2f(-dir.y, dir.x);
+
+  // Project pixel perpendicular to stroke for bristle angle
+  let local_r = mix(eff_sr, eff_er, t_along);
+  let nearest = params.seg_start + seg_vec * t_along;
+  let to_px = uv - nearest;
+  let across = dot(to_px, perp);
+  let bristle_angle = across / max(local_r, 0.0001);
+
+  // Edge softness from local radius
+  let edge_softness = local_r * params.thinners * 0.5;
+  let edge_roughness = hash_noise(bristle_angle * 6.28, params.bristle_seed) * params.age * 0.15 * local_r;
+
+  // Bristle streaks run parallel to stroke
   let bristle_count = mix(5.0, 14.0, params.age);
-  let radial_pos = dist / max(effective_radius, 0.0001);
-  let edge_emphasis = smoothstep(0.3, 0.9, radial_pos);
-  let bristle_pattern = 1.0 - edge_emphasis * (0.5 + 0.5 * sin(angle * bristle_count + params.bristle_seed * 6.28)) * params.age;
+  let depth = max(-dist, 0.0) / max(local_r, 0.0001);
+  let edge_emphasis = smoothstep(0.3, 0.9, 1.0 - depth);
+  let bristle_pattern = 1.0 - edge_emphasis
+      * (0.5 + 0.5 * sin(bristle_angle * bristle_count + params.bristle_seed * 6.28))
+      * params.age;
 
-  // Combined alpha with bristle modulation
-  let alpha = (1.0 - smoothstep(effective_radius - edge_softness - edge_roughness, effective_radius, dist)) * bristle_pattern;
+  // Alpha from capsule SDF (negative inside -> smoothstep from -softness to 0)
+  let alpha = (1.0 - smoothstep(-edge_softness - edge_roughness, 0.0, dist)) * bristle_pattern;
 
   // Grain-aware deposition
   let grain_uv = uv * vec2f(f32(dims.x) / 512.0, f32(dims.y) / 512.0);
@@ -106,8 +145,8 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
 
   // Emergent color pickup — four variables, all from earlier phases
   let pickup = wetness * params.reservoir
-             * (0.3 + params.age * 0.7)       // age 0→0.3, age 1→1.0
-             * (0.2 + params.thinners * 0.8);  // thinners 0→0.2, thinners 1→1.0
+             * (0.3 + params.age * 0.7)       // age 0->0.3, age 1->1.0
+             * (0.2 + params.thinners * 0.8);  // thinners 0->0.2, thinners 1->1.0
   let input_K = mix(params.palette_K, existing.rgb, pickup);
 
   // Absorbed paint leaves deep stain
