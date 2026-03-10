@@ -158,12 +158,19 @@ export class MoodCreator extends BaseControl {
 
   show() {
     this._visible = true;
+    this.hidden = false;
     this._hues = [30, 15, 280, 210, 50];
     this._name = 'My Mood';
   }
 
   hide() {
     this._visible = false;
+    this.hidden = true;
+  }
+
+  connectedCallback() {
+    super.connectedCallback();
+    this.hidden = true;  // Start hidden so host element doesn't block clicks
   }
 
   private _onHueChange(index: number, e: Event) {

@@ -3,7 +3,7 @@
 // State: rg32float  — R=session_time_painted, G=thinners_at_paint_time
 
 import { getGPU } from '../gpu/context.js';
-import { allocPingPong, type PingPongTexture } from '../gpu/texture-pool.js';
+import { allocPingPong, destroyPingPong, type PingPongTexture } from '../gpu/texture-pool.js';
 
 const USAGE = GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.COPY_SRC | GPUTextureUsage.COPY_DST;
 
@@ -51,6 +51,8 @@ export function getSurfaceHeight(): number {
 
 /** Clear both accumulation and paint state textures (wipe canvas clean) */
 export function clearSurface() {
+  destroyPingPong('accum');
+  destroyPingPong('paint-state');
   accumPP = allocPingPong('accum', 'rgba16float', surfaceWidth, surfaceHeight, USAGE);
   statePP = allocPingPong('paint-state', 'rg32float', surfaceWidth, surfaceHeight, USAGE);
 }

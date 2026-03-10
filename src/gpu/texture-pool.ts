@@ -88,6 +88,16 @@ export function allocPingPong(
   return pp;
 }
 
+/** Force-destroy a ping-pong so the next allocPingPong recreates fresh textures */
+export function destroyPingPong(label: string) {
+  const existing = pingPongs.get(label);
+  if (existing) {
+    existing.read.destroy();
+    existing.write.destroy();
+    pingPongs.delete(label);
+  }
+}
+
 export function getTexture(label: string): GPUTexture | undefined {
   return textures.get(label);
 }
