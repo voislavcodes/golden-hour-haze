@@ -9,6 +9,7 @@ export interface MaterialDef {
   mode: number;  // u32 for shader: 0=board, 1=canvas, 2=paper, 3=gesso
   friction: number;  // how much surface slows tips (0-1)
   tooth: number;     // how much texture catches paint (0-1)
+  residueFloor: number;  // minimum paint floor after rag wipe (0-1)
 }
 
 function hexToLinear(hex: string): [number, number, number] {
@@ -28,6 +29,7 @@ export const MATERIALS: Record<MaterialType, MaterialDef> = {
     mode: 0,
     friction: 0.3,
     tooth: 0.4,
+    residueFloor: 0.03,
   },
   canvas: {
     colorLight: hexToLinear('#F0EBE0'),
@@ -37,6 +39,7 @@ export const MATERIALS: Record<MaterialType, MaterialDef> = {
     mode: 1,
     friction: 0.5,
     tooth: 0.8,
+    residueFloor: 0.10,
   },
   paper: {
     colorLight: hexToLinear('#F5F0E8'),
@@ -46,6 +49,7 @@ export const MATERIALS: Record<MaterialType, MaterialDef> = {
     mode: 2,
     friction: 0.7,
     tooth: 0.6,
+    residueFloor: 0.08,
   },
   gesso: {
     colorLight: hexToLinear('#F5F3F0'),
@@ -55,6 +59,7 @@ export const MATERIALS: Record<MaterialType, MaterialDef> = {
     mode: 3,
     friction: 0.2,
     tooth: 0.2,
+    residueFloor: 0.05,
   },
 };
 

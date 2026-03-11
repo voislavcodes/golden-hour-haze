@@ -1,11 +1,13 @@
-// Wipe engine — rag removal from the accumulation surface
-// Omnidirectional, grain-aware, patchy cloth texture, per-tool reservoir
-// Phase 6: paint state tracking for wetness-modulated wiping
+// Wipe engine — physical rag with directional smear, cloth contact, pressure sensitivity
+// 96-byte WipeParams, cloth heightfield in bind group 2, rag contamination state
 
 import { getGPU } from '../gpu/context.js';
 import { createComputePipeline } from '../gpu/pipeline-cache.js';
 import { getAccumPP, getStatePP, swapSurface, getSurfaceWidth, getSurfaceHeight } from './surface.js';
 import { getSurfaceHeightTexture } from '../surface/surface-material.js';
+import { getClothHeightfieldTexture } from '../surface/cloth-heightfield.js';
+import { getMaterial } from '../surface/materials.js';
+import { getRagState, feedRag } from './rag-state.js';
 import { sceneStore } from '../state/scene-state.js';
 import { uiStore, pointerQueue } from '../state/ui-state.js';
 import { getSessionTime } from '../session/session-timer.js';
@@ -17,15 +19,18 @@ let pipeline: GPUComputePipeline;
 let paramBuffer: GPUBuffer;
 let paramLayout: GPUBindGroupLayout;
 let textureLayout: GPUBindGroupLayout;
-let grainLayout: GPUBindGroupLayout;
+let surfaceLayout: GPUBindGroupLayout;
 let stateLayout: GPUBindGroupLayout;
 let grainSampler: GPUSampler;
 
-const PARAM_SIZE = 48; // bytes: 12 floats
+const PARAM_SIZE = 96; // bytes: 24 floats
 let paramStride = 256;
 const MAX_DABS_PER_FRAME = 256;
 
 let lastPos: Vec2 | null = null;
+let wipeDirection: Vec2 = [0, 0];
+let wipeSpeed = 0;
+let lastPressure = 0.5;
 
 // Per-tool reservoir
 let reservoir = 1.0;
@@ -51,11 +56,13 @@ export function initWipeEngine() {
     ],
   });
 
-  grainLayout = device.createBindGroupLayout({
-    label: 'wipe-grain-layout',
+  surfaceLayout = device.createBindGroupLayout({
+    label: 'wipe-surface-layout',
     entries: [
       { binding: 0, visibility: GPUShaderStage.COMPUTE, texture: { sampleType: 'float' } },
       { binding: 1, visibility: GPUShaderStage.COMPUTE, sampler: { type: 'filtering' } },
+      { binding: 2, visibility: GPUShaderStage.COMPUTE, texture: { sampleType: 'float' } },
+      { binding: 3, visibility: GPUShaderStage.COMPUTE, sampler: { type: 'filtering' } },
     ],
   });
 
@@ -75,10 +82,10 @@ export function initWipeEngine() {
     addressModeV: 'repeat',
   });
 
-  pipeline = createComputePipeline('wipe-v3', device, {
+  pipeline = createComputePipeline('wipe-v4', device, {
     label: 'wipe-compute',
     layout: device.createPipelineLayout({
-      bindGroupLayouts: [paramLayout, textureLayout, grainLayout, stateLayout],
+      bindGroupLayouts: [paramLayout, textureLayout, surfaceLayout, stateLayout],
     }),
     compute: {
       module: device.createShaderModule({ label: 'wipe-shader', code: wipeShader }),
@@ -107,8 +114,11 @@ function interpolateStroke(prev: Vec2, curr: Vec2, radius: number): Vec2[] {
   return points;
 }
 
-export function beginWipe(x: number, y: number) {
+export function beginWipe(x: number, y: number, pressure: number = 0.5) {
   lastPos = [x, y];
+  wipeDirection = [0, 0];
+  wipeSpeed = 0;
+  lastPressure = pressure;
   // Reset per-tool reservoir
   const load = sceneStore.get().load;
   reservoir = load > 0 ? 1.0 : 0;
@@ -116,7 +126,17 @@ export function beginWipe(x: number, y: number) {
 }
 
 export function endWipe() {
+  // Feed rag with approximation of lifted paint (active palette color as proxy)
+  const scene = sceneStore.get();
+  const palette = scene.palette;
+  const activeColor = palette.colors[palette.activeIndex];
+  const encounterFactor = 1.0 - reservoir;
+  if (encounterFactor > 0.01) {
+    feedRag(activeColor.r, activeColor.g, activeColor.b, encounterFactor);
+  }
   lastPos = null;
+  wipeDirection = [0, 0];
+  wipeSpeed = 0;
 }
 
 export function dispatchWipeDabs(encoder: GPUCommandEncoder, x: number, y: number): boolean {
@@ -126,13 +146,46 @@ export function dispatchWipeDabs(encoder: GPUCommandEncoder, x: number, y: numbe
   const radius = ui.brushSize;
   const sessionTime = getSessionTime();
 
-  const waypoints: Vec2[] = pointerQueue.length > 0
-    ? pointerQueue.splice(0).map(p => [p.x, p.y] as Vec2)
-    : [[x, y]];
+  // Extract waypoints + average pressure from pointer queue
+  let pressureSum = 0;
+  let pressureCount = 0;
+  const waypoints: Vec2[] = [];
+
+  if (pointerQueue.length > 0) {
+    const events = pointerQueue.splice(0);
+    for (const p of events) {
+      waypoints.push([p.x, p.y]);
+      pressureSum += p.pressure;
+      pressureCount++;
+    }
+  } else {
+    waypoints.push([x, y]);
+    pressureSum = lastPressure;
+    pressureCount = 1;
+  }
+
+  const avgPressure = pressureCount > 0 ? pressureSum / pressureCount : 0.5;
+  lastPressure = avgPressure;
 
   let points: Vec2[] = [];
   for (const wp of waypoints) {
     if (lastPos) {
+      // Update wipe direction from movement (exponential smoothing)
+      const dx = wp[0] - lastPos[0];
+      const dy = wp[1] - lastPos[1];
+      const len = Math.sqrt(dx * dx + dy * dy);
+      if (len > 0.001) {
+        const newDirX = dx / len;
+        const newDirY = dy / len;
+        wipeDirection[0] = wipeDirection[0] * 0.7 + newDirX * 0.3;
+        wipeDirection[1] = wipeDirection[1] * 0.7 + newDirY * 0.3;
+        // Re-normalize
+        const sLen = Math.sqrt(wipeDirection[0] * wipeDirection[0] + wipeDirection[1] * wipeDirection[1]);
+        if (sLen > 0.001) {
+          wipeDirection[0] /= sLen;
+          wipeDirection[1] /= sLen;
+        }
+      }
       points = points.concat(interpolateStroke(lastPos, wp, radius));
     } else {
       points.push(wp);
@@ -149,12 +202,19 @@ export function dispatchWipeDabs(encoder: GPUCommandEncoder, x: number, y: numbe
   const w = getSurfaceWidth();
   const h = getSurfaceHeight();
 
-  // Accumulate pixel distance for depletion
+  // Accumulate pixel distance for depletion + speed tracking
+  let framePixelDist = 0;
   for (let i = 1; i < points.length; i++) {
     const dx = points[i][0] - points[i - 1][0];
     const dy = points[i][1] - points[i - 1][1];
-    totalDistance += Math.sqrt(dx * dx + dy * dy) * w;
+    const d = Math.sqrt(dx * dx + dy * dy) * w;
+    totalDistance += d;
+    framePixelDist += d;
   }
+
+  // Normalized speed: pixel distance per dab / pixel radius
+  const avgPixelDistPerDab = points.length > 1 ? framePixelDist / (points.length - 1) : 0;
+  wipeSpeed = Math.min(1.0, avgPixelDistPerDab / (radius * w));
 
   // Update reservoir based on depletion curve
   const load = scene.load;
@@ -172,31 +232,53 @@ export function dispatchWipeDabs(encoder: GPUCommandEncoder, x: number, y: numbe
   }
 
   const ghostRetention = 0.15;
-  const patchiness = 0.6;
+
+  // Material residue floor
+  const mat = getMaterial(scene.surface.material);
+  const residueFloor = mat.residueFloor;
+
+  // Pressure-derived smear: light = more smear, heavy = more lift
+  const smearAmount = 0.6 + (0.15 - 0.6) * avgPressure; // mix(0.6, 0.15, pressure)
+
+  // Rag state
+  const rag = getRagState();
+
+  // Cloth tiling: surface_dims / 256 — cloth repeats every ~256 surface pixels
+  const clothScaleX = w / 256.0;
+  const clothScaleY = h / 256.0;
 
   // Write all dab params before encoding dispatches
   for (let i = 0; i < points.length; i++) {
     const pt = points[i];
     const data = new Float32Array([
-      pt[0], pt[1],    // center
-      radius,           // radius
-      scene.thinners,   // thinners
-      reservoir,        // strength
-      ghostRetention,   // ghost_retention
-      patchiness,       // patchiness
-      sessionTime,      // session_time
-      scene.surface.drySpeed, // surface_dry_speed
-      0, 0, 0,          // padding
+      pt[0], pt[1],                           // center [0,1]
+      wipeDirection[0], wipeDirection[1],      // wipe_direction [2,3]
+      radius,                                  // radius [4]
+      scene.thinners,                          // thinners [5]
+      reservoir,                               // strength [6]
+      ghostRetention,                          // ghost_retention [7]
+      sessionTime,                             // session_time [8]
+      scene.surface.drySpeed,                  // surface_dry_speed [9]
+      residueFloor,                            // residue_floor [10]
+      smearAmount,                             // smear_amount [11]
+      avgPressure,                             // pressure [12]
+      rag.Kr, rag.Kg, rag.Kb,                 // rag_Kr/Kg/Kb [13,14,15]
+      clothScaleX, clothScaleY,                // cloth_scale [16,17]
+      rag.saturation,                          // rag_saturation [18]
+      wipeSpeed,                               // wipe_speed [19]
+      0, 0, 0, 0,                             // padding [20-23]
     ]);
     device.queue.writeBuffer(paramBuffer, i * paramStride, data);
   }
 
-  // Create grain bind group once per dispatch batch
-  const grainBG = device.createBindGroup({
-    layout: grainLayout,
+  // Create surface bind group once per dispatch batch (surface_height + sampler + cloth_height + cloth_sampler)
+  const surfaceBG = device.createBindGroup({
+    layout: surfaceLayout,
     entries: [
       { binding: 0, resource: getSurfaceHeightTexture().createView() },
       { binding: 1, resource: grainSampler },
+      { binding: 2, resource: getClothHeightfieldTexture().createView() },
+      { binding: 3, resource: grainSampler },
     ],
   });
 
@@ -229,7 +311,7 @@ export function dispatchWipeDabs(encoder: GPUCommandEncoder, x: number, y: numbe
     pass.setPipeline(pipeline);
     pass.setBindGroup(0, paramBG);
     pass.setBindGroup(1, texBG);
-    pass.setBindGroup(2, grainBG);
+    pass.setBindGroup(2, surfaceBG);
     pass.setBindGroup(3, stateBG);
     pass.dispatchWorkgroups(Math.ceil(w / 8), Math.ceil(h / 8));
     pass.end();

@@ -15,9 +15,11 @@ import { initSurface, resizeSurface, clearSurface } from './painting/surface.js'
 import { initBrushEngine, beginStroke, endStroke, dispatchBrushDabs, dispatchPendingGhosts, reloadBrush } from './painting/brush-engine.js';
 import { initScrapeEngine, beginScrape, endScrape, dispatchScrapeDabs } from './painting/scrape-engine.js';
 import { initWipeEngine, beginWipe, endWipe, dispatchWipeDabs } from './painting/wipe-engine.js';
+import { resetRag } from './painting/rag-state.js';
 
 // Surface texture
 import { initSurfaceMaterial, updateSurfaceMaterialParams, generateSurfaceMaterialIfDirty } from './surface/surface-material.js';
+import { initClothHeightfield, setClothSeed, generateClothHeightfieldIfDirty } from './surface/cloth-heightfield.js';
 import { MATERIALS } from './surface/materials.js';
 
 // Atmosphere
@@ -109,6 +111,7 @@ export function initApp() {
   initBrushEngine();
   initScrapeEngine();
   initWipeEngine();
+  initClothHeightfield();
   initCompositor();
 
   // Write initial LUT params before texture allocation
@@ -116,6 +119,7 @@ export function initApp() {
   updateNoiseLutParams(scene.atmosphere.turbulence);
   updateGrainLutParams(1.0 + scene.atmosphere.grain * 3.0, scene.atmosphere.grainAngle);
   updateSurfaceMaterialParams(scene.surface);
+  setClothSeed(scene.surface.seed);
 
   // Allocate textures at initial size
   allocateAllTextures(width, height);
@@ -176,12 +180,14 @@ export function initApp() {
   document.addEventListener('start-painting', () => {
     clearSurface();
     resetSessionTimer();
+    resetRag();
     markAllDirty();
     compositorBGDirty = true;
   });
   document.addEventListener('new-painting', () => {
     clearSurface();
     resetSessionTimer();
+    resetRag();
     markAllDirty();
     compositorBGDirty = true;
   });
@@ -308,7 +314,7 @@ function setupPaintingInteraction() {
       } else if (isScrape) {
         beginScrape(ui.mouseX, ui.mouseY);
       } else {
-        beginWipe(ui.mouseX, ui.mouseY);
+        beginWipe(ui.mouseX, ui.mouseY, ui.pressure || 0.5);
       }
     }
 
@@ -375,6 +381,9 @@ function renderFrame(dt: number, elapsed: number) {
   if (generateSurfaceMaterialIfDirty(encoder)) {
     compositorBGDirty = true;
   }
+
+  // Generate cloth heightfield if dirty
+  generateClothHeightfieldIfDirty(encoder);
 
   if (isDirty('density')) {
     dispatchDensity(encoder, globalBindGroup);
