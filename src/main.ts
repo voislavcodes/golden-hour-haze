@@ -19,6 +19,11 @@ async function main() {
     await initGPU(canvas, width, height);
     initApp();
     console.log('Golden Hour Haze V2 initialized');
+
+    // Load test bridge when ?test is in the URL (for headless Playwright testing)
+    if (new URLSearchParams(location.search).has('test')) {
+      import('./test-bridge.js');
+    }
   } catch (err) {
     console.error('Failed to initialize:', err);
     showFallback((err as Error).message);
