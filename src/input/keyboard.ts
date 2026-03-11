@@ -1,5 +1,6 @@
 import { uiStore, type Tool } from '../state/ui-state.js';
 import { wipeOnRag } from '../painting/palette.js';
+import { setTimeMultiplier } from '../session/session-timer.js';
 
 const toolKeys: Record<string, Tool> = {
   v: 'select',
@@ -47,11 +48,23 @@ export function initKeyboardInput() {
       return;
     }
 
+    // Hold T — accelerate time 10× (drying fast-forward)
+    if (e.key.toLowerCase() === 't' && !e.repeat && !e.ctrlKey && !e.metaKey) {
+      setTimeMultiplier(10);
+      return;
+    }
+
     // Toggle UI
     if (e.key === 'Tab') {
       e.preventDefault();
       uiStore.update((s) => ({ showUI: !s.showUI }));
     }
 
+  });
+
+  document.addEventListener('keyup', (e) => {
+    if (e.key.toLowerCase() === 't') {
+      setTimeMultiplier(1);
+    }
   });
 }

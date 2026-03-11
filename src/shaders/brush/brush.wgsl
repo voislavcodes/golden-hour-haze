@@ -249,19 +249,6 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
       return;
     }
 
-    // Dry surface: very subtle tonal softening (burnishing)
-    if (wetness < 0.1 && existing.a > 0.01) {
-      let n1 = textureLoad(accum_read, vec2i(gid.xy) + vec2i(1, 0), 0);
-      let n2 = textureLoad(accum_read, vec2i(gid.xy) + vec2i(-1, 0), 0);
-      let n3 = textureLoad(accum_read, vec2i(gid.xy) + vec2i(0, 1), 0);
-      let n4 = textureLoad(accum_read, vec2i(gid.xy) + vec2i(0, -1), 0);
-      let avg = (existing + n1 + n2 + n3 + n4) * 0.2;
-      let tone_strength = delta * 0.08;
-      let toned = mix(existing, avg, tone_strength);
-      textureStore(accum_write, vec2i(gid.xy), toned);
-      textureStore(state_write, vec2i(gid.xy), state);
-      return;
-    }
   }
 
   if (effective_alpha < 0.001) {
