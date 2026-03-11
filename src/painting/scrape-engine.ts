@@ -64,7 +64,7 @@ export function initScrapeEngine() {
     label: 'scrape-state-layout',
     entries: [
       { binding: 0, visibility: GPUShaderStage.COMPUTE, texture: { sampleType: 'unfilterable-float' } },
-      { binding: 1, visibility: GPUShaderStage.COMPUTE, storageTexture: { access: 'write-only', format: 'rg32float' } },
+      { binding: 1, visibility: GPUShaderStage.COMPUTE, storageTexture: { access: 'write-only', format: 'rgba32float' } },
     ],
   });
 
@@ -76,7 +76,7 @@ export function initScrapeEngine() {
     addressModeV: 'repeat',
   });
 
-  pipeline = createComputePipeline('scrape-v2', device, {
+  pipeline = createComputePipeline('scrape-v3', device, {
     label: 'scrape-compute',
     layout: device.createPipelineLayout({
       bindGroupLayouts: [paramLayout, textureLayout, grainLayout, stateLayout],

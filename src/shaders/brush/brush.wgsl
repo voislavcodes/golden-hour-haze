@@ -21,7 +21,8 @@ struct BrushParams {
   session_time: f32,            // offset 60
   surface_dry_speed: f32,       // offset 64
   vertex_count: u32,            // offset 68
-  _pad: vec2f,                  // offset 72  — pad to 80
+  oil_remaining: f32,           // offset 72  — oil on brush (0=none, 1=full)
+  _pad: f32,                    // offset 76  — pad to 80
 };
 
 struct StrokeVertex {
@@ -37,7 +38,7 @@ struct StrokeVertex {
 @group(2) @binding(0) var surface_height: texture_2d<f32>;
 @group(2) @binding(1) var grain_sampler: sampler;
 @group(2) @binding(2) var state_read: texture_2d<f32>;
-@group(2) @binding(3) var state_write: texture_storage_2d<rg32float, write>;
+@group(2) @binding(3) var state_write: texture_storage_2d<rgba32float, write>;
 @group(2) @binding(4) var mask_read: texture_2d<f32>;
 @group(2) @binding(5) var mask_write: texture_storage_2d<r32float, write>;
 
@@ -245,7 +246,8 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
       let drag_wetness = max(up_wetness, local_wetness);
       let smear_time = select(state.r, upstream_state.r, upstream.a > existing.a && drag_wetness > 0.3);
       let smear_thin = select(state.g, upstream_state.g, upstream.a > existing.a);
-      textureStore(state_write, vec2i(gid.xy), vec4f(smear_time, smear_thin, 0.0, 0.0));
+      let smear_oil = select(state.b, upstream_state.b, upstream.a > existing.a);
+      textureStore(state_write, vec2i(gid.xy), vec4f(smear_time, smear_thin, smear_oil, 0.0));
       return;
     }
 
@@ -260,7 +262,7 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
   // Pure medium mode — thinners > 0.9 wets surface without depositing pigment
   if (params.thinners > 0.9) {
     textureStore(accum_write, vec2i(gid.xy), existing);
-    textureStore(state_write, vec2i(gid.xy), vec4f(params.session_time, 1.0, 0.0, 0.0));
+    textureStore(state_write, vec2i(gid.xy), vec4f(params.session_time, 1.0, state.b, 0.0));
     return;
   }
 
@@ -314,5 +316,6 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
 
   // Write paint state — timestamp + thinners for wetness tracking
   let new_state = select(state.rg, vec2f(params.session_time, params.thinners), effective_alpha > 0.01);
-  textureStore(state_write, vec2i(gid.xy), vec4f(new_state, 0.0, 0.0));
+  let new_oil = select(state.b, params.oil_remaining, effective_alpha > 0.01);
+  textureStore(state_write, vec2i(gid.xy), vec4f(new_state, new_oil, 0.0));
 }

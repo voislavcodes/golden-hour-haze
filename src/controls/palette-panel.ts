@@ -3,7 +3,7 @@ import { html, css } from 'lit';
 import { customElement, state } from 'lit/decorators.js';
 import { BaseControl } from './base-control.js';
 import { sceneStore } from '../state/scene-state.js';
-import { dipBrush, wipeOnRag, getActiveHue, sampleTonalColumn } from '../painting/palette.js';
+import { dipBrush, wipeOnRag, getActiveHue, sampleTonalColumn, toggleOil, isOilArmed } from '../painting/palette.js';
 import { reloadBrush } from '../painting/brush-engine.js';
 import type { KColor } from '../mood/moods.js';
 
@@ -15,6 +15,7 @@ function colorToCSS(c: KColor): string {
 export class PalettePanel extends BaseControl {
   @state() private _activeHue = 0;
   @state() private _tonalValues = [0.5, 0.5, 0.5, 0.5, 0.5];
+  @state() private _oilArmed = false;
 
   static styles = [
     BaseControl.baseStyles,
@@ -72,6 +73,21 @@ export class PalettePanel extends BaseControl {
         text-transform: uppercase;
         cursor: pointer;
       }
+      .oil-btn {
+        margin-top: 2px;
+        padding: 6px;
+        font-size: 10px;
+        text-align: center;
+        letter-spacing: 0.5px;
+        text-transform: uppercase;
+        cursor: pointer;
+        transition: all 180ms ease;
+      }
+      .oil-btn.armed {
+        border-color: var(--ghz-accent);
+        box-shadow: 0 0 10px rgba(232, 168, 64, 0.6);
+        color: var(--ghz-accent);
+      }
     `,
   ];
 
@@ -80,8 +96,10 @@ export class PalettePanel extends BaseControl {
   connectedCallback() {
     super.connectedCallback();
     this._activeHue = getActiveHue();
+    this._oilArmed = isOilArmed();
     const palette = sceneStore.get().palette;
     this._tonalValues = [...palette.tonalValues];
+    document.addEventListener('oil-changed', this._onOilChanged);
     this._unsub = sceneStore.select(
       (s) => s.palette,
       (palette) => {
@@ -94,6 +112,7 @@ export class PalettePanel extends BaseControl {
   disconnectedCallback() {
     super.disconnectedCallback();
     this._unsub?.();
+    document.removeEventListener('oil-changed', this._onOilChanged);
   }
 
   private _gradientCSS(baseColor: KColor): string {
@@ -103,10 +122,14 @@ export class PalettePanel extends BaseControl {
     return `linear-gradient(to bottom, ${colorToCSS(light)}, ${colorToCSS(mid)} 50%, ${colorToCSS(dark)})`;
   }
 
+  private _onOilChanged = () => { this._oilArmed = isOilArmed(); };
+  private _onOilClick() { toggleOil(); }
+
   private _onColumnClick(index: number) {
     dipBrush(index);
     reloadBrush();
     this._activeHue = index;
+    this._oilArmed = isOilArmed();
     sceneStore.update((s) => ({
       palette: { ...s.palette, activeIndex: index },
     }));
@@ -124,6 +147,7 @@ export class PalettePanel extends BaseControl {
     dipBrush(index);
     reloadBrush();
     this._activeHue = index;
+    this._oilArmed = isOilArmed();
   }
 
   private _onColumnDblClick(index: number) {
@@ -136,6 +160,7 @@ export class PalettePanel extends BaseControl {
     dipBrush(index);
     reloadBrush();
     this._activeHue = index;
+    this._oilArmed = isOilArmed();
   }
 
   private _onRagClick() {
@@ -167,6 +192,8 @@ export class PalettePanel extends BaseControl {
           })}
         </div>
         <button class="glass-button rag" @click=${this._onRagClick}>rag (X)</button>
+        <button class="glass-button oil-btn ${this._oilArmed ? 'armed' : ''}"
+                @click=${this._onOilClick}>oil (O)</button>
       </div>
     `;
   }

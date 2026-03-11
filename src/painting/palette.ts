@@ -55,6 +55,25 @@ export function rgbToKS(color: KColor): { Kr: number; Kg: number; Kb: number } {
   };
 }
 
+// --- Oil medium state ---
+
+let oilArmed = false;
+let oilRemaining = 0;
+const OIL_TRANSFER_RATE = 0.5;
+
+export function isOilArmed(): boolean { return oilArmed; }
+export function getOilRemaining(): number { return oilRemaining; }
+
+export function toggleOil() {
+  oilArmed = !oilArmed;
+  document.dispatchEvent(new CustomEvent('oil-changed'));
+}
+
+export function depleteOil() {
+  oilRemaining *= (1 - OIL_TRANSFER_RATE);
+  if (oilRemaining < 0.01) oilRemaining = 0;
+}
+
 // --- Tonal column sampling ---
 
 function lerpColor(a: KColor, b: KColor, t: number): KColor {
@@ -148,6 +167,7 @@ export function setBrushSlotSeed(index: number, seed: number) {
 export function wipeOnRag() {
   const slot = brushSlots[activeBrushSlot];
   slot.residueAmount *= 0.15;
+  oilRemaining = 0;
 }
 
 /** Get color at current tonal value for a hue index */
@@ -174,6 +194,12 @@ export function dipBrush(hueIndex: number) {
     slot.residueK = { ...color };
   }
   slot.residueAmount = Math.min(1.0, slot.residueAmount + 0.3);
+
+  if (oilArmed) {
+    oilRemaining = 1.0;
+    oilArmed = false;
+    document.dispatchEvent(new CustomEvent('oil-changed'));
+  }
 }
 
 /** Sync brush slot ages and seeds from session store into runtime slots */

@@ -7,7 +7,7 @@
 import { getGPU } from '../gpu/context.js';
 import { createComputePipeline } from '../gpu/pipeline-cache.js';
 import { getAccumPP, getStatePP, swapSurface, getSurfaceWidth, getSurfaceHeight } from './surface.js';
-import { getActiveKS, getBrushSlot, getActiveBrushSlot } from './palette.js';
+import { getActiveKS, getBrushSlot, getActiveBrushSlot, getOilRemaining, depleteOil } from './palette.js';
 import { getSurfaceHeightTexture } from '../surface/surface-material.js';
 import { sceneStore } from '../state/scene-state.js';
 import { uiStore, pointerQueue } from '../state/ui-state.js';
@@ -98,7 +98,7 @@ export function initBrushEngine() {
       { binding: 0, visibility: GPUShaderStage.COMPUTE, texture: { sampleType: 'float' } },
       { binding: 1, visibility: GPUShaderStage.COMPUTE, sampler: { type: 'filtering' } },
       { binding: 2, visibility: GPUShaderStage.COMPUTE, texture: { sampleType: 'unfilterable-float' } },
-      { binding: 3, visibility: GPUShaderStage.COMPUTE, storageTexture: { access: 'write-only', format: 'rg32float' } },
+      { binding: 3, visibility: GPUShaderStage.COMPUTE, storageTexture: { access: 'write-only', format: 'rgba32float' } },
       { binding: 4, visibility: GPUShaderStage.COMPUTE, texture: { sampleType: 'unfilterable-float' } },
       { binding: 5, visibility: GPUShaderStage.COMPUTE, storageTexture: { access: 'write-only', format: 'r32float' } },
     ],
@@ -112,7 +112,7 @@ export function initBrushEngine() {
     addressModeV: 'repeat',
   });
 
-  pipeline = createComputePipeline('brush-v5', device, {
+  pipeline = createComputePipeline('brush-v6', device, {
     label: 'brush-compute',
     layout: device.createPipelineLayout({
       bindGroupLayouts: [paramLayout, textureLayout, auxLayout],
@@ -175,7 +175,7 @@ function ensureSnapshotTextures() {
 
   const usage = GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST;
   snapshotAccum = device.createTexture({ label: 'snapshot-accum', size: [w, h], format: 'rgba16float', usage });
-  snapshotState = device.createTexture({ label: 'snapshot-state', size: [w, h], format: 'rg32float', usage });
+  snapshotState = device.createTexture({ label: 'snapshot-state', size: [w, h], format: 'rgba32float', usage });
   snapshotW = w;
   snapshotH = h;
 }
@@ -247,6 +247,7 @@ export function endStroke() {
     markDirty('surface');
   }
   lastPos = null;
+  depleteOil();
 }
 
 /** Write uniform + vertex buffers and dispatch a single compute pass.
@@ -346,8 +347,8 @@ function dispatchPolyline(
   f32[15] = sessionTime;                // session_time   (offset 60)
   f32[16] = scene.surface.drySpeed;     // surface_dry_speed (offset 64)
   u32[17] = vertexCount;                // vertex_count   (offset 68)
-  f32[18] = 0;                          // _pad.x
-  f32[19] = 0;                          // _pad.y
+  f32[18] = getOilRemaining();           // oil_remaining
+  f32[19] = 0;                          // _pad
   device.queue.writeBuffer(uniformBuffer, 0, ab);
 
   // Write vertex buffer

@@ -1,5 +1,5 @@
-// .ghz save/load — V4 project file format
-// Saves accumulation texture (rgba16float) + paint state texture (rg32float) + scene state
+// .ghz save/load — V5 project file format
+// Saves accumulation texture (rgba16float) + paint state texture (rgba32float) + scene state
 
 import { getGPU } from '../gpu/context.js';
 import { getReadTexture, getStateReadTexture, getAccumPP, getStatePP, swapSurface, getSurfaceWidth, getSurfaceHeight } from '../painting/surface.js';
@@ -47,7 +47,7 @@ export async function saveProject(): Promise<void> {
   const h = getSurfaceHeight();
 
   const header: GHZProject = {
-    version: 4,
+    version: 5,
     canvas: { width: w, height: h },
     scene,
     hasState: true,
@@ -55,8 +55,8 @@ export async function saveProject(): Promise<void> {
 
   const headerJson = JSON.stringify(header);
   const headerBytes = new TextEncoder().encode(headerJson);
-  const accumData = await readTexture(getReadTexture(), w, h, 8);       // rgba16float = 8 bpp
-  const stateData = await readTexture(getStateReadTexture(), w, h, 8);  // rg32float = 8 bpp
+  const accumData = await readTexture(getReadTexture(), w, h, 8);        // rgba16float = 8 bpp
+  const stateData = await readTexture(getStateReadTexture(), w, h, 16);  // rgba32float = 16 bpp
 
   // Format: [4 bytes header length][header JSON][accum binary][state binary]
   const totalSize = 4 + headerBytes.byteLength + accumData.byteLength + stateData.byteLength;
@@ -88,8 +88,8 @@ export async function loadProject(file: File): Promise<void> {
   const headerJson = new TextDecoder().decode(headerBytes);
   const header = JSON.parse(headerJson) as GHZProject;
 
-  // Support v2 and v4
-  if (header.version !== 2 && header.version !== 4) {
+  // Support v2, v4, and v5
+  if (header.version !== 2 && header.version !== 4 && header.version !== 5) {
     console.error('Unsupported project version:', header.version);
     return;
   }
@@ -159,20 +159,52 @@ export async function loadProject(file: File): Promise<void> {
     { width: header.canvas.width, height: header.canvas.height }
   );
 
-  // Upload paint state data if present (v4)
+  // Upload paint state data if present (v4 or v5)
   if (header.hasState) {
-    const stateBpp = 8; // rg32float
-    const stateBytesPerRow = Math.ceil(header.canvas.width * stateBpp / 256) * 256;
+    const w = header.canvas.width;
+    const h = header.canvas.height;
     const stateOffset = 4 + headerLength + accumSize;
-    if (stateOffset + stateBytesPerRow * header.canvas.height <= arrayBuffer.byteLength) {
-      const stateData = new Uint8Array(arrayBuffer, stateOffset, stateBytesPerRow * header.canvas.height);
-      const statePP = getStatePP();
-      device.queue.writeTexture(
-        { texture: statePP.write },
-        stateData,
-        { bytesPerRow: stateBytesPerRow },
-        { width: header.canvas.width, height: header.canvas.height }
-      );
+
+    if (header.version >= 5) {
+      // v5: rgba32float = 16 bpp — direct load
+      const stateBpp = 16;
+      const stateBytesPerRow = Math.ceil(w * stateBpp / 256) * 256;
+      if (stateOffset + stateBytesPerRow * h <= arrayBuffer.byteLength) {
+        const stateData = new Uint8Array(arrayBuffer, stateOffset, stateBytesPerRow * h);
+        const statePP = getStatePP();
+        device.queue.writeTexture(
+          { texture: statePP.write },
+          stateData,
+          { bytesPerRow: stateBytesPerRow },
+          { width: w, height: h }
+        );
+      }
+    } else {
+      // v4: rg32float (8 bpp) → expand to rgba32float (16 bpp)
+      const oldBpp = 8;
+      const newBpp = 16;
+      const oldBytesPerRow = Math.ceil(w * oldBpp / 256) * 256;
+      const newBytesPerRow = Math.ceil(w * newBpp / 256) * 256;
+      if (stateOffset + oldBytesPerRow * h <= arrayBuffer.byteLength) {
+        const src = new Float32Array(arrayBuffer, stateOffset, (oldBytesPerRow / 4) * h);
+        const expanded = new Float32Array((newBytesPerRow / 4) * h);
+        for (let y = 0; y < h; y++) {
+          for (let x = 0; x < w; x++) {
+            const si = y * (oldBytesPerRow / 4) + x * 2;
+            const di = y * (newBytesPerRow / 4) + x * 4;
+            expanded[di] = src[si];         // R: session_time
+            expanded[di + 1] = src[si + 1]; // G: thinners
+            // B (oil) and A stay 0.0
+          }
+        }
+        const statePP = getStatePP();
+        device.queue.writeTexture(
+          { texture: statePP.write },
+          expanded,
+          { bytesPerRow: newBytesPerRow },
+          { width: w, height: h }
+        );
+      }
     }
   }
 

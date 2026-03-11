@@ -118,26 +118,31 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4f {
   let grain_tint = mix(vec3f(grain_offset), surface_color * grain_offset * 2.0, 0.5);
   color += grain_tint;
 
-  // 5. Visual drying — sinking in
+  // 5. Visual drying — sinking in (oil medium prevents sinking)
   let state = textureLoad(paint_state_tex, vec2i(in.position.xy), 0);
   let wetness = calculate_wetness(state.r, comp_params.session_time, comp_params.surface_dry_speed, state.g);
   let paint_thinners = state.g;
+  let oil = state.b;
+  let oil_resist = 1.0 - oil;
 
   let dryness = (1.0 - wetness) * paint_opacity;
 
   // Sinking-in: lean paint loses medium, scatters more light → lightens + desaturates
-  let sink_strength = mix(0.05, 0.25, paint_thinners);
+  // Oil medium binds pigment — prevents sinking and preserves saturation
+  let sink_strength = mix(0.05, 0.25, paint_thinners) * oil_resist;
   color = mix(color, min(color + 0.35, vec3f(1.0)), dryness * sink_strength);
 
-  let desat_strength = mix(0.03, 0.15, paint_thinners);
+  let desat_strength = mix(0.03, 0.15, paint_thinners) * oil_resist;
   let lum = dot(color, vec3f(0.2126, 0.7152, 0.0722));
   color = mix(color, vec3f(lum), dryness * desat_strength);
 
   // Wet sheen — fresh paint is glossy (~6% brightness at full wetness)
-  color = mix(color, color * 1.12, wetness * 0.5 * paint_opacity);
+  // Oil maintains sheen even when dry
+  let sheen = max(wetness * 0.5, oil * 0.35) * paint_opacity;
+  color = mix(color, color * 1.12, sheen);
 
-  // Matte finish — dry paint absorbs ambient
-  color *= 1.0 - dryness * 0.04;
+  // Matte finish — dry paint absorbs ambient (oil stays glossy)
+  color *= 1.0 - dryness * 0.04 * oil_resist;
 
   // 6. Atmospheric brightness conformance
   let atmo_lum = dot(sky, vec3f(0.2126, 0.7152, 0.0722));
@@ -145,16 +150,16 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4f {
   let ceiling = atmo_lum + 0.3;
   color *= min(1.0, ceiling / max(form_lum, 0.001));
 
-  // 7. Atmospheric chroma — density desaturates gently, darkness more so
-  //    Color bleed — atmosphere tints paint
+  // 7. Atmospheric chroma — density desaturates, oil preserves
   let density_data = textureSample(density_tex, tex_sampler, uv);
   let density = density_data.r;
+
   let darkness = 1.0 - clamp(atmo_lum * 2.0, 0.0, 1.0);
-  let desat = max(darkness * 0.5, density * 0.12);
+  let desat = max(darkness * 0.5, density * 0.12) * oil_resist;
   let grey = dot(color, vec3f(0.2126, 0.7152, 0.0722));
   color = mix(color, vec3f(grey), desat);
 
-  let density_bleed = density * 0.15;
+  let density_bleed = density * 0.15 * oil_resist;
   color = mix(color, sky * (grey / max(atmo_lum, 0.01)), density_bleed);
 
   // 8. Grain + tonemap + sRGB

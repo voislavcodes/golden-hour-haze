@@ -23,7 +23,7 @@ struct ScrapeParams {
 @group(2) @binding(0) var surface_height: texture_2d<f32>;
 @group(2) @binding(1) var grain_sampler: sampler;
 @group(3) @binding(0) var state_read: texture_2d<f32>;
-@group(3) @binding(1) var state_write: texture_storage_2d<rg32float, write>;
+@group(3) @binding(1) var state_write: texture_storage_2d<rgba32float, write>;
 
 @compute @workgroup_size(8, 8, 1)
 fn main(@builtin(global_invocation_id) gid: vec3u) {

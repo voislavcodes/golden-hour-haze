@@ -63,7 +63,7 @@ export function initWipeEngine() {
     label: 'wipe-state-layout',
     entries: [
       { binding: 0, visibility: GPUShaderStage.COMPUTE, texture: { sampleType: 'unfilterable-float' } },
-      { binding: 1, visibility: GPUShaderStage.COMPUTE, storageTexture: { access: 'write-only', format: 'rg32float' } },
+      { binding: 1, visibility: GPUShaderStage.COMPUTE, storageTexture: { access: 'write-only', format: 'rgba32float' } },
     ],
   });
 
@@ -75,7 +75,7 @@ export function initWipeEngine() {
     addressModeV: 'repeat',
   });
 
-  pipeline = createComputePipeline('wipe-v2', device, {
+  pipeline = createComputePipeline('wipe-v3', device, {
     label: 'wipe-compute',
     layout: device.createPipelineLayout({
       bindGroupLayouts: [paramLayout, textureLayout, grainLayout, stateLayout],

@@ -1,6 +1,6 @@
 // Accumulation + paint state texture management — the painting surface
 // Accum: rgba16float — R=K_r, G=K_g, B=K_b, A=paint_weight
-// State: rg32float  — R=session_time_painted, G=thinners_at_paint_time
+// State: rgba32float — R=session_time_painted, G=thinners_at_paint_time, B=oil_intensity, A=reserved
 
 import { getGPU } from '../gpu/context.js';
 import { allocPingPong, destroyPingPong, type PingPongTexture } from '../gpu/texture-pool.js';
@@ -16,7 +16,7 @@ export function initSurface(width: number, height: number) {
   surfaceWidth = width;
   surfaceHeight = height;
   accumPP = allocPingPong('accum', 'rgba16float', width, height, USAGE);
-  statePP = allocPingPong('paint-state', 'rg32float', width, height, USAGE);
+  statePP = allocPingPong('paint-state', 'rgba32float', width, height, USAGE);
 }
 
 export function getAccumPP(): PingPongTexture {
@@ -54,7 +54,7 @@ export function clearSurface() {
   destroyPingPong('accum');
   destroyPingPong('paint-state');
   accumPP = allocPingPong('accum', 'rgba16float', surfaceWidth, surfaceHeight, USAGE);
-  statePP = allocPingPong('paint-state', 'rg32float', surfaceWidth, surfaceHeight, USAGE);
+  statePP = allocPingPong('paint-state', 'rgba32float', surfaceWidth, surfaceHeight, USAGE);
 }
 
 export function resizeSurface(width: number, height: number) {
@@ -74,7 +74,7 @@ export function resizeSurface(width: number, height: number) {
   const tempState = device.createTexture({
     label: 'state-resize-temp',
     size: { width: oldW, height: oldH },
-    format: 'rg32float',
+    format: 'rgba32float',
     usage: GPUTextureUsage.COPY_SRC | GPUTextureUsage.COPY_DST,
   });
   const enc1 = device.createCommandEncoder({ label: 'resize-save' });
@@ -94,7 +94,7 @@ export function resizeSurface(width: number, height: number) {
   surfaceWidth = width;
   surfaceHeight = height;
   accumPP = allocPingPong('accum', 'rgba16float', width, height, USAGE);
-  statePP = allocPingPong('paint-state', 'rg32float', width, height, USAGE);
+  statePP = allocPingPong('paint-state', 'rgba32float', width, height, USAGE);
 
   // Copy old content back, clamped to the overlapping region
   const copyW = Math.min(oldW, width);

@@ -1,5 +1,5 @@
 import { uiStore, type Tool } from '../state/ui-state.js';
-import { wipeOnRag } from '../painting/palette.js';
+import { wipeOnRag, toggleOil } from '../painting/palette.js';
 import { setTimeMultiplier } from '../session/session-timer.js';
 
 const toolKeys: Record<string, Tool> = {
@@ -33,6 +33,12 @@ export function initKeyboardInput() {
     }
     if (e.key === ']') {
       uiStore.update((s) => ({ activeBrushSlot: Math.min(4, s.activeBrushSlot + 1) }));
+      return;
+    }
+
+    // Oil medium toggle
+    if (e.key.toLowerCase() === 'o' && !e.ctrlKey && !e.metaKey) {
+      toggleOil();
       return;
     }
 
