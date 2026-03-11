@@ -52,7 +52,7 @@ test('paint demo scene', async ({ page }) => {
   });
 
   // Screenshot blank canvas
-  const canvas = page.locator('#ghz');
+  const canvas = page; // page.screenshot() for correct compositor + surface color blending
   await canvas.screenshot({ path: path.join(OUTPUT_DIR, '00-blank.png') });
   console.log('Saved 00-blank.png');
 
@@ -110,7 +110,7 @@ test('paint custom strokes from JSON', async ({ page }) => {
     await ghz.waitFrames(10);
   }, moodIndex);
 
-  const canvas = page.locator('#ghz');
+  const canvas = page; // page.screenshot() for correct compositor + surface color blending
 
   for (let i = 0; i < customStrokes.length; i++) {
     const stroke = customStrokes[i];

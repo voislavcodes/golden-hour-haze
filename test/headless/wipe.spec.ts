@@ -17,7 +17,7 @@ test.beforeAll(() => {
 
 async function screenshot(page: any, name: string) {
   await page.evaluate(() => (window as any).__ghz.waitFrames(8));
-  await page.locator('#ghz').screenshot({ path: path.join(OUTPUT_DIR, name) });
+  await page.screenshot({ path: path.join(OUTPUT_DIR, name) });
   console.log(`  -> ${name}`);
 }
 
