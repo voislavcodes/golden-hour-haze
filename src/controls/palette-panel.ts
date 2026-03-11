@@ -4,7 +4,7 @@ import { customElement, state } from 'lit/decorators.js';
 import { BaseControl } from './base-control.js';
 import { sceneStore } from '../state/scene-state.js';
 import { dipBrush, wipeOnRag, getActiveHue, sampleTonalColumn, toggleOil, isOilArmed } from '../painting/palette.js';
-import { reloadBrush } from '../painting/brush-engine.js';
+import { reloadBrush, wipeBrush } from '../painting/brush-engine.js';
 import type { KColor } from '../mood/moods.js';
 
 function colorToCSS(c: KColor): string {
@@ -165,6 +165,7 @@ export class PalettePanel extends BaseControl {
 
   private _onRagClick() {
     wipeOnRag();
+    wipeBrush();
     this.requestUpdate();
   }
 

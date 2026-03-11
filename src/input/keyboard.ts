@@ -1,5 +1,6 @@
 import { uiStore, type Tool } from '../state/ui-state.js';
 import { wipeOnRag, toggleOil } from '../painting/palette.js';
+import { wipeBrush } from '../painting/brush-engine.js';
 import { setTimeMultiplier } from '../session/session-timer.js';
 
 const toolKeys: Record<string, Tool> = {
@@ -45,6 +46,7 @@ export function initKeyboardInput() {
     // Rag wipe
     if (e.key.toLowerCase() === 'x' && !e.ctrlKey && !e.metaKey) {
       wipeOnRag();
+      wipeBrush();
       return;
     }
 

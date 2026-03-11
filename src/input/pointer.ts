@@ -47,6 +47,8 @@ function onPointerMove(e: PointerEvent) {
       x: (ce.clientX - rect.left) / rect.width,
       y: (ce.clientY - rect.top) / rect.height,
       pressure: ce.pressure > 0 ? ce.pressure : 0.5,
+      tiltX: ce.tiltX || 0,
+      tiltY: ce.tiltY || 0,
     });
   }
 

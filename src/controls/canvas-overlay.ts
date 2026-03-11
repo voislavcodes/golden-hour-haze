@@ -170,6 +170,8 @@ export class CanvasOverlay extends BaseControl {
         x: (ce.clientX - rect.left) / rect.width,
         y: (ce.clientY - rect.top) / rect.height,
         pressure: this._normalizePressure(ce),
+        tiltX: ce.tiltX || 0,
+        tiltY: ce.tiltY || 0,
       });
     }
 
