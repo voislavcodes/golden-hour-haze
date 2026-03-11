@@ -145,16 +145,16 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4f {
   let ceiling = atmo_lum + 0.3;
   color *= min(1.0, ceiling / max(form_lum, 0.001));
 
-  // 7. Desaturation — darkness + density kill chroma
+  // 7. Atmospheric chroma — density desaturates gently, darkness more so
   //    Color bleed — atmosphere tints paint
   let density_data = textureSample(density_tex, tex_sampler, uv);
   let density = density_data.r;
   let darkness = 1.0 - clamp(atmo_lum * 2.0, 0.0, 1.0);
-  let desat = max(darkness * 0.7, density * 0.35);
+  let desat = max(darkness * 0.5, density * 0.12);
   let grey = dot(color, vec3f(0.2126, 0.7152, 0.0722));
   color = mix(color, vec3f(grey), desat);
 
-  let density_bleed = density * 0.35;
+  let density_bleed = density * 0.15;
   color = mix(color, sky * (grey / max(atmo_lum, 0.01)), density_bleed);
 
   // 8. Grain + tonemap + sRGB
