@@ -45,6 +45,9 @@ import { sceneStore } from './state/scene-state.js';
 import { uiStore, pointerQueue } from './state/ui-state.js';
 import { markDirty, isDirty, clearDirty, isAnyDirty, markAllDirty } from './state/dirty-flags.js';
 
+// Palette
+import { syncBrushSlotsFromSession, setActiveBrushSlot, BRUSH_SLOT_SIZES } from './painting/palette.js';
+
 // Register web components (side-effect imports)
 import './controls/toolbar.js';
 import './controls/canvas-overlay.js';
@@ -54,9 +57,11 @@ import './controls/export-button.js';
 import './controls/load-slider.js';
 import './controls/thinners-slider.js';
 import './controls/mood-selector.js';
+import './controls/brush-selector.js';
 
 // Session
 import { startSessionTimer, resetSessionTimer, getSessionTime } from './session/session-timer.js';
+import { sessionStore } from './session/session-state.js';
 
 // Input
 import { initPointerInput } from './input/pointer.js';
@@ -116,6 +121,27 @@ export function initApp() {
   // Input
   initPointerInput(canvas);
   initKeyboardInput();
+
+  // Brush slot → palette sync
+  syncBrushSlotsFromSession();
+  setActiveBrushSlot(uiStore.get().activeBrushSlot);
+
+  uiStore.select(
+    (s) => s.activeBrushSlot,
+    (slot) => {
+      setActiveBrushSlot(slot);
+      uiStore.set({ brushSize: BRUSH_SLOT_SIZES[slot] });
+    }
+  );
+
+  sessionStore.select(
+    (s) => s.phase,
+    (phase) => {
+      if (phase === 'test' || phase === 'paint') {
+        syncBrushSlotsFromSession();
+      }
+    }
+  );
 
   // Session flow
   startSessionTimer();

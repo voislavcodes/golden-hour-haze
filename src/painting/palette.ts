@@ -3,6 +3,7 @@
 // Brush slots carry residue from previous colors
 
 import { sceneStore } from '../state/scene-state.js';
+import { sessionStore } from '../session/session-state.js';
 import type { KColor } from '../mood/moods.js';
 
 function clamp(v: number, lo: number, hi: number): number {
@@ -99,6 +100,9 @@ export interface BrushSlot {
   bristleSeed: number;   // random per session
 }
 
+export const BRUSH_SLOT_NAMES = ['Detail', 'Small', 'Medium', 'Large', 'Wash'] as const;
+export const BRUSH_SLOT_SIZES = [0.012, 0.025, 0.05, 0.10, 0.20] as const;
+
 const NUM_BRUSH_SLOTS = 5;
 const brushSlots: BrushSlot[] = Array.from({ length: NUM_BRUSH_SLOTS }, () => ({
   residueK: { r: 0, g: 0, b: 0 },
@@ -170,6 +174,15 @@ export function dipBrush(hueIndex: number) {
     slot.residueK = { ...color };
   }
   slot.residueAmount = Math.min(1.0, slot.residueAmount + 0.3);
+}
+
+/** Sync brush slot ages and seeds from session store into runtime slots */
+export function syncBrushSlotsFromSession() {
+  const { brushAges, bristleSeeds } = sessionStore.get();
+  for (let i = 0; i < NUM_BRUSH_SLOTS; i++) {
+    brushSlots[i].age = brushAges[i] ?? 0;
+    brushSlots[i].bristleSeed = bristleSeeds[i] ?? Math.random();
+  }
 }
 
 /**

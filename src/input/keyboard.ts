@@ -19,13 +19,19 @@ export function initKeyboardInput() {
       }
     }
 
-    // Brush size shortcuts — always controls circle size for all tools
+    // Direct brush slot selection: 1-5
+    if (e.key >= '1' && e.key <= '5' && !e.ctrlKey && !e.metaKey && !e.altKey) {
+      uiStore.set({ activeBrushSlot: parseInt(e.key) - 1 });
+      return;
+    }
+
+    // Brush slot stepping
     if (e.key === '[') {
-      uiStore.update((s) => ({ brushSize: Math.max(0.01, s.brushSize * 0.8) }));
+      uiStore.update((s) => ({ activeBrushSlot: Math.max(0, s.activeBrushSlot - 1) }));
       return;
     }
     if (e.key === ']') {
-      uiStore.update((s) => ({ brushSize: Math.min(0.25, s.brushSize * 1.25) }));
+      uiStore.update((s) => ({ activeBrushSlot: Math.min(4, s.activeBrushSlot + 1) }));
       return;
     }
 
