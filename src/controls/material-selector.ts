@@ -1,4 +1,4 @@
-// Material selector — 4 material cards + tone/grain sliders for prepare-surface phase
+// Material selector — 4 material cards + tone/grain sliders
 import { html, css } from 'lit';
 import { customElement, state } from 'lit/decorators.js';
 import { BaseControl } from './base-control.js';
@@ -24,12 +24,13 @@ export class MaterialSelector extends BaseControl {
       }
 
       .cards {
-        display: flex;
-        gap: 10px;
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 8px;
       }
 
       .card {
-        width: 120px;
+        width: auto;
         padding: 10px;
         cursor: pointer;
         transition: border-color 0.2s, box-shadow 0.2s;
@@ -65,7 +66,7 @@ export class MaterialSelector extends BaseControl {
         display: flex;
         flex-direction: column;
         gap: 12px;
-        width: 300px;
+        width: 100%;
       }
 
       .slider-row {
@@ -122,7 +123,7 @@ export class MaterialSelector extends BaseControl {
       .shuffle-row {
         display: flex;
         justify-content: flex-end;
-        width: 300px;
+        width: 100%;
       }
 
       .shuffle-btn {

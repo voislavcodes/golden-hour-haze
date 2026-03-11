@@ -57,7 +57,8 @@ import './controls/material-selector.js';
 import './controls/export-button.js';
 import './controls/load-slider.js';
 import './controls/thinners-slider.js';
-import './controls/mood-selector.js';
+import './controls/session-bar.js';
+import './controls/prepare-panel.js';
 import './controls/brush-selector.js';
 import './controls/artboard-selector.js';
 
@@ -157,7 +158,7 @@ export function initApp() {
     (s) => s.phase,
     (phase) => {
       if (phase === 'test') {
-        // Resize artboard if dimensions changed during prepare-surface
+        // Resize artboard if dimensions changed during prepare
         const ab = artboardStore.get();
         const gpu = getGPU();
         if (ab.width !== gpu.width || ab.height !== gpu.height) {

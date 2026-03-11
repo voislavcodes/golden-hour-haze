@@ -16,12 +16,13 @@ export class ArtboardSelector extends BaseControl {
       }
 
       .cards {
-        display: flex;
-        gap: 10px;
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 8px;
       }
 
       .card {
-        width: 120px;
+        width: auto;
         padding: 10px;
         cursor: pointer;
         transition: border-color 0.2s, box-shadow 0.2s;

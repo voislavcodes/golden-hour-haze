@@ -90,7 +90,7 @@ export class BrushSelector extends BaseControl {
   ];
 
   @state() private _activeSlot = 2;
-  @state() private _phase: SessionPhase = 'prepare-mood';
+  @state() private _phase: SessionPhase = 'prepare';
   @state() private _brushAges: number[] = [0, 0.5, 0.5, 1.0, 1.0];
 
   private _unsubs: Array<() => void> = [];
@@ -136,7 +136,7 @@ export class BrushSelector extends BaseControl {
   }
 
   render() {
-    if (this._phase === 'prepare-mood' || this._phase === 'prepare-surface') {
+    if (this._phase === 'prepare') {
       return nothing;
     }
 

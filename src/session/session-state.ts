@@ -1,7 +1,7 @@
 // Session flow state machine — prepare / test / paint
 import { createStore } from '../state/store.js';
 
-export type SessionPhase = 'prepare-mood' | 'prepare-surface' | 'test' | 'paint';
+export type SessionPhase = 'prepare' | 'test' | 'paint';
 
 export interface SessionState {
   phase: SessionPhase;
@@ -11,7 +11,7 @@ export interface SessionState {
 }
 
 export const sessionStore = createStore<SessionState>({
-  phase: 'prepare-mood',
+  phase: 'prepare',
   moodIndex: 0,
   brushAges: [0.0, 0.5, 0.5, 1.0, 1.0],   // Detail=NEW, Small=WORN, Medium=WORN, Large=OLD, Wash=OLD
   bristleSeeds: Array.from({ length: 5 }, () => Math.random()),
@@ -20,10 +20,7 @@ export const sessionStore = createStore<SessionState>({
 export function advancePhase() {
   const { phase } = sessionStore.get();
   switch (phase) {
-    case 'prepare-mood':
-      sessionStore.set({ phase: 'prepare-surface' });
-      break;
-    case 'prepare-surface':
+    case 'prepare':
       sessionStore.set({ phase: 'test' });
       break;
     case 'test':
@@ -38,18 +35,15 @@ export function advancePhase() {
 export function retreatPhase() {
   const { phase } = sessionStore.get();
   switch (phase) {
-    case 'prepare-surface':
-      sessionStore.set({ phase: 'prepare-mood' });
-      break;
     case 'test':
-      sessionStore.set({ phase: 'prepare-surface' });
+      sessionStore.set({ phase: 'prepare' });
       break;
   }
 }
 
-export function resetToPrepareMood() {
+export function resetToPrepare() {
   sessionStore.set({
-    phase: 'prepare-mood',
+    phase: 'prepare',
     moodIndex: 0,
     brushAges: [0.0, 0.5, 0.5, 1.0, 1.0],
     bristleSeeds: Array.from({ length: 5 }, () => Math.random()),
