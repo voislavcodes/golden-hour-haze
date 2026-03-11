@@ -105,6 +105,11 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
   let smear_fraction = mix(0.7, 0.3, params.pressure);
   let lift_fraction = mix(0.3, 0.7, params.pressure);
 
+  // --- Residue floor: the stain that can never be removed ---
+  // Computed early so both smear and lift respect it
+  let residue = select(params.residue_floor, params.ghost_retention, params.residue_floor < 0.001);
+  let floor_val = max(residue, params.ghost_retention);
+
   // --- Smear: additive paint transfer (not a lerp!) ---
   // Paint physically moves from upstream to current texel in wipe direction
   var result_K = existing.rgb;
@@ -120,7 +125,11 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
     let upstream = textureLoad(accum_read, upstream_px, 0);
 
     let speed_factor = saturate(params.wipe_speed);
-    let transfer = saturate(contact * alpha * pressure_curve * smear_effectiveness * speed_factor * 0.25);
+    let raw_transfer = saturate(contact * alpha * pressure_curve * smear_effectiveness * speed_factor * 0.25);
+
+    // Clamp outflow: never send more paint away than would bring us below the floor
+    let max_outflow = max(0.0, (existing.a - floor_val) / max(existing.a, 0.001));
+    let transfer = min(raw_transfer, max_outflow);
 
     // Paint leaving this texel downstream
     let out_K = existing.rgb * transfer;
@@ -141,14 +150,17 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
 
   // --- Lift: rag absorbs paint (secondary to smear) ---
   let rag_absorb = 1.0 - params.rag_saturation;
-  let thin_lift_bonus = state.g * 0.1;
+  let thin_lift_bonus = state.g * 0.05;
   let base_lift = alpha * params.strength * grain_lift * contact * pressure_curve
-                  * lift_fraction * rag_absorb * 0.12;
-  let lift_amount = (base_lift + thin_lift_bonus) * wetness_factor;
+                  * lift_fraction * rag_absorb * 0.04;
+  let raw_lift = (base_lift + thin_lift_bonus) * wetness_factor;
 
-  // Residue floor — absolute minimum per material (never wipe below this)
-  let residue = select(params.residue_floor, params.ghost_retention, params.residue_floor < 0.001);
-  let floor_val = max(residue, params.ghost_retention * (1.0 - wetness));
+  // Asymptotic decay: as paint approaches floor, lift drops quadratically
+  // This makes the stain approach the floor but never reach it quickly
+  let headroom = max(0.0, result_weight - floor_val) / max(existing.a, 0.001);
+  let asymptote = headroom * headroom;  // quadratic: slows dramatically near floor
+  let lift_amount = raw_lift * asymptote;
+
   // Don't lift below floor; don't raise already-thin paint to floor
   let effective_floor = min(existing.a, floor_val);
   let new_weight = max(effective_floor, result_weight - lift_amount);
@@ -157,7 +169,8 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
   let k_scale = select(1.0, new_weight / max(result_weight, 0.001), result_weight > 0.001);
   var final_K = result_K * k_scale;
 
-  // Ghost stain — K values never drop below floor fraction of original
+  // Ghost stain — K values never drop below a visible fraction of original pigment
+  // Uses floor_val as the retention fraction so the stain is always visible
   let ghost_floor = existing.rgb * floor_val;
   final_K = max(ghost_floor, final_K);
 

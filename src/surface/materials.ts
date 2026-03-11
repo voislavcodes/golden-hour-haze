@@ -29,7 +29,7 @@ export const MATERIALS: Record<MaterialType, MaterialDef> = {
     mode: 0,
     friction: 0.3,
     tooth: 0.4,
-    residueFloor: 0.03,
+    residueFloor: 0.18,
   },
   canvas: {
     colorLight: hexToLinear('#F0EBE0'),
@@ -39,7 +39,7 @@ export const MATERIALS: Record<MaterialType, MaterialDef> = {
     mode: 1,
     friction: 0.5,
     tooth: 0.8,
-    residueFloor: 0.10,
+    residueFloor: 0.25,
   },
   paper: {
     colorLight: hexToLinear('#F5F0E8'),
@@ -49,7 +49,7 @@ export const MATERIALS: Record<MaterialType, MaterialDef> = {
     mode: 2,
     friction: 0.7,
     tooth: 0.6,
-    residueFloor: 0.08,
+    residueFloor: 0.20,
   },
   gesso: {
     colorLight: hexToLinear('#F5F3F0'),
@@ -59,7 +59,7 @@ export const MATERIALS: Record<MaterialType, MaterialDef> = {
     mode: 3,
     friction: 0.2,
     tooth: 0.2,
-    residueFloor: 0.05,
+    residueFloor: 0.12,
   },
 };
 
