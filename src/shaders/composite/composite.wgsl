@@ -118,14 +118,26 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4f {
   let grain_tint = mix(vec3f(grain_offset), surface_color * grain_offset * 2.0, 0.5);
   color += grain_tint;
 
-  // 5. Visual drying — wet sheen, dry matte
+  // 5. Visual drying — sinking in
   let state = textureLoad(paint_state_tex, vec2i(in.position.xy), 0);
   let wetness = calculate_wetness(state.r, comp_params.session_time, comp_params.surface_dry_speed, state.g);
-  // Wet paint has subtle sheen (brighter)
-  color = mix(color, color * 1.08, wetness * 0.04 * paint_opacity);
-  // Dry paint has subtle matte desaturation
-  let dry_grey = dot(color, vec3f(0.2126, 0.7152, 0.0722));
-  color = mix(color, vec3f(dry_grey), (1.0 - wetness) * 0.025 * paint_opacity);
+  let paint_thinners = state.g;
+
+  let dryness = (1.0 - wetness) * paint_opacity;
+
+  // Sinking-in: lean paint loses medium, scatters more light → lightens + desaturates
+  let sink_strength = mix(0.05, 0.25, paint_thinners);
+  color = mix(color, min(color + 0.35, vec3f(1.0)), dryness * sink_strength);
+
+  let desat_strength = mix(0.03, 0.15, paint_thinners);
+  let lum = dot(color, vec3f(0.2126, 0.7152, 0.0722));
+  color = mix(color, vec3f(lum), dryness * desat_strength);
+
+  // Wet sheen — fresh paint is glossy (~6% brightness at full wetness)
+  color = mix(color, color * 1.12, wetness * 0.5 * paint_opacity);
+
+  // Matte finish — dry paint absorbs ambient
+  color *= 1.0 - dryness * 0.04;
 
   // 6. Atmospheric brightness conformance
   let atmo_lum = dot(sky, vec3f(0.2126, 0.7152, 0.0722));

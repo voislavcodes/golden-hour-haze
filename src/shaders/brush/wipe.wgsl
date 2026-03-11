@@ -47,7 +47,8 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
 
   // --- Wetness modulates wipe effectiveness ---
   let wetness = calculate_wetness(state.r, params.session_time, params.surface_dry_speed, state.g);
-  let wetness_factor = mix(0.05, 1.0, wetness);
+  let tacky = smoothstep(0.1, 0.25, wetness) * smoothstep(0.5, 0.35, wetness);
+  let wetness_factor = mix(0.05, 1.0, wetness) * (1.0 - tacky * 0.4);
   let thin_lift_bonus = state.g * 0.5;  // thinners makes paint easier to lift
 
   // --- Surface grain interaction ---

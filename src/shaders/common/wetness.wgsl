@@ -6,9 +6,9 @@ fn calculate_wetness(paint_time: f32, current_time: f32, dry_speed: f32, paint_t
   let age = current_time - paint_time;
   let thinners_dry_boost = 1.0 + paint_thinners * 2.0;
   let adjusted_age = age * dry_speed * thinners_dry_boost;
-  // 0-180s wet, 180-600s tacky, 600-1800s set, 1800s+ dry
-  if (adjusted_age < 180.0) { return mix(1.0, 0.5, adjusted_age / 180.0); }
-  if (adjusted_age < 600.0) { return mix(0.5, 0.1, (adjusted_age - 180.0) / 420.0); }
-  if (adjusted_age < 1800.0) { return mix(0.1, 0.02, (adjusted_age - 600.0) / 1200.0); }
+  // 0-90s wet, 90-300s tacky, 300-900s set, 900s+ dry
+  if (adjusted_age < 90.0) { return mix(1.0, 0.5, adjusted_age / 90.0); }
+  if (adjusted_age < 300.0) { return mix(0.5, 0.1, (adjusted_age - 90.0) / 210.0); }
+  if (adjusted_age < 900.0) { return mix(0.1, 0.02, (adjusted_age - 300.0) / 600.0); }
   return 0.02;
 }

@@ -332,6 +332,7 @@ function setupPaintingInteraction() {
 }
 
 let lastDryingUpdate = 0;
+let lastStrokeTime = 0;
 
 function renderFrame(dt: number, elapsed: number) {
   const gpu = getGPU();
@@ -342,11 +343,14 @@ function renderFrame(dt: number, elapsed: number) {
   const strokeNeedsDispatch = strokeActive && ui.mouseDown;
   if (strokeNeedsDispatch) {
     markDirty('surface');
+    lastStrokeTime = getSessionTime();
   }
 
-  // Periodic drying update — refresh compositor every ~2s so visual drying progresses
+  // Adaptive drying update — per-frame while drying active, ramp to 0.5s intervals
   const sessionTime = getSessionTime();
-  if (sessionTime - lastDryingUpdate > 2.0) {
+  const sincePaint = sessionTime - lastStrokeTime;
+  const dryingInterval = Math.min(0.5, Math.max(0, sincePaint - 60) * 0.01);
+  if (sessionTime - lastDryingUpdate > dryingInterval) {
     lastDryingUpdate = sessionTime;
     updateCompositorSessionTime(sessionTime);
     markDirty('composite');

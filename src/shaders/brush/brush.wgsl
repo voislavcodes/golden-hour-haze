@@ -205,6 +205,65 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
   let opacity_boost = mix(2.2, 1.0, params.thinners);
   let effective_alpha = delta * params.pigment_density * opacity_boost * pow(params.falloff, layers_this_stroke) * final_reservoir * grain_interaction;
 
+  // === Depleted brush interaction — the brush always does something ===
+  // Dry brush drags paint from upstream (opposite of stroke direction) onto current pixel.
+  // This spreads paint beyond its original edge — the key blending behavior.
+  let brush_contact = delta > 0.01;
+  let brush_empty = final_reservoir < 0.05;
+
+  // Sample upstream — where the brush is dragging paint FROM
+  let upstream_px = vec2i(clamp(vec2f(gid.xy) - dir * 3.0, vec2f(0.0), vec2f(dims) - 1.0));
+  let upstream = textureLoad(accum_read, upstream_px, 0);
+  let upstream_state = textureLoad(state_read, upstream_px, 0);
+  let has_paint_to_drag = existing.a > 0.01 || upstream.a > 0.01;
+
+  if (effective_alpha < 0.001 && has_paint_to_drag && brush_contact && brush_empty) {
+    let up_wetness = calculate_wetness(upstream_state.r, params.session_time, params.surface_dry_speed, upstream_state.g);
+    let local_wetness = calculate_wetness(state.r, params.session_time, params.surface_dry_speed, state.g);
+    let wetness = max(up_wetness, local_wetness);
+    let tacky = smoothstep(0.1, 0.25, wetness) * smoothstep(0.5, 0.35, wetness);
+
+    // Smear strength: wet paint moves easily, tacky drags aggressively
+    let smear_base = wetness * 0.7 + tacky * 0.8;
+    let smear_strength = smear_base * delta * (0.5 + params.age * 0.5);
+
+    if (smear_strength > 0.001) {
+      // Additive paint transfer — brush picks up chunk of upstream and deposits it here
+      let transfer = upstream.a * smear_strength;
+
+      // Color: K-M blend proportional to how much new paint vs existing
+      let blend_ratio = transfer / (existing.a + transfer + 0.001);
+      let smeared_K = mix(existing.rgb, upstream.rgb, blend_ratio);
+      let smeared_weight = existing.a + transfer;
+
+      // Tacky muddying
+      let avg_K = dot(smeared_K, vec3f(0.333));
+      let muddy_smear = mix(smeared_K, vec3f(avg_K), tacky * 0.25);
+
+      textureStore(accum_write, vec2i(gid.xy), vec4f(muddy_smear, smeared_weight));
+      // Smearing refreshes paint state — use upstream state if dragging wet paint onto bare
+      let drag_wetness = max(up_wetness, local_wetness);
+      let smear_time = select(state.r, upstream_state.r, upstream.a > existing.a && drag_wetness > 0.3);
+      let smear_thin = select(state.g, upstream_state.g, upstream.a > existing.a);
+      textureStore(state_write, vec2i(gid.xy), vec4f(smear_time, smear_thin, 0.0, 0.0));
+      return;
+    }
+
+    // Dry surface: very subtle tonal softening (burnishing)
+    if (wetness < 0.1 && existing.a > 0.01) {
+      let n1 = textureLoad(accum_read, vec2i(gid.xy) + vec2i(1, 0), 0);
+      let n2 = textureLoad(accum_read, vec2i(gid.xy) + vec2i(-1, 0), 0);
+      let n3 = textureLoad(accum_read, vec2i(gid.xy) + vec2i(0, 1), 0);
+      let n4 = textureLoad(accum_read, vec2i(gid.xy) + vec2i(0, -1), 0);
+      let avg = (existing + n1 + n2 + n3 + n4) * 0.2;
+      let tone_strength = delta * 0.08;
+      let toned = mix(existing, avg, tone_strength);
+      textureStore(accum_write, vec2i(gid.xy), toned);
+      textureStore(state_write, vec2i(gid.xy), state);
+      return;
+    }
+  }
+
   if (effective_alpha < 0.001) {
     textureStore(accum_write, vec2i(gid.xy), existing);
     textureStore(state_write, vec2i(gid.xy), state);
@@ -221,34 +280,50 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
   // Wetness of existing paint
   let wetness = calculate_wetness(state.r, params.session_time, params.surface_dry_speed, state.g);
 
+  // Tacky zone detection — bell curve peaking at wetness ~0.3
+  let tacky = smoothstep(0.1, 0.25, wetness) * smoothstep(0.5, 0.35, wetness);
+
   // Surface absorption — bare surface absorbs more, sealed surface doesn't
   let bare_surface = 1.0 - saturate(existing.a * 3.0);
   let thinners_absorption = params.surface_absorption * (1.0 + params.thinners);
   let absorbed = effective_alpha * thinners_absorption * bare_surface;
   let deposited = effective_alpha - absorbed;
 
-  // Emergent color pickup — dry bristles pick up less existing paint
-  let pickup = wetness * bristle_reservoir
+  // Emergent color pickup — tacky paint clings, up to 2.5× more transfer
+  let base_pickup = wetness * bristle_reservoir
              * (0.3 + params.age * 0.7)
              * (0.2 + params.thinners * 0.8);
+  let pickup = base_pickup + tacky * 0.6;
   let input_K = mix(params.palette_K, existing.rgb, pickup);
 
+  // Tacky muddying — colors pushed toward chromatic neutral
+  let avg_K = dot(input_K, vec3f(0.333));
+  let muddy_K = mix(input_K, vec3f(avg_K), tacky * 0.35);
+  let input_K_final = mix(input_K, muddy_K, tacky);
+
   // Absorbed paint leaves deep stain
-  let absorbed_stain = input_K * absorbed * 0.5;
+  let absorbed_stain = input_K_final * absorbed * 0.5;
+
+  // Dry layering / scumbling — grain-gated broken coverage on set/dry paint
+  let dry_layer = smoothstep(0.15, 0.02, wetness);
+  let scumble_gate = mix(1.0, smoothstep(0.3, 0.7, grain), dry_layer * 0.8);
+  let scumble_deposited = deposited * scumble_gate;
 
   // K-M mixing — wetness modulates blend mode
-  let new_weight = existing.a + deposited;
   // Thick incoming paint covers existing layers more easily
   let depth_cap = mix(0.8, 2.0, params.thinners);
   let paint_depth = min(existing.a, depth_cap);
-  let blend_factor = deposited / (paint_depth + deposited + 0.001);
+  let wet_blend = scumble_deposited / (paint_depth + scumble_deposited + 0.001);
+  // Force blend_factor toward 1.0 on dry layer — new paint dominates, no mixing
+  let blend_factor = mix(wet_blend, max(wet_blend, 0.85), dry_layer);
+  let scumble_weight = existing.a + scumble_deposited;
 
   // Wet paint: full K-M mixing. Dry paint: overlay (less subtractive blend)
-  let wet_result = mix(existing.rgb + absorbed_stain, input_K, blend_factor);
-  let dry_overlay = existing.rgb * (1.0 - blend_factor) + input_K * blend_factor + absorbed_stain;
+  let wet_result = mix(existing.rgb + absorbed_stain, input_K_final, blend_factor);
+  let dry_overlay = existing.rgb * (1.0 - blend_factor) + input_K_final * blend_factor + absorbed_stain;
   let result_K = mix(dry_overlay, wet_result, wetness);
 
-  textureStore(accum_write, vec2i(gid.xy), vec4f(result_K, new_weight));
+  textureStore(accum_write, vec2i(gid.xy), vec4f(result_K, scumble_weight));
 
   // Write paint state — timestamp + thinners for wetness tracking
   let new_state = select(state.rg, vec2f(params.session_time, params.thinners), effective_alpha > 0.01);

@@ -59,7 +59,8 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
 
   // --- Wetness modulates scrape effectiveness ---
   let wetness = calculate_wetness(state.r, params.session_time, params.surface_dry_speed, state.g);
-  let scrape_power = mix(0.3, 1.0, wetness);
+  let tacky = smoothstep(0.1, 0.25, wetness) * smoothstep(0.5, 0.35, wetness);
+  let scrape_power = mix(0.3, 1.0, wetness) * (1.0 + tacky * 0.5);
   let paint_thickness = existing.a * (1.0 - state.g * 0.5);
   let scrape_effectiveness = smoothstep(0.05, 0.3, paint_thickness) * scrape_power;
 
