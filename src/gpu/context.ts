@@ -18,7 +18,25 @@ export function onResize(cb: (width: number, height: number) => void) {
   };
 }
 
-export async function initGPU(canvas: HTMLCanvasElement): Promise<GPUContext> {
+/**
+ * Fit the canvas CSS display size to the viewport container.
+ * Never upscales — only downscales if the artboard is larger than the container.
+ */
+function fitCanvasToViewport() {
+  if (!gpuCtx) return;
+  const { canvas, width, height } = gpuCtx;
+  const container = canvas.parentElement;
+  if (!container) return;
+
+  const containerW = container.clientWidth;
+  const containerH = container.clientHeight;
+  const scale = Math.min(1, containerW / width, containerH / height);
+
+  canvas.style.width = `${Math.floor(width * scale)}px`;
+  canvas.style.height = `${Math.floor(height * scale)}px`;
+}
+
+export async function initGPU(canvas: HTMLCanvasElement, artboardW: number, artboardH: number): Promise<GPUContext> {
   if (!navigator.gpu) throw new Error('WebGPU not supported');
 
   const adapter = await navigator.gpu.requestAdapter({
@@ -37,8 +55,7 @@ export async function initGPU(canvas: HTMLCanvasElement): Promise<GPUContext> {
   device.lost.then((info) => {
     console.error('GPU device lost:', info.message);
     if (info.reason !== 'destroyed') {
-      // Attempt re-initialization
-      initGPU(canvas).catch(() => {
+      initGPU(canvas, artboardW, artboardH).catch(() => {
         showFallback('GPU device lost and could not be recovered.');
       });
     }
@@ -48,12 +65,10 @@ export async function initGPU(canvas: HTMLCanvasElement): Promise<GPUContext> {
   if (!context) throw new Error('Failed to get WebGPU context');
 
   const format = navigator.gpu.getPreferredCanvasFormat();
-  const dpr = Math.min(window.devicePixelRatio, 2);
 
-  const width = Math.floor(canvas.clientWidth * dpr);
-  const height = Math.floor(canvas.clientHeight * dpr);
-  canvas.width = width;
-  canvas.height = height;
+  // Fixed artboard size — DPR is always 1
+  canvas.width = artboardW;
+  canvas.height = artboardH;
 
   context.configure({
     device,
@@ -61,28 +76,39 @@ export async function initGPU(canvas: HTMLCanvasElement): Promise<GPUContext> {
     alphaMode: 'premultiplied',
   });
 
-  gpuCtx = { device, context, format, canvas, width, height, dpr };
+  gpuCtx = { device, context, format, canvas, width: artboardW, height: artboardH, dpr: 1 };
 
+  fitCanvasToViewport();
+
+  // ResizeObserver only adjusts CSS display size — no texture reallocation
   const ro = new ResizeObserver(() => {
-    if (!gpuCtx) return;
-    const newDpr = Math.min(window.devicePixelRatio, 2);
-    const w = Math.floor(canvas.clientWidth * newDpr);
-    const h = Math.floor(canvas.clientHeight * newDpr);
-    if (w === gpuCtx.width && h === gpuCtx.height && newDpr === gpuCtx.dpr) return;
-
-    gpuCtx.width = w;
-    gpuCtx.height = h;
-    gpuCtx.dpr = newDpr;
-    canvas.width = w;
-    canvas.height = h;
-
-    context.configure({ device, format, alphaMode: 'premultiplied' });
-
-    for (const cb of resizeCallbacks) cb(w, h);
+    fitCanvasToViewport();
   });
-  ro.observe(canvas);
+  const container = canvas.parentElement;
+  if (container) {
+    ro.observe(container);
+  }
 
   return gpuCtx;
+}
+
+/**
+ * Resize the artboard — reconfigures GPU backing store and fires onResize callbacks
+ * for texture reallocation. Only called when user explicitly changes artboard size.
+ */
+export function resizeArtboard(w: number, h: number) {
+  if (!gpuCtx) return;
+  const { canvas, context, device, format } = gpuCtx;
+
+  canvas.width = w;
+  canvas.height = h;
+  gpuCtx.width = w;
+  gpuCtx.height = h;
+
+  context.configure({ device, format, alphaMode: 'premultiplied' });
+  fitCanvasToViewport();
+
+  for (const cb of resizeCallbacks) cb(w, h);
 }
 
 export function getGPU(): GPUContext {

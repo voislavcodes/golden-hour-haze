@@ -3,12 +3,11 @@ import { customElement, state } from 'lit/decorators.js';
 import { BaseControl } from './base-control.js';
 import { uiStore } from '../state/ui-state.js';
 import { sessionStore, type SessionPhase } from '../session/session-state.js';
-import { BRUSH_SLOT_NAMES } from '../painting/palette.js';
 import { setBrushSlotAge } from '../painting/palette.js';
 
 const CIRCLE_SIZES = [12, 18, 24, 32, 40];
 const AGE_VALUES = [0.0, 0.5, 1.0] as const;
-const AGE_LABELS = ['N', 'W', 'O'] as const;
+const AGE_LABELS = ['NEW', 'WORN', 'OLD'] as const;
 
 @customElement('ghz-brush-selector')
 export class BrushSelector extends BaseControl {
@@ -32,13 +31,14 @@ export class BrushSelector extends BaseControl {
         display: flex;
         gap: 6px;
         padding: 6px 10px;
-        align-items: center;
+        align-items: flex-end;
       }
 
       .slot {
         display: flex;
         flex-direction: column;
         align-items: center;
+        justify-content: flex-end;
         gap: 3px;
         cursor: pointer;
       }
@@ -60,52 +60,31 @@ export class BrushSelector extends BaseControl {
         border-color: rgba(255, 200, 120, 0.4);
       }
 
-      .age-dots {
-        display: flex;
-        gap: 3px;
-        align-items: center;
-      }
-
-      .age-dot {
-        border-radius: 50%;
-        border: 1px solid var(--ghz-glass-border);
-        background: transparent;
-        transition: background var(--ghz-transition),
-                    border-color var(--ghz-transition);
-        cursor: pointer;
-        padding: 0;
-      }
-
-      .age-dot.age-0 { width: 4px; height: 4px; }
-      .age-dot.age-1 { width: 6px; height: 6px; }
-      .age-dot.age-2 { width: 8px; height: 8px; }
-
-      .age-dot.current {
-        background: var(--ghz-accent);
-        border-color: var(--ghz-accent);
-      }
-
-      .age-dot.locked {
-        opacity: 0.3;
-        cursor: default;
-      }
-
-      .age-dot:hover:not(.locked):not(.current) {
-        border-color: rgba(255, 200, 120, 0.5);
-        background: rgba(232, 168, 64, 0.3);
-      }
-
-      .label {
-        font-size: 8px;
-        opacity: 0.4;
-        font-weight: 400;
+      .age-badge {
+        font-size: 7px;
+        font-weight: 500;
         letter-spacing: 0.5px;
-        text-transform: uppercase;
+        opacity: 0.35;
+        cursor: pointer;
+        padding: 1px 3px;
+        border-radius: 3px;
+        transition: opacity var(--ghz-transition),
+                    color var(--ghz-transition);
+        user-select: none;
       }
 
-      .slot.active .label {
+      .slot.active .age-badge {
         opacity: 0.8;
         color: var(--ghz-accent);
+      }
+
+      .age-badge:hover:not(.locked) {
+        opacity: 0.7;
+      }
+
+      .age-badge.locked {
+        opacity: 0.2;
+        cursor: default;
       }
     `,
   ];
@@ -140,12 +119,13 @@ export class BrushSelector extends BaseControl {
     uiStore.set({ activeBrushSlot: i });
   }
 
-  private _setAge(slotIndex: number, age: number) {
+  private _cycleAge(slotIndex: number) {
     if (this._phase !== 'test') return;
+    const nextIdx = (this._ageIndex(slotIndex) + 1) % AGE_VALUES.length;
     const ages = [...this._brushAges];
-    ages[slotIndex] = age;
+    ages[slotIndex] = AGE_VALUES[nextIdx];
     sessionStore.set({ brushAges: ages });
-    setBrushSlotAge(slotIndex, age);
+    setBrushSlotAge(slotIndex, AGE_VALUES[nextIdx]);
   }
 
   private _ageIndex(slotIndex: number): number {
@@ -164,9 +144,8 @@ export class BrushSelector extends BaseControl {
 
     return html`
       <div class="container glass">
-        ${BRUSH_SLOT_NAMES.map((name, i) => {
+        ${CIRCLE_SIZES.map((size, i) => {
           const active = this._activeSlot === i;
-          const size = CIRCLE_SIZES[i];
           const currentAgeIdx = this._ageIndex(i);
 
           return html`
@@ -175,16 +154,10 @@ export class BrushSelector extends BaseControl {
                 class="circle ${active ? 'active' : ''}"
                 style="width:${size}px;height:${size}px"
               ></div>
-              <div class="age-dots">
-                ${AGE_VALUES.map((ageVal, ai) => html`
-                  <div
-                    class="age-dot age-${ai} ${currentAgeIdx === ai ? 'current' : ''} ${locked ? 'locked' : ''}"
-                    title="${AGE_LABELS[ai]}"
-                    @click=${(e: Event) => { e.stopPropagation(); this._setAge(i, ageVal); }}
-                  ></div>
-                `)}
-              </div>
-              <span class="label">${name[0]}</span>
+              <span
+                class="age-badge ${locked ? 'locked' : ''}"
+                @click=${(e: Event) => { e.stopPropagation(); this._cycleAge(i); }}
+              >${AGE_LABELS[currentAgeIdx]}</span>
             </div>
           `;
         })}

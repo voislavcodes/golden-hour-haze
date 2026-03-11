@@ -52,9 +52,7 @@ export class CanvasOverlay extends BaseControl {
       }
 
       .horizon-guide {
-        position: absolute;
-        left: 0;
-        right: 0;
+        position: fixed;
         height: 0;
         border-top: 1px dashed rgba(255, 255, 255, 0.3);
         pointer-events: none;
@@ -128,17 +126,24 @@ export class CanvasOverlay extends BaseControl {
     clearTimeout(this._horizonFadeTimer);
   }
 
+  private _getCanvasRect(): DOMRect {
+    const canvas = document.getElementById('ghz');
+    return canvas ? canvas.getBoundingClientRect() : new DOMRect(0, 0, window.innerWidth, window.innerHeight);
+  }
+
   private _updateBrushDiameter(brushSize: number, pressure: number = 0.5) {
     // brushSize is radius in normalized-Y space (0-1 of height)
     // Pressure modulates effective radius: 0.3 + 0.7 * pressure
     const effectiveRadius = brushSize * (0.3 + 0.7 * pressure);
-    this._brushDiameter = effectiveRadius * 2 * window.innerHeight;
+    const rect = this._getCanvasRect();
+    this._brushDiameter = effectiveRadius * 2 * rect.height;
   }
 
   private _normalizeCoords(e: PointerEvent): { x: number; y: number } {
+    const rect = this._getCanvasRect();
     return {
-      x: e.clientX / window.innerWidth,
-      y: e.clientY / window.innerHeight,
+      x: (e.clientX - rect.left) / rect.width,
+      y: (e.clientY - rect.top) / rect.height,
     };
   }
 
@@ -149,11 +154,12 @@ export class CanvasOverlay extends BaseControl {
 
   private _onPointerMove(e: PointerEvent) {
     // Queue all coalesced positions for the brush engine
+    const rect = this._getCanvasRect();
     const coalesced = e.getCoalescedEvents?.() ?? [e];
     for (const ce of coalesced) {
       pointerQueue.push({
-        x: ce.clientX / window.innerWidth,
-        y: ce.clientY / window.innerHeight,
+        x: (ce.clientX - rect.left) / rect.width,
+        y: (ce.clientY - rect.top) / rect.height,
         pressure: this._normalizePressure(ce),
       });
     }
@@ -198,6 +204,12 @@ export class CanvasOverlay extends BaseControl {
   }
 
   private _onPointerDown(e: PointerEvent) {
+    // Don't start strokes outside the canvas rect
+    const rect = this._getCanvasRect();
+    if (e.clientX < rect.left || e.clientX > rect.right ||
+        e.clientY < rect.top || e.clientY > rect.bottom) {
+      return;
+    }
     const { x, y } = this._normalizeCoords(e);
     this._mx = e.clientX;
     this._my = e.clientY;
@@ -244,12 +256,16 @@ export class CanvasOverlay extends BaseControl {
           style="left:${this._mx}px;top:${this._my}px;width:${this._brushDiameter}px;transform:translate(-50%,-50%) rotate(${Math.atan2(this._scrapeDir.x, -this._scrapeDir.y) * (180 / Math.PI)}deg)"
         ></div>
       ` : ''}
-      ${this._horizonGuideVisible ? html`
-        <div
-          class="horizon-guide"
-          style="top: ${this._horizonGuideY * 100}%; opacity: ${this._horizonGuideVisible ? 1 : 0}"
-        ></div>
-      ` : ''}
+      ${this._horizonGuideVisible ? (() => {
+        const rect = this._getCanvasRect();
+        const top = rect.top + this._horizonGuideY * rect.height;
+        return html`
+          <div
+            class="horizon-guide"
+            style="left:${rect.left}px;width:${rect.width}px;top:${top}px;opacity:1"
+          ></div>
+        `;
+      })() : ''}
       <div
         class="overlay"
         style="cursor: ${this._cursor}"

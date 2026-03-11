@@ -1,5 +1,6 @@
 import { initGPU, showFallback } from './gpu/context.js';
 import { initApp } from './app.js';
+import { artboardStore } from './state/artboard-state.js';
 
 async function main() {
   if (!navigator.gpu) {
@@ -14,7 +15,8 @@ async function main() {
   }
 
   try {
-    await initGPU(canvas);
+    const { width, height } = artboardStore.get();
+    await initGPU(canvas, width, height);
     initApp();
     console.log('Golden Hour Haze V2 initialized');
   } catch (err) {

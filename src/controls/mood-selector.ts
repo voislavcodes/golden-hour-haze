@@ -11,6 +11,7 @@ import { deriveAtmosphere } from '../mood/derive-atmosphere.js';
 import './mood-creator.js';
 import type { MoodCreator } from './mood-creator.js';
 import './material-selector.js';
+import './artboard-selector.js';
 import { getMaterial } from '../surface/materials.js';
 import type { MaterialType } from '../state/scene-state.js';
 
@@ -341,7 +342,9 @@ export class MoodSelector extends BaseControl {
     if (this._phase === 'prepare-surface') {
       return html`
         <div class="surface-panel glass">
-          <span class="phase-label">choose a surface</span>
+          <span class="phase-label">canvas size</span>
+          <ghz-artboard-selector></ghz-artboard-selector>
+          <span class="phase-label" style="margin-top:12px">choose a surface</span>
           <ghz-material-selector></ghz-material-selector>
           <div class="actions">
             <button class="glass-button action-btn" @click=${this._back}>back</button>

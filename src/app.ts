@@ -1,7 +1,7 @@
 // V2 App orchestrator — frame loop, dirty flags, all system wiring
 // Paint surface + atmosphere + compositor. Lights/undo removed in v2 redesign.
 
-import { getGPU, onResize } from './gpu/context.js';
+import { getGPU, onResize, resizeArtboard } from './gpu/context.js';
 import {
   getGlobalBindGroupLayout,
   createGlobalUniformBuffer,
@@ -18,6 +18,7 @@ import { initWipeEngine, beginWipe, endWipe, dispatchWipeDabs } from './painting
 
 // Surface texture
 import { initSurfaceMaterial, updateSurfaceMaterialParams, generateSurfaceMaterialIfDirty } from './surface/surface-material.js';
+import { MATERIALS } from './surface/materials.js';
 
 // Atmosphere
 import { initNoiseLut, updateNoiseLutParams, updateGrainLutParams, generateLutsIfDirty } from './atmosphere/noise-lut.js';
@@ -58,10 +59,12 @@ import './controls/load-slider.js';
 import './controls/thinners-slider.js';
 import './controls/mood-selector.js';
 import './controls/brush-selector.js';
+import './controls/artboard-selector.js';
 
 // Session
 import { startSessionTimer, resetSessionTimer, getSessionTime } from './session/session-timer.js';
 import { sessionStore } from './session/session-state.js';
+import { artboardStore } from './state/artboard-state.js';
 
 // Input
 import { initPointerInput } from './input/pointer.js';
@@ -70,6 +73,19 @@ import { initKeyboardInput } from './input/keyboard.js';
 let globalUniformBuffer: GPUBuffer;
 let globalBindGroup: GPUBindGroup;
 let compositorBGDirty = true;
+
+function updateSurroundColor() {
+  const container = document.getElementById('canvas-container');
+  if (!container) return;
+  const { material } = sceneStore.get().surface;
+  const [r, g, b] = MATERIALS[material].colorLight;
+  // Slightly darker than the material's lightest tone
+  const darken = 0.99;
+  const cr = Math.round(r * darken * 255);
+  const cg = Math.round(g * darken * 255);
+  const cb = Math.round(b * darken * 255);
+  container.style.background = `rgb(${cr}, ${cg}, ${cb})`;
+}
 
 // Stroke state
 let strokeActive = false;
@@ -118,6 +134,9 @@ export function initApp() {
     surfaceDrySpeed: scene.surface.drySpeed,
   });
 
+  // Set initial surround color
+  updateSurroundColor();
+
   // Input
   initPointerInput(canvas);
   initKeyboardInput();
@@ -137,6 +156,14 @@ export function initApp() {
   sessionStore.select(
     (s) => s.phase,
     (phase) => {
+      if (phase === 'test') {
+        // Resize artboard if dimensions changed during prepare-surface
+        const ab = artboardStore.get();
+        const gpu = getGPU();
+        if (ab.width !== gpu.width || ab.height !== gpu.height) {
+          resizeArtboard(ab.width, ab.height);
+        }
+      }
       if (phase === 'test' || phase === 'paint') {
         syncBrushSlotsFromSession();
       }
@@ -191,6 +218,7 @@ export function initApp() {
 
     if (state.surface !== prevSurface) {
       updateSurfaceMaterialParams(state.surface);
+      updateSurroundColor();
       markDirty('composite');
     }
 
