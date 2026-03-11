@@ -464,14 +464,21 @@ export function dispatchPendingGhosts(encoder: GPUCommandEncoder): boolean {
 
   const spread = 1.0 + scene.thinners * 0.4;
   const bundle = getActiveBundle();
-  const splay = bundle ? (1.0 + bundle.age * 0.3) : (1.0 + slot.age * 0.3);
+  const baseSplay = bundle
+    ? bundle.splay * (1.0 + bundle.age * 0.3)
+    : (1.0 + slot.age * 0.3);
 
   const chain = [ghostAnchor, ...ghostPoints];
-  const verts: BakedVert[] = chain.map(pt => ({
-    pos: pt.pos,
-    radius: pressureRadius(ui.brushSize, pt.pressure) * spread * splay,
-    reservoir: reservoir,
-  }));
+  const verts: BakedVert[] = chain.map((pt, i) => {
+    // Taper splay toward 0 as ghost lifts off
+    const t = i / chain.length;
+    const splay = baseSplay * (1.0 - t * 0.5);
+    return {
+      pos: pt.pos,
+      radius: pressureRadius(ui.brushSize, pt.pressure) * spread * splay,
+      reservoir: reservoir,
+    };
+  });
 
   dispatchPolyline(encoder, verts, scene, slot, ks, 'brush-ghost');
 

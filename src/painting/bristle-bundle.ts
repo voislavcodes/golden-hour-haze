@@ -1,4 +1,4 @@
-// Bristle bundle — 512-tip physical brush simulation (CPU-side)
+// Bristle bundle — 1024-tip physical brush simulation (CPU-side)
 // Drives per-vertex splay, depletion, age effects for the polyline SDF renderer.
 // The GPU renders capsule SDFs; this module computes the physical brush state
 // that modulates per-vertex radius and reservoir.
@@ -77,7 +77,7 @@ function depositGrid(x: number, y: number, kr: number, kg: number, kb: number, l
 
 // --- Ring layout ---
 const RING_COUNT = 13;
-const TIP_COUNT = 512;
+const TIP_COUNT = 1024;
 const MAX_RING = RING_COUNT - 1;
 
 function buildRingCounts(): number[] {
@@ -91,7 +91,7 @@ function buildRingCounts(): number[] {
     rawTotal += c;
   }
   for (let r = 0; r < rawCounts.length; r++) {
-    const scaled = Math.round(rawCounts[r] * 511 / rawTotal);
+    const scaled = Math.round(rawCounts[r] * (TIP_COUNT - 1) / rawTotal);
     counts.push(scaled);
     total += scaled;
   }
