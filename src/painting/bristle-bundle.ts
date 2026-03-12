@@ -185,8 +185,10 @@ export function updateBundle(
     moveDir = [bundle.lastVelocity[0] / speed, bundle.lastVelocity[1] / speed];
   }
 
-  // Splay from pressure — with inertia ramp
-  const targetSplay = pressure * 0.8 + 0.2;
+  // Splay from pressure — quadratic response (Euler-Bernoulli beam bending)
+  // Light pressure barely changes footprint; heavy pressure dramatically expands
+  const pressureSq = pressure * pressure;
+  const targetSplay = pressureSq * 0.85 + 0.15;
   bundle.splay += (targetSplay - bundle.splay) * 0.4;
   bundle.contactPressure = pressure;
 
@@ -222,9 +224,9 @@ export function updateBundle(
     const tiltOffX = tiltNormX * tiltInfluence * brushRadius * ringNorm;
     const tiltOffY = tiltNormY * tiltInfluence * brushRadius * ringNorm;
 
-    // Spring physics
+    // Spring physics — age-dependent damping (viscoelastic relaxation)
     const springForce = stiffness * 8.0;
-    const dampening = 0.85;
+    const dampening = 0.85 - age * 0.12; // worn brushes: slower recovery
     const goalX = targetX + bendX + tiltOffX;
     const goalY = targetY + bendY + tiltOffY;
     tip.velocity[0] = tip.velocity[0] * dampening + (goalX - tip.currentOffset[0]) * springForce * dt;
@@ -252,9 +254,11 @@ export function updateBundle(
       tip.contamination = Math.min(1.0, tip.contamination + contaminationRate * 0.5);
     }
 
-    // Per-tip depletion — edges deplete first
+    // Per-tip depletion — edges deplete first (cubic gradient)
+    // Real brushes: outer tips have far less capillary reservoir
     if (tip.load > 0) {
-      const depletionRate = (0.5 + ringNorm * 0.5) * tipPressure * 2.0;
+      const edgeFactor = ringNorm * ringNorm * ringNorm; // cubic: 0 center → 1 edge
+      const depletionRate = (0.3 + edgeFactor * 1.2) * tipPressure * 2.0;
       tip.load = Math.max(0, tip.load - depletionRate * dt);
     }
 
@@ -269,7 +273,9 @@ export function updateBundle(
 
 export function dipBundle(bundle: BristleBundle, kr: number, kg: number, kb: number, oil: number, load: number) {
   for (const tip of bundle.tips) {
-    const ringFalloff = 1.0 - (tip.ringIndex / MAX_RING) * 0.4;
+    // Steeper capillary loading gradient — inner bristles hold more paint
+    const ringNorm = tip.ringIndex / MAX_RING;
+    const ringFalloff = 1.0 - ringNorm * ringNorm * 0.6;
     tip.load = load * ringFalloff;
     tip.oil = oil;
 
@@ -318,6 +324,10 @@ export function getActiveBundle(): BristleBundle | null {
 
 export function setActiveBundle(bundle: BristleBundle) {
   activeBundle = bundle;
+}
+
+export function resetActiveBundle() {
+  activeBundle = null;
 }
 
 export function ensureBundle(seed: number, age: number): BristleBundle {

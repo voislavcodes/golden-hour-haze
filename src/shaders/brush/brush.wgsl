@@ -153,9 +153,12 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
 
   let bristle_load = saturate(clump_cross + along_variation);
 
-  // Radial bias — outer edges thin slightly faster, only when depleting
+  // Radial bias — edges always slightly thinner + deplete first
+  // Real brushes: fewer bristle tips at edges, less capillary reservoir
   let radial_pos = min(abs(bristle_angle), 1.0);
-  let radial_bias = 1.0 - radial_pos * 0.3 * (1.0 - local_reservoir);
+  let edge_sq = radial_pos * radial_pos; // quadratic edge emphasis
+  let base_edge = 1.0 - edge_sq * 0.12;  // always some edge thinning (fewer tips)
+  let radial_bias = base_edge * (1.0 - edge_sq * 0.55 * (1.0 - local_reservoir));
 
   // Squared depletion ramp — gentle change at high reservoir (no visible dab
   // boundaries), progressive separation at low reservoir (dry-brush effect).
@@ -171,14 +174,14 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
                   * smoothstep(1.0, 0.85, fract(fine_pos));
   let depth = max(-min_dist, 0.0) / max(local_r, 0.0001);
   let edge_emphasis = smoothstep(0.2, 0.85, 1.0 - depth);
-  // Fine texture — very subtle, grain does the real dry-brush work
+  // Fine texture — worn brushes show more grooves
   let depletion = 1.0 - final_reservoir;
-  let fine_vis = smoothstep(0.5, 1.0, depletion) * (0.05 + params.age * 0.15);
+  let fine_vis = smoothstep(0.5, 1.0, depletion) * (0.04 + params.age * 0.25);
   let bristle_pattern = 1.0 - edge_emphasis * (1.0 - fine_groove) * fine_vis;
 
   // Edge softness + roughness
   let edge_softness = local_r * (0.08 + params.thinners * 0.4);
-  let roughness_strength = 0.06 + params.age * 0.14 + depletion * 0.15;
+  let roughness_strength = 0.05 + params.age * 0.22 + depletion * 0.15;
   let edge_noise = hash_noise(bristle_angle * 3.0, params.bristle_seed) * 0.7
                  + hash_noise(bristle_angle * 12.0, params.bristle_seed + 5.0) * 0.3;
   let edge_roughness = edge_noise * roughness_strength * local_r;
@@ -196,9 +199,13 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
   let grain_uv = uv * vec2f(f32(dims.x) / 2048.0, f32(dims.y) / 2048.0);
   let grain = textureSampleLevel(surface_height, grain_sampler, grain_uv, 0.0).r;
   // Use reservoir directly (uniform per frame) — avoids visible dab ridges
-  // Per-pixel depletion amplified frame-to-frame differences at capsule boundaries
-  let grain_factor = params.thinners * 0.1 + reservoir_depletion * 0.85;
-  let grain_interaction = mix(1.0, grain, grain_factor);
+  // Depletion drives grain influence: pow(depletion, 1.5) for steeper onset
+  let depletion_curve = pow(reservoir_depletion, 1.5);
+  let grain_factor = params.thinners * 0.15 + depletion_curve * 0.85;
+  // At high depletion, apply threshold: surface valleys get zero paint
+  let grain_thresh = mix(0.0, 0.45, depletion_curve);
+  let grain_gated = smoothstep(grain_thresh, grain_thresh + 0.15, grain);
+  let grain_interaction = mix(1.0, grain_gated, grain_factor);
 
   // Diminishing returns — per-stroke only; new strokes arrive at full opacity
   let layers_this_stroke = max(existing.a - params.stroke_start_layers, 0.0);

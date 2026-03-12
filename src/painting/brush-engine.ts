@@ -545,19 +545,28 @@ export function dispatchBrushDabs(encoder: GPUCommandEncoder, x: number, y: numb
     totalDistance += Math.sqrt(dx * dx + dy * dy) * w;
   }
 
-  // Update reservoir based on depletion curve
+  // Update reservoir based on sigmoidal depletion curve
+  // Real paint: plateau (capillary reservoir feeds freely), then rapid drop,
+  // then long residual tail (paint trapped in bristle roots)
   const load = scene.load;
   if (load <= 0) {
     reservoir = 0;
   } else {
     const radiusPixels = radius * w;
-    const holdDistance = load * radiusPixels * 15;
+    // Hold phase: paint flows freely from inter-bristle capillary reservoirs
+    const holdDistance = load * radiusPixels * 18;
     const drainDistance = totalDistance - holdDistance;
-    if (drainDistance > 0) {
-      const drainRate = (1.0 - load) * 0.001 + 0.00015;
-      reservoir = Math.exp(-drainRate * drainDistance);
-    } else {
+    if (drainDistance <= 0) {
       reservoir = 1.0;
+    } else {
+      // Sigmoidal: logistic curve centered at transition point
+      // steepness controls how sharp the drop-off is
+      const transitionDist = load * radiusPixels * 25;
+      const steepness = (1.0 - load) * 0.008 + 0.003;
+      const logistic = 1.0 / (1.0 + Math.exp(steepness * (drainDistance - transitionDist)));
+      // Residual floor: paint trapped in bristle roots (never fully empty)
+      const residual = 0.03 * load;
+      reservoir = residual + (1.0 - residual) * logistic;
     }
   }
 

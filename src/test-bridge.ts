@@ -8,12 +8,15 @@ import { markAllDirty } from './state/dirty-flags.js';
 import { getAllMoods, loadCustomMoods } from './mood/custom-moods.js';
 import { deriveAtmosphere } from './mood/derive-atmosphere.js';
 import { getMaterial } from './surface/materials.js';
-import { syncBrushSlotsFromSession, setActiveBrushSlot } from './painting/palette.js';
-import { clearSurface } from './painting/surface.js';
+import { syncBrushSlotsFromSession, setActiveBrushSlot, setBrushSlotAge } from './painting/palette.js';
+import { clearSurface, getSurfaceWidth, getSurfaceHeight } from './painting/surface.js';
+import { getActiveBundle, getAverageLoad, resetActiveBundle } from './painting/bristle-bundle.js';
+import { reloadBrush } from './painting/brush-engine.js';
 import { resetSessionTimer } from './session/session-timer.js';
 import { getGPU } from './gpu/context.js';
 import { getTexture } from './gpu/texture-pool.js';
 import { getReadTexture, getStateReadTexture } from './painting/surface.js';
+// Note: getSurfaceWidth/Height imported above with clearSurface
 
 export interface StrokePoint {
   x: number;       // 0-1 normalized
@@ -384,6 +387,72 @@ const bridge = {
     palette: { ...s.palette, activeIndex: i },
   })),
   setTool: (t: Tool) => uiStore.set({ activeTool: t }),
+
+  // --- Brush physics testing ---
+
+  getSurfaceDimensions: () => ({ width: getSurfaceWidth(), height: getSurfaceHeight() }),
+
+  setBrushAge: (slot: number, age: number) => {
+    setBrushSlotAge(slot, age);
+    resetActiveBundle();
+    reloadBrush();
+  },
+
+  getBundleState: () => {
+    const bundle = getActiveBundle();
+    if (!bundle) return null;
+    return {
+      splay: bundle.splay,
+      contactPressure: bundle.contactPressure,
+      averageLoad: getAverageLoad(bundle),
+      age: bundle.age,
+      stiffness: bundle.stiffness,
+      recoveryRate: bundle.recoveryRate,
+    };
+  },
+
+  /** Batch read a horizontal line of pixels from the accumulation texture */
+  async readAccumLine(y: number, xStart: number, count: number): Promise<number[][]> {
+    const { device } = getGPU();
+    const tex = getReadTexture();
+    const bytesPerPixel = 8; // rgba16float
+    const dataSize = count * bytesPerPixel;
+    const bytesPerRow = Math.ceil(dataSize / 256) * 256;
+
+    const readBuffer = device.createBuffer({
+      size: bytesPerRow,
+      usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ,
+    });
+
+    markAllDirty();
+    await new Promise<void>(resolve => {
+      requestAnimationFrame(() => {
+        const encoder = device.createCommandEncoder();
+        encoder.copyTextureToBuffer(
+          { texture: tex, origin: { x: xStart, y, z: 0 } },
+          { buffer: readBuffer, bytesPerRow },
+          { width: count, height: 1 },
+        );
+        device.queue.submit([encoder.finish()]);
+        device.queue.onSubmittedWorkDone().then(() => resolve());
+      });
+    });
+
+    await readBuffer.mapAsync(GPUMapMode.READ);
+    const f16 = new Uint16Array(readBuffer.getMappedRange(0, dataSize));
+    const result: number[][] = [];
+    for (let i = 0; i < count; i++) {
+      result.push([
+        f16ToF32(f16[i * 4]),
+        f16ToF32(f16[i * 4 + 1]),
+        f16ToF32(f16[i * 4 + 2]),
+        f16ToF32(f16[i * 4 + 3]),
+      ]);
+    }
+    readBuffer.unmap();
+    readBuffer.destroy();
+    return result;
+  },
 };
 
 (window as any).__ghz = bridge;
