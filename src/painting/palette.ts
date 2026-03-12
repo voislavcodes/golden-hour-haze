@@ -4,7 +4,8 @@
 
 import { sceneStore } from '../state/scene-state.js';
 import { sessionStore } from '../session/session-state.js';
-import type { KColor } from '../mood/moods.js';
+import { DEFAULT_COMPLEMENT, type KColor, type ComplementConfig } from '../mood/moods.js';
+import { getAllMoods } from '../mood/custom-moods.js';
 
 function clamp(v: number, lo: number, hi: number): number {
   return Math.max(lo, Math.min(hi, v));
@@ -96,18 +97,46 @@ function saturateAndDarken(c: KColor, amount: number): KColor {
 
 export const WARM_WHITE: KColor = { r: 0.95, g: 0.93, b: 0.88 };
 
-export function sampleTonalColumn(baseColor: KColor, value: number): KColor {
+function smoothstep(edge0: number, edge1: number, x: number): number {
+  const t = clamp((x - edge0) / (edge1 - edge0), 0, 1);
+  return t * t * (3 - 2 * t);
+}
+
+function computeNeutralTarget(color: KColor, warmth: number): KColor {
+  const ref = rgbToReflectance(color);
+  const kr = ksFromReflectance(ref.r);
+  const kg = ksFromReflectance(ref.g);
+  const kb = ksFromReflectance(ref.b);
+  const kAvg = (kr + kg + kb) / 3;
+  // warmth > 0.5 = warm neutral (less red absorption, more blue absorption)
+  const shift = (warmth - 0.5) * 0.3;
+  return {
+    r: Math.sqrt(clamp(reflectanceFromKS(Math.max(0, kAvg * (1 - shift))), 0, 1)),
+    g: Math.sqrt(clamp(reflectanceFromKS(Math.max(0, kAvg)), 0, 1)),
+    b: Math.sqrt(clamp(reflectanceFromKS(Math.max(0, kAvg * (1 + shift))), 0, 1)),
+  };
+}
+
+export function sampleTonalColumn(baseColor: KColor, value: number, complement?: ComplementConfig): KColor {
   // value 0.0 = lightest (warm white tinted with hue)
   // value 0.5 = base color (mood's medium)
   // value 1.0 = darkest (saturated dark pigment)
+  let color: KColor;
   if (value < 0.5) {
     const t = value * 2.0;
-    return lerpColor(WARM_WHITE, baseColor, t);
+    color = lerpColor(WARM_WHITE, baseColor, t);
   } else {
     const t = (value - 0.5) * 2.0;
     const darkEnd = saturateAndDarken(baseColor, 0.7);
-    return lerpColor(baseColor, darkEnd, t);
+    color = lerpColor(baseColor, darkEnd, t);
   }
+  // Complement neutralization in dark zone
+  if (complement && value > complement.onset) {
+    const blend = smoothstep(complement.onset, complement.full, value) * complement.strength;
+    const neutral = computeNeutralTarget(color, complement.warmth);
+    color = kmMixCPU(color, neutral, blend);
+  }
+  return color;
 }
 
 // --- Per-slot brush contamination ---
@@ -170,12 +199,19 @@ export function wipeOnRag() {
   oilRemaining = 0;
 }
 
+export function getActiveComplement(): ComplementConfig {
+  const moodIndex = sessionStore.get().moodIndex ?? 0;
+  const moods = getAllMoods();
+  const mood = moods[moodIndex];
+  return mood?.complement ?? DEFAULT_COMPLEMENT;
+}
+
 /** Get color at current tonal value for a hue index */
 function getColorAtValue(hueIndex: number): KColor {
   const palette = sceneStore.get().palette;
   const baseColor = palette.colors[clamp(hueIndex, 0, palette.colors.length - 1)];
   const value = palette.tonalValues[clamp(hueIndex, 0, palette.tonalValues.length - 1)];
-  return sampleTonalColumn(baseColor, value);
+  return sampleTonalColumn(baseColor, value, getActiveComplement());
 }
 
 /**

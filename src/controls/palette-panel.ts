@@ -3,7 +3,7 @@ import { html, css } from 'lit';
 import { customElement, state } from 'lit/decorators.js';
 import { BaseControl } from './base-control.js';
 import { sceneStore } from '../state/scene-state.js';
-import { dipBrush, wipeOnRag, getActiveHue, sampleTonalColumn, toggleOil, isOilArmed } from '../painting/palette.js';
+import { dipBrush, wipeOnRag, getActiveHue, sampleTonalColumn, getActiveComplement, toggleOil, isOilArmed } from '../painting/palette.js';
 import { reloadBrush, wipeBrush } from '../painting/brush-engine.js';
 import type { KColor } from '../mood/moods.js';
 
@@ -116,10 +116,11 @@ export class PalettePanel extends BaseControl {
   }
 
   private _gradientCSS(baseColor: KColor): string {
-    const light = sampleTonalColumn(baseColor, 0.0);
-    const mid = sampleTonalColumn(baseColor, 0.5);
-    const dark = sampleTonalColumn(baseColor, 1.0);
-    return `linear-gradient(to bottom, ${colorToCSS(light)}, ${colorToCSS(mid)} 50%, ${colorToCSS(dark)})`;
+    const comp = getActiveComplement();
+    const stops = [0.0, 0.25, 0.5, 0.65, 0.80, 0.92, 1.0];
+    return `linear-gradient(to bottom, ${
+      stops.map(v => `${colorToCSS(sampleTonalColumn(baseColor, v, comp))} ${v * 100}%`).join(', ')
+    })`;
   }
 
   private _onOilChanged = () => { this._oilArmed = isOilArmed(); };

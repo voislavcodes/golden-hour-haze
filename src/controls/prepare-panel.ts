@@ -2,7 +2,7 @@
 import { html, css, nothing } from 'lit';
 import { customElement, state } from 'lit/decorators.js';
 import { BaseControl } from './base-control.js';
-import { type Mood, type KColor } from '../mood/moods.js';
+import { type Mood, type KColor, DEFAULT_COMPLEMENT } from '../mood/moods.js';
 import { sampleTonalColumn } from '../painting/palette.js';
 import { getAllMoods, loadCustomMoods } from '../mood/custom-moods.js';
 import { sessionStore, advancePhase, type SessionPhase } from '../session/session-state.js';
@@ -204,8 +204,9 @@ export class PreparePanel extends BaseControl {
   }
 
   private _renderSkyGradient(mood: Mood): string {
-    const warmLight = sampleTonalColumn(mood.piles[0].medium, 0.0);
-    const coolLight = sampleTonalColumn(mood.piles[3].medium, 0.0);
+    const complement = mood.complement ?? DEFAULT_COMPLEMENT;
+    const warmLight = sampleTonalColumn(mood.piles[0].medium, 0.0, complement);
+    const coolLight = sampleTonalColumn(mood.piles[3].medium, 0.0, complement);
     return `linear-gradient(to top, ${colorToCSS(warmLight)}, ${colorToCSS(coolLight)})`;
   }
 
@@ -222,8 +223,9 @@ export class PreparePanel extends BaseControl {
             <div class="sky-preview" style="background: ${this._renderSkyGradient(mood)}"></div>
             <div class="piles">
               ${mood.piles.map(pile => {
-                const light = sampleTonalColumn(pile.medium, 0.0);
-                const dark = sampleTonalColumn(pile.medium, 1.0);
+                const complement = mood.complement ?? DEFAULT_COMPLEMENT;
+                const light = sampleTonalColumn(pile.medium, 0.0, complement);
+                const dark = sampleTonalColumn(pile.medium, 1.0, complement);
                 return html`
                   <div class="pile-gradient" style="background: linear-gradient(to bottom, ${colorToCSS(light)}, ${colorToCSS(pile.medium)} 50%, ${colorToCSS(dark)})"></div>
                 `;

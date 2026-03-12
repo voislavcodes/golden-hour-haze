@@ -13,6 +13,17 @@ export interface MoodPile {
   dark: KColor;
 }
 
+export interface ComplementConfig {
+  onset: number;      // tonal value where neutralization begins (0.55)
+  full: number;       // tonal value where neutralization is ~complete (0.90)
+  strength: number;   // how neutral the darks get, 0-1 (0.85)
+  warmth: number;     // neutral temp: 0=cool, 0.5=true neutral, 1=warm (0.52)
+}
+
+export const DEFAULT_COMPLEMENT: ComplementConfig = {
+  onset: 0.55, full: 0.90, strength: 0.85, warmth: 0.52,
+};
+
 export interface Mood {
   name: string;
   description: string;
@@ -23,6 +34,7 @@ export interface Mood {
   warmth: number;        // atmosphere warmth -1 to 1
   piles: MoodPile[];     // 5 hues, each with light/medium/dark
   defaultSurface: string;
+  complement?: ComplementConfig;
 }
 
 function hex(h: string): KColor {

@@ -8,11 +8,12 @@ import { markAllDirty } from './state/dirty-flags.js';
 import { getAllMoods, loadCustomMoods } from './mood/custom-moods.js';
 import { deriveAtmosphere } from './mood/derive-atmosphere.js';
 import { getMaterial } from './surface/materials.js';
-import { syncBrushSlotsFromSession, setActiveBrushSlot, setBrushSlotAge } from './painting/palette.js';
+import { syncBrushSlotsFromSession, setActiveBrushSlot, setBrushSlotAge, dipBrush, sampleTonalColumn, getActiveComplement } from './painting/palette.js';
 import { clearSurface, getSurfaceWidth, getSurfaceHeight } from './painting/surface.js';
 import { getActiveBundle, getAverageLoad, resetActiveBundle } from './painting/bristle-bundle.js';
 import { reloadBrush } from './painting/brush-engine.js';
 import { resetSessionTimer } from './session/session-timer.js';
+import { DEFAULT_COMPLEMENT } from './mood/moods.js';
 import { getGPU } from './gpu/context.js';
 import { getTexture } from './gpu/texture-pool.js';
 import { getReadTexture, getStateReadTexture } from './painting/surface.js';
@@ -129,6 +130,8 @@ async function replayStroke(points: StrokePoint[], options: StrokeOptions = {}) 
     sceneStore.update(s => ({
       palette: { ...s.palette, activeIndex: hueIndex },
     }));
+    dipBrush(hueIndex);
+    reloadBrush();
   }
   if (thinners !== undefined) {
     sceneStore.set({ thinners });
@@ -370,6 +373,11 @@ const bridge = {
       outOfMemory: oomError ? oomError.message : null,
     };
   },
+
+  // Tonal column sampling
+  sampleTonalColumn,
+  getActiveComplement,
+  DEFAULT_COMPLEMENT,
 
   // Direct store access
   stores: { scene: sceneStore, session: sessionStore, ui: uiStore },

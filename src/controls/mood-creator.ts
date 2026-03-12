@@ -5,7 +5,7 @@ import { BaseControl } from './base-control.js';
 import { huesToMoodPiles } from '../mood/oklch.js';
 import { addCustomMood } from '../mood/custom-moods.js';
 import { extractHuesFromImage } from '../mood/photo-extract.js';
-import type { KColor } from '../mood/moods.js';
+import { DEFAULT_COMPLEMENT, type KColor } from '../mood/moods.js';
 import { sampleTonalColumn } from '../painting/palette.js';
 
 function colorToCSS(c: KColor): string {
@@ -252,8 +252,8 @@ export class MoodCreator extends BaseControl {
           <div class="hue-column">
             <div class="hue-preview">
               ${(() => {
-                const light = sampleTonalColumn(piles[i].medium, 0.0);
-                const dark = sampleTonalColumn(piles[i].medium, 1.0);
+                const light = sampleTonalColumn(piles[i].medium, 0.0, DEFAULT_COMPLEMENT);
+                const dark = sampleTonalColumn(piles[i].medium, 1.0, DEFAULT_COMPLEMENT);
                 return html`<div class="hue-swatch" style="background: linear-gradient(to bottom, ${colorToCSS(light)}, ${colorToCSS(piles[i].medium)} 50%, ${colorToCSS(dark)})"></div>`;
               })()}
             </div>
