@@ -11,6 +11,8 @@ import { getMaterial } from './surface/materials.js';
 import { syncBrushSlotsFromSession, setActiveBrushSlot } from './painting/palette.js';
 import { clearSurface } from './painting/surface.js';
 import { resetSessionTimer } from './session/session-timer.js';
+import { getGPU } from './gpu/context.js';
+import { getTexture } from './gpu/texture-pool.js';
 
 export interface StrokePoint {
   x: number;       // 0-1 normalized
@@ -33,8 +35,12 @@ function waitFrames(n: number): Promise<void> {
   return new Promise((resolve) => {
     let count = 0;
     function tick() {
-      if (++count >= n) resolve();
-      else requestAnimationFrame(tick);
+      if (++count >= n) {
+        // Wait for GPU queue to finish processing the last frame
+        getGPU().device.queue.onSubmittedWorkDone().then(resolve);
+      } else {
+        requestAnimationFrame(tick);
+      }
     }
     requestAnimationFrame(tick);
   });
@@ -169,7 +175,129 @@ async function replayStroke(points: StrokePoint[], options: StrokeOptions = {}) 
 
   // End stroke — let ghost taper complete
   uiStore.set({ mouseDown: false, pressure: 0 });
+  markAllDirty();
   await waitFrames(5);
+}
+
+/** Read a pixel from a named pool texture via GPU readback (rgba16float → float32). */
+async function readTexturePixel(name: string, x: number, y: number): Promise<number[]> {
+  const { device } = getGPU();
+  const tex = getTexture(name);
+  if (!tex) return [-1, -1, -1, -1];
+
+  // rgba16float = 8 bytes per pixel, bytesPerRow must be 256-aligned
+  const bytesPerPixel = 8;
+  const bytesPerRow = 256;
+  const readBuffer = device.createBuffer({
+    size: bytesPerRow,
+    usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ,
+  });
+
+  // Ensure fresh render
+  markAllDirty();
+  await new Promise<void>(resolve => {
+    requestAnimationFrame(() => {
+      const encoder = device.createCommandEncoder();
+      encoder.copyTextureToBuffer(
+        { texture: tex, origin: { x, y, z: 0 } },
+        { buffer: readBuffer, bytesPerRow },
+        { width: 1, height: 1 },
+      );
+      device.queue.submit([encoder.finish()]);
+      device.queue.onSubmittedWorkDone().then(() => resolve());
+    });
+  });
+
+  await readBuffer.mapAsync(GPUMapMode.READ);
+  const f16 = new Uint16Array(readBuffer.getMappedRange(0, bytesPerPixel));
+  // Convert float16 to float32
+  const result = Array.from(f16).map(f16ToF32);
+  readBuffer.unmap();
+  readBuffer.destroy();
+  return result;
+}
+
+function f16ToF32(h: number): number {
+  const sign = (h >> 15) & 1;
+  const exp = (h >> 10) & 0x1f;
+  const frac = h & 0x3ff;
+  if (exp === 0) return sign ? -0 : 0;
+  if (exp === 31) return frac ? NaN : (sign ? -Infinity : Infinity);
+  return (sign ? -1 : 1) * Math.pow(2, exp - 15) * (1 + frac / 1024);
+}
+
+/** Read a pixel from the canvas via offscreen copy (adds COPY_SRC to canvas config). */
+async function readCanvasPixel(x: number, y: number): Promise<number[]> {
+  const { device, context, format } = getGPU();
+
+  // Reconfigure canvas with COPY_SRC so we can read back
+  context.configure({ device, format, alphaMode: 'premultiplied',
+    usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.COPY_SRC });
+
+  const bytesPerRow = 256;
+  const readBuffer = device.createBuffer({
+    size: bytesPerRow,
+    usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ,
+  });
+
+  markAllDirty();
+  await new Promise<void>(resolve => {
+    requestAnimationFrame(() => {
+      // Frame loop's tick already rendered. Same frame → same getCurrentTexture.
+      const canvasTexture = context.getCurrentTexture();
+      const encoder = device.createCommandEncoder();
+      encoder.copyTextureToBuffer(
+        { texture: canvasTexture, origin: { x, y, z: 0 } },
+        { buffer: readBuffer, bytesPerRow },
+        { width: 1, height: 1 },
+      );
+      device.queue.submit([encoder.finish()]);
+      device.queue.onSubmittedWorkDone().then(() => resolve());
+    });
+  });
+
+  // Restore original config
+  context.configure({ device, format, alphaMode: 'premultiplied' });
+
+  await readBuffer.mapAsync(GPUMapMode.READ);
+  const data = new Uint8Array(readBuffer.getMappedRange(0, 4));
+  const result = [data[0], data[1], data[2], data[3]];
+  readBuffer.unmap();
+  readBuffer.destroy();
+  return result;
+}
+
+/** Sanity check: write known data to a texture and read it back */
+async function testReadback(): Promise<number[]> {
+  const { device } = getGPU();
+  const tex = device.createTexture({
+    size: { width: 1, height: 1 },
+    format: 'rgba16float',
+    usage: GPUTextureUsage.COPY_DST | GPUTextureUsage.COPY_SRC,
+  });
+  // float16: 1.0=0x3C00, 0.5=0x3800, 0.25=0x3400, 0.125=0x3000
+  const data = new Uint16Array([0x3C00, 0x3800, 0x3400, 0x3000]);
+  device.queue.writeTexture(
+    { texture: tex }, data, { bytesPerRow: 8 }, { width: 1, height: 1 },
+  );
+  const bytesPerRow = 256;
+  const readBuffer = device.createBuffer({
+    size: bytesPerRow,
+    usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ,
+  });
+  const encoder = device.createCommandEncoder();
+  encoder.copyTextureToBuffer(
+    { texture: tex }, { buffer: readBuffer, bytesPerRow }, { width: 1, height: 1 },
+  );
+  device.queue.submit([encoder.finish()]);
+  await device.queue.onSubmittedWorkDone();
+  await readBuffer.mapAsync(GPUMapMode.READ);
+  const f16 = new Uint16Array(readBuffer.getMappedRange(0, 8));
+  const result = Array.from(f16).map(f16ToF32);
+  readBuffer.unmap();
+  readBuffer.destroy();
+  tex.destroy();
+  return result;
 }
 
 // Expose on window
@@ -179,6 +307,32 @@ const bridge = {
   setPhase,
   replayStroke,
   waitFrames,
+  readCanvasPixel,
+  readTexturePixel,
+  testReadback,
+  markAllDirty,
+  getTexture,
+  getTextureInfo: (name: string) => {
+    const tex = getTexture(name);
+    if (!tex) return null;
+    return { width: tex.width, height: tex.height, format: tex.format, usage: tex.usage, label: tex.label };
+  },
+  getDevice: () => getGPU().device,
+
+  /** Render one frame with GPU error scope to catch validation errors */
+  async renderWithErrorCheck() {
+    const { device } = getGPU();
+    device.pushErrorScope('validation');
+    device.pushErrorScope('out-of-memory');
+    markAllDirty();
+    await waitFrames(1);
+    const oomError = await device.popErrorScope();
+    const valError = await device.popErrorScope();
+    return {
+      validation: valError ? valError.message : null,
+      outOfMemory: oomError ? oomError.message : null,
+    };
+  },
 
   // Direct store access
   stores: { scene: sceneStore, session: sessionStore, ui: uiStore },

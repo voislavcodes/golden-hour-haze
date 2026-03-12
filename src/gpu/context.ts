@@ -44,8 +44,15 @@ export async function initGPU(canvas: HTMLCanvasElement, artboardW: number, artb
   });
   if (!adapter) throw new Error('No GPU adapter found');
 
+  // Request float32-filterable so r32float textures work with filtering samplers
+  // (needed by density compute pass for depth texture sampling)
+  const features: GPUFeatureName[] = [];
+  if (adapter.features.has('float32-filterable')) {
+    features.push('float32-filterable');
+  }
+
   const device = await adapter.requestDevice({
-    requiredFeatures: [],
+    requiredFeatures: features,
     requiredLimits: {
       maxStorageBufferBindingSize: adapter.limits.maxStorageBufferBindingSize,
       maxBufferSize: adapter.limits.maxBufferSize,

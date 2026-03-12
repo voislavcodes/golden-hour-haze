@@ -97,7 +97,7 @@ export function rebuildCompositorBindGroup() {
   const densityPP = allocPingPong('atmosphere-density', 'rgba16float', densityW, densityH);
 
   const scatterTex = allocTexture('scatter', 'rgba16float', currentWidth, currentHeight,
-    GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.RENDER_ATTACHMENT);
+    GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.COPY_SRC);
 
   const grainLut = getGrainLutTexture();
   const grainSampler = getNoiseLutSampler();

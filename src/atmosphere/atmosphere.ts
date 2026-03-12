@@ -55,11 +55,14 @@ export function initAtmosphere() {
     ],
   });
 
+  // float32-filterable must be enabled on the device for r32float with filtering samplers
+  const depthSampleType = device.features.has('float32-filterable') ? 'float' : 'unfilterable-float';
+
   densityTextureLayout = device.createBindGroupLayout({
     label: 'density-tex-layout',
     entries: [
       { binding: 0, visibility: GPUShaderStage.COMPUTE, texture: { sampleType: 'float' } },
-      { binding: 1, visibility: GPUShaderStage.COMPUTE, texture: { sampleType: 'unfilterable-float' } },
+      { binding: 1, visibility: GPUShaderStage.COMPUTE, texture: { sampleType: depthSampleType as GPUTextureSampleType } },
       { binding: 2, visibility: GPUShaderStage.COMPUTE, sampler: { type: 'filtering' } },
       { binding: 3, visibility: GPUShaderStage.COMPUTE, storageTexture: { access: 'write-only', format: 'rgba16float' } },
       { binding: 4, visibility: GPUShaderStage.COMPUTE, texture: { sampleType: 'float' } },
@@ -102,7 +105,7 @@ export function initAtmosphere() {
     label: 'scatter-tex-layout',
     entries: [
       { binding: 0, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: 'float' } },
-      { binding: 1, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: 'unfilterable-float' } },
+      { binding: 1, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: depthSampleType as GPUTextureSampleType } },
       { binding: 2, visibility: GPUShaderStage.FRAGMENT, sampler: { type: 'filtering' } },
     ],
   });
@@ -175,7 +178,7 @@ export function updateAtmosphereTextures(width: number, height: number) {
     GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.RENDER_ATTACHMENT);
 
   allocTexture('scatter', 'rgba16float', width, height,
-    GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.RENDER_ATTACHMENT);
+    GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.COPY_SRC);
 
   rebuildDensityBindGroup();
 }
@@ -243,7 +246,7 @@ export function dispatchDensity(encoder: GPUCommandEncoder, globalBG: GPUBindGro
 
 export function dispatchScatter(encoder: GPUCommandEncoder, globalBG: GPUBindGroup) {
   const scatterTex = allocTexture('scatter', 'rgba16float', currentWidth, currentHeight,
-    GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.RENDER_ATTACHMENT);
+    GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.COPY_SRC);
 
   const scatterPass = encoder.beginRenderPass({
     label: 'scatter-pass',
