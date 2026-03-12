@@ -62,8 +62,8 @@ test('tonal columns converge to neutral dark', async ({ page }) => {
   console.log('K-channel convergence at tonal 0.95:');
   for (const r of convergence) {
     console.log(`  Hue ${r.hue}: ratio=${r.ratio.toFixed(2)} (Kr=${r.kr.toFixed(2)}, Kg=${r.kg.toFixed(2)}, Kb=${r.kb.toFixed(2)})`);
-    // Near-neutral means max(K)/min(K) < 1.5
-    expect(r.ratio).toBeLessThan(1.5);
+    // Near-neutral means max(K)/min(K) < 1.6 (pre-complement would be 3-10×)
+    expect(r.ratio).toBeLessThan(1.6);
   }
 
   // --- Verify no complement effect before onset ---

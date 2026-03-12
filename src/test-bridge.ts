@@ -8,7 +8,7 @@ import { markAllDirty } from './state/dirty-flags.js';
 import { getAllMoods, loadCustomMoods } from './mood/custom-moods.js';
 import { deriveAtmosphere } from './mood/derive-atmosphere.js';
 import { getMaterial } from './surface/materials.js';
-import { syncBrushSlotsFromSession, setActiveBrushSlot, setBrushSlotAge, dipBrush, sampleTonalColumn, getActiveComplement } from './painting/palette.js';
+import { syncBrushSlotsFromSession, setActiveBrushSlot, setBrushSlotAge, dipBrush, wipeOnRag, toggleOil, sampleTonalColumn, getActiveComplement } from './painting/palette.js';
 import { clearSurface, getSurfaceWidth, getSurfaceHeight } from './painting/surface.js';
 import { getActiveBundle, getAverageLoad, resetActiveBundle } from './painting/bristle-bundle.js';
 import { reloadBrush } from './painting/brush-engine.js';
@@ -395,6 +395,8 @@ const bridge = {
     palette: { ...s.palette, activeIndex: i },
   })),
   setTool: (t: Tool) => uiStore.set({ activeTool: t }),
+  wipeOnRag,
+  toggleOil,
 
   // --- Brush physics testing ---
 
