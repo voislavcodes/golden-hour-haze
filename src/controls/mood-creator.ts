@@ -2,10 +2,11 @@
 import { html, css, nothing } from 'lit';
 import { customElement, state } from 'lit/decorators.js';
 import { BaseControl } from './base-control.js';
-import { huesToMoodPiles } from '../mood/oklch.js';
-import { addCustomMood } from '../mood/custom-moods.js';
+import { huesToMoodPiles, bendThroughMood, bentColorsToPiles, type OklchColor } from '../mood/oklch.js';
+import { addCustomMood, addCustomMoodFromExtraction, getAllMoods } from '../mood/custom-moods.js';
 import { extractHuesFromImage } from '../mood/photo-extract.js';
-import { DEFAULT_COMPLEMENT, type KColor } from '../mood/moods.js';
+import { DEFAULT_COMPLEMENT, DEFAULT_LENS, type KColor } from '../mood/moods.js';
+import { sessionStore } from '../session/session-state.js';
 import { sampleTonalColumn } from '../painting/palette.js';
 
 function colorToCSS(c: KColor): string {
@@ -156,12 +157,14 @@ export class MoodCreator extends BaseControl {
   @state() private _name = 'My Mood';
   @state() private _visible = false;
   @state() private _dragover = false;
+  @state() private _extractedColors: OklchColor[] | null = null;
 
   show() {
     this._visible = true;
     this.hidden = false;
     this._hues = [30, 15, 280, 210, 50];
     this._name = 'My Mood';
+    this._extractedColors = null;
   }
 
   hide() {
@@ -185,7 +188,18 @@ export class MoodCreator extends BaseControl {
 
   private _onCreate() {
     if (!this._name.trim()) return;
-    addCustomMood(this._name.trim(), [...this._hues]);
+    if (this._extractedColors) {
+      // Photo extraction path — bend through active mood's lens
+      const moodIndex = sessionStore.get().moodIndex ?? 0;
+      const mood = getAllMoods()[moodIndex];
+      const lens = mood?.lens ?? DEFAULT_LENS;
+      const bentOklch = bendThroughMood(this._extractedColors, lens, mood?.density ?? 0.4);
+      const piles = bentColorsToPiles(bentOklch);
+      addCustomMoodFromExtraction(this._name.trim(), piles, bentOklch);
+    } else {
+      // Manual slider path — existing behavior
+      addCustomMood(this._name.trim(), [...this._hues]);
+    }
     this.dispatchEvent(new CustomEvent('mood-created', { bubbles: true, composed: true }));
     this.hide();
   }
@@ -224,8 +238,9 @@ export class MoodCreator extends BaseControl {
   }
 
   private async _extractFromImage(file: File) {
-    const hues = await extractHuesFromImage(file);
-    this._hues = hues.slice(0, 5);
+    const result = await extractHuesFromImage(file, true);
+    this._extractedColors = result.colors;
+    this._hues = result.colors.map(c => c.h);
     // Auto-name from filename
     const baseName = file.name.replace(/\.[^.]+$/, '').replace(/[_-]/g, ' ');
     this._name = baseName.slice(0, 24);
@@ -234,7 +249,16 @@ export class MoodCreator extends BaseControl {
   render() {
     if (!this._visible) return nothing;
 
-    const piles = huesToMoodPiles(this._hues);
+    let piles;
+    if (this._extractedColors) {
+      const moodIndex = sessionStore.get().moodIndex ?? 0;
+      const mood = getAllMoods()[moodIndex];
+      const lens = mood?.lens ?? DEFAULT_LENS;
+      const bentOklch = bendThroughMood(this._extractedColors, lens, mood?.density ?? 0.4);
+      piles = bentColorsToPiles(bentOklch);
+    } else {
+      piles = huesToMoodPiles(this._hues);
+    }
 
     return html`
       <span class="title">create custom mood</span>

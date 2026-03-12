@@ -5,15 +5,17 @@ import { sceneStore, type MaterialType } from './state/scene-state.js';
 import { sessionStore } from './session/session-state.js';
 import { uiStore, pointerQueue, type Tool } from './state/ui-state.js';
 import { markAllDirty } from './state/dirty-flags.js';
-import { getAllMoods, loadCustomMoods } from './mood/custom-moods.js';
+import { getAllMoods, loadCustomMoods, addCustomMoodFromExtraction } from './mood/custom-moods.js';
 import { deriveAtmosphere } from './mood/derive-atmosphere.js';
+import { extractHuesFromImage, type ExtractionResult } from './mood/photo-extract.js';
+import { bendThroughMood, bentColorsToPiles } from './mood/oklch.js';
 import { getMaterial } from './surface/materials.js';
 import { syncBrushSlotsFromSession, setActiveBrushSlot, setBrushSlotAge, dipBrush, wipeOnRag, toggleOil, sampleTonalColumn, getActiveComplement } from './painting/palette.js';
 import { clearSurface, getSurfaceWidth, getSurfaceHeight } from './painting/surface.js';
 import { getActiveBundle, getAverageLoad, resetActiveBundle } from './painting/bristle-bundle.js';
 import { reloadBrush } from './painting/brush-engine.js';
 import { resetSessionTimer } from './session/session-timer.js';
-import { DEFAULT_COMPLEMENT } from './mood/moods.js';
+import { DEFAULT_COMPLEMENT, DEFAULT_LENS } from './mood/moods.js';
 import { getGPU } from './gpu/context.js';
 import { getTexture } from './gpu/texture-pool.js';
 import { getReadTexture, getStateReadTexture } from './painting/surface.js';
@@ -51,8 +53,41 @@ function waitFrames(n: number): Promise<void> {
   });
 }
 
+/** Apply mood by index — reloads custom moods from localStorage first */
 function applyMood(index: number) {
   loadCustomMoods();
+  const moods = getAllMoods();
+  if (index >= moods.length) return;
+
+  const mood = moods[index];
+  const atmosphere = deriveAtmosphere(mood);
+  const materialType = (mood.defaultSurface || 'board') as MaterialType;
+  const mat = getMaterial(materialType);
+
+  sessionStore.set({ moodIndex: index });
+  sceneStore.update((s) => ({
+    mood: mood.name,
+    atmosphere,
+    sunAngle: mood.sunAngle,
+    sunElevation: mood.sunElevation,
+    horizonY: mood.horizonY,
+    surface: {
+      ...s.surface,
+      material: materialType,
+      absorption: mat.absorption,
+      drySpeed: mat.drySpeed,
+    },
+    palette: {
+      colors: mood.piles.map(p => ({ r: p.medium.r, g: p.medium.g, b: p.medium.b, a: 1 })),
+      activeIndex: 0,
+      tonalValues: [0.5, 0.5, 0.5, 0.5, 0.5],
+    },
+  }));
+  markAllDirty();
+}
+
+/** Apply mood by index — uses current in-memory moods (no localStorage reload) */
+function selectMood(index: number) {
   const moods = getAllMoods();
   if (index >= moods.length) return;
 
@@ -311,6 +346,7 @@ async function testReadback(): Promise<number[]> {
 const bridge = {
   ready: true,
   applyMood,
+  selectMood,
   setPhase,
   replayStroke,
   waitFrames,
@@ -397,6 +433,30 @@ const bridge = {
   setTool: (t: Tool) => uiStore.set({ activeTool: t }),
   wipeOnRag,
   toggleOil,
+  getAllMoods,
+
+  // --- Image color extraction ---
+  /** Extract 5 OKLCH colors from a Blob, bend through a mood's lens, create a custom mood.
+   *  moodIndex selects the lens mood (defaults to active mood). */
+  async createMoodFromImage(name: string, imageBlob: Blob, moodIndex?: number): Promise<ExtractionResult> {
+    const file = new File([imageBlob], 'reference.png', { type: imageBlob.type || 'image/png' });
+    const result = await extractHuesFromImage(file, true);
+
+    // Bend through specified mood (or active mood) — stays in OKLCH (no lossy RGB roundtrip)
+    const idx = moodIndex ?? (sessionStore.get().moodIndex ?? 0);
+    const mood = getAllMoods()[idx];
+    const lens = mood?.lens ?? DEFAULT_LENS;
+    const bentOklch = bendThroughMood(result.colors, lens, mood?.density ?? 0.4);
+    const piles = bentColorsToPiles(bentOklch);
+
+    // Use lower density for extracted moods — source mood density (e.g. 0.75) is for atmosphere
+    // rendering; painting needs more contrast than the atmosphere would allow
+    const paintDensity = Math.min(mood?.density ?? 0.4, 0.25);
+    addCustomMoodFromExtraction(name, piles, bentOklch, paintDensity, mood?.warmth ?? 0.0);
+    return result;
+  },
+  bendThroughMood,
+  DEFAULT_LENS,
 
   // --- Brush physics testing ---
 

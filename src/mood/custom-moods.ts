@@ -1,14 +1,15 @@
 // Custom mood persistence — save/load user-created moods from localStorage
 
-import type { Mood } from './moods.js';
-import { MOODS } from './moods.js';
-import { huesToMoodPiles } from './oklch.js';
+import type { Mood, MoodPile } from './moods.js';
+import { DEFAULT_COMPLEMENT, MOODS } from './moods.js';
+import { huesToMoodPiles, oklchToPile, type OklchColor } from './oklch.js';
 
 const STORAGE_KEY = 'ghz-custom-moods';
 
 interface StoredCustomMood {
   name: string;
-  hues: number[];  // 5 OKLCH hue angles
+  hues?: number[];         // legacy: 5 OKLCH hue angles
+  colors?: OklchColor[];   // new: 5 full OKLCH values
   density: number;
   warmth: number;
   defaultSurface: string;
@@ -30,20 +31,32 @@ export function loadCustomMoods() {
 
 /** Save custom moods to localStorage */
 function persistCustomMoods() {
-  const stored: StoredCustomMood[] = customMoods.map(m => ({
-    name: m.name,
-    hues: (m as any)._hues ?? [0, 72, 144, 216, 288],
-    density: m.density,
-    warmth: m.warmth,
-    defaultSurface: m.defaultSurface,
-  }));
+  const stored: StoredCustomMood[] = customMoods.map(m => {
+    const colors = (m as any)._colors as OklchColor[] | undefined;
+    const base: StoredCustomMood = {
+      name: m.name,
+      density: m.density,
+      warmth: m.warmth,
+      defaultSurface: m.defaultSurface,
+    };
+    if (colors) {
+      base.colors = colors;
+    } else {
+      base.hues = (m as any)._hues ?? [0, 72, 144, 216, 288];
+    }
+    return base;
+  });
   localStorage.setItem(STORAGE_KEY, JSON.stringify(stored));
 }
 
 /** Convert stored data to a full Mood object */
 function hydrateCustomMood(s: StoredCustomMood): Mood {
-  const piles = huesToMoodPiles(s.hues);
-  const mood: Mood & { _hues: number[] } = {
+  // If stored with full OKLCH colors, generate piles from them
+  const piles: MoodPile[] = s.colors
+    ? s.colors.map(c => oklchToPile(c))
+    : huesToMoodPiles(s.hues ?? [0, 72, 144, 216, 288]);
+
+  const mood: Mood & { _hues?: number[]; _colors?: OklchColor[] } = {
     name: s.name,
     description: 'Custom mood',
     density: s.density,
@@ -53,8 +66,9 @@ function hydrateCustomMood(s: StoredCustomMood): Mood {
     warmth: s.warmth,
     piles,
     defaultSurface: s.defaultSurface,
-    _hues: s.hues,
   };
+  if (s.colors) mood._colors = s.colors;
+  if (s.hues) mood._hues = s.hues;
   return mood;
 }
 
@@ -68,10 +82,11 @@ export function getCustomMoods(): Mood[] {
   return customMoods;
 }
 
-/** Add a new custom mood from 5 hue angles */
-export function addCustomMood(name: string, hues: number[], density = 0.4, warmth = 0.0): Mood {
-  const piles = huesToMoodPiles(hues);
-  const mood: Mood & { _hues: number[] } = {
+/** Add a new custom mood from 5 hue angles (manual slider path).
+ *  chromaScale (0-1, default 1) reduces palette saturation for muted images. */
+export function addCustomMood(name: string, hues: number[], density = 0.4, warmth = 0.0, chromaScale = 1): Mood {
+  const piles = huesToMoodPiles(hues, chromaScale);
+  const mood: Mood & { _hues: number[]; _chromaScale: number } = {
     name,
     description: 'Custom mood',
     density,
@@ -82,6 +97,32 @@ export function addCustomMood(name: string, hues: number[], density = 0.4, warmt
     piles,
     defaultSurface: 'board',
     _hues: hues,
+    _chromaScale: chromaScale,
+  };
+  customMoods.push(mood);
+  persistCustomMoods();
+  return mood;
+}
+
+/** Add a custom mood from photo extraction — bent OKLCH colors stored directly (no lossy roundtrip) */
+export function addCustomMoodFromExtraction(
+  name: string,
+  bentPiles: MoodPile[],
+  bentOklch: OklchColor[],
+  density = 0.4,
+  warmth = 0.0,
+): Mood {
+  const mood: Mood & { _colors: OklchColor[] } = {
+    name,
+    description: 'Custom mood',
+    density, warmth,
+    sunAngle: 1.28,
+    sunElevation: 0.15,
+    horizonY: 0.5,
+    piles: bentPiles,
+    defaultSurface: 'board',
+    complement: DEFAULT_COMPLEMENT,
+    _colors: bentOklch,
   };
   customMoods.push(mood);
   persistCustomMoods();

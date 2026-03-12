@@ -78,10 +78,12 @@ fn km_reflectance(K: f32) -> f32 {
 }
 
 fn km_to_rgb(Kr: f32, Kg: f32, Kb: f32) -> vec3f {
+  // pow(0.65) instead of sqrt(0.5) — preserves more color separation
+  // through the ACES tonemap + sRGB pipeline
   return vec3f(
-    sqrt(km_reflectance(Kr)),
-    sqrt(km_reflectance(Kg)),
-    sqrt(km_reflectance(Kb))
+    pow(km_reflectance(Kr), 0.65),
+    pow(km_reflectance(Kg), 0.65),
+    pow(km_reflectance(Kb), 0.65)
   );
 }
 

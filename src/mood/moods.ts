@@ -24,6 +24,19 @@ export const DEFAULT_COMPLEMENT: ComplementConfig = {
   onset: 0.55, full: 0.90, strength: 0.85, warmth: 0.52,
 };
 
+export interface MoodLens {
+  hueCenter: number;            // gravitational hue (0-360°)
+  huePull: number;              // strength of pull toward center (0-1)
+  chromaSuppression: number;    // density-scaled chroma reduction (0-1)
+  lightnessFloor: number;       // min output lightness (0-1)
+  lightnessCeiling: number;     // max output lightness (0-1)
+}
+
+export const DEFAULT_LENS: MoodLens = {
+  hueCenter: 70, huePull: 0.20, chromaSuppression: 0.40,
+  lightnessFloor: 0.25, lightnessCeiling: 0.85,
+};
+
 export interface Mood {
   name: string;
   description: string;
@@ -35,6 +48,7 @@ export interface Mood {
   piles: MoodPile[];     // 5 hues, each with light/medium/dark
   defaultSurface: string;
   complement?: ComplementConfig;
+  lens?: MoodLens;
 }
 
 function hex(h: string): KColor {
@@ -67,6 +81,7 @@ export const MOODS: Mood[] = [
       pile('#f0ebe0', '#c8b898', '#5a5040'),  // warm cream
     ],
     defaultSurface: 'board',   // warm wood grain
+    lens: { hueCenter: 70, huePull: 0.20, chromaSuppression: 0.30, lightnessFloor: 0.25, lightnessCeiling: 0.85 },
   },
   {
     name: 'Blue Hour',
@@ -84,6 +99,7 @@ export const MOODS: Mood[] = [
       pile('#d8d4d0', '#8a8688', '#383438'),  // cool grey
     ],
     defaultSurface: 'board',   // cool board
+    lens: { hueCenter: 260, huePull: 0.30, chromaSuppression: 0.40, lightnessFloor: 0.15, lightnessCeiling: 0.75 },
   },
   {
     name: 'Foggy Morning',
@@ -101,6 +117,7 @@ export const MOODS: Mood[] = [
       pile('#e8e0d8', '#c0a890', '#584830'),  // sand
     ],
     defaultSurface: 'board',   // board with high tone
+    lens: { hueCenter: 70, huePull: 0.40, chromaSuppression: 0.35, lightnessFloor: 0.35, lightnessCeiling: 0.88 },
   },
   {
     name: 'Midday Haze',
@@ -118,6 +135,7 @@ export const MOODS: Mood[] = [
       pile('#f0f0e8', '#d0d0c0', '#686860'),  // light neutral
     ],
     defaultSurface: 'gesso',
+    lens: { hueCenter: 85, huePull: 0.15, chromaSuppression: 0.50, lightnessFloor: 0.30, lightnessCeiling: 0.92 },
   },
   {
     name: 'Dusk',
@@ -135,6 +153,7 @@ export const MOODS: Mood[] = [
       pile('#e0d0c0', '#a08868', '#483828'),  // dusk earth
     ],
     defaultSurface: 'board',   // dark warm board
+    lens: { hueCenter: 40, huePull: 0.20, chromaSuppression: 0.25, lightnessFloor: 0.10, lightnessCeiling: 0.80 },
   },
   {
     name: 'Overcast',
@@ -152,6 +171,7 @@ export const MOODS: Mood[] = [
       pile('#e0dcd8', '#b0a898', '#504840'),  // putty
     ],
     defaultSurface: 'canvas',  // canvas weave
+    lens: { hueCenter: 140, huePull: 0.35, chromaSuppression: 0.65, lightnessFloor: 0.28, lightnessCeiling: 0.85 },
   },
   {
     name: 'Night',
@@ -169,6 +189,7 @@ export const MOODS: Mood[] = [
       pile('#504840', '#282018', '#100c08'),  // dark earth
     ],
     defaultSurface: 'gesso',   // bright gesso
+    lens: { hueCenter: 300, huePull: 0.40, chromaSuppression: 0.55, lightnessFloor: 0.05, lightnessCeiling: 0.55 },
   },
 ];
 
