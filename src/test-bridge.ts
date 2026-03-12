@@ -13,6 +13,7 @@ import { clearSurface } from './painting/surface.js';
 import { resetSessionTimer } from './session/session-timer.js';
 import { getGPU } from './gpu/context.js';
 import { getTexture } from './gpu/texture-pool.js';
+import { getReadTexture, getStateReadTexture } from './painting/surface.js';
 
 export interface StrokePoint {
   x: number;       // 0-1 normalized
@@ -318,6 +319,39 @@ const bridge = {
     return { width: tex.width, height: tex.height, format: tex.format, usage: tex.usage, label: tex.label };
   },
   getDevice: () => getGPU().device,
+  getAccumTexture: () => getReadTexture(),
+  getStateTexture: () => getStateReadTexture(),
+
+  /** Read pixel from accum surface (K_r, K_g, K_b, paint_weight) */
+  async readAccumPixel(x: number, y: number): Promise<number[]> {
+    const { device } = getGPU();
+    const tex = getReadTexture();
+    const bytesPerPixel = 8; // rgba16float
+    const bytesPerRow = 256;
+    const readBuffer = device.createBuffer({
+      size: bytesPerRow,
+      usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ,
+    });
+    markAllDirty();
+    await new Promise<void>(resolve => {
+      requestAnimationFrame(() => {
+        const encoder = device.createCommandEncoder();
+        encoder.copyTextureToBuffer(
+          { texture: tex, origin: { x, y, z: 0 } },
+          { buffer: readBuffer, bytesPerRow },
+          { width: 1, height: 1 },
+        );
+        device.queue.submit([encoder.finish()]);
+        device.queue.onSubmittedWorkDone().then(() => resolve());
+      });
+    });
+    await readBuffer.mapAsync(GPUMapMode.READ);
+    const f16 = new Uint16Array(readBuffer.getMappedRange(0, bytesPerPixel));
+    const result = Array.from(f16).map(f16ToF32);
+    readBuffer.unmap();
+    readBuffer.destroy();
+    return result;
+  },
 
   /** Render one frame with GPU error scope to catch validation errors */
   async renderWithErrorCheck() {

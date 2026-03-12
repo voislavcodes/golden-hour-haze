@@ -65,12 +65,8 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
   let oil_fluidity = state.b * 0.3;
   let smear_effectiveness = saturate(wetness * (1.0 - tacky * 0.6) + oil_fluidity);
 
-  // Dry paint: rag does nothing (need palette knife to remove dry paint)
-  if (wetness < 0.05) {
-    textureStore(accum_write, vec2i(gid.xy), existing);
-    textureStore(state_write, vec2i(gid.xy), state);
-    return;
-  }
+  // NOTE: no blanket early-exit for dry pixels — bare pixels must receive smear inflow.
+  // Wetness gates lift and smear-outflow individually instead.
 
   // --- Surface grain ---
   let grain_uv = uv * vec2f(f32(dims.x) / 2048.0, f32(dims.y) / 2048.0);
@@ -110,72 +106,100 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
   let residue = select(params.residue_floor, params.ghost_retention, params.residue_floor < 0.001);
   let floor_val = max(residue, params.ghost_retention);
 
-  // --- Smear: additive paint transfer (not a lerp!) ---
+  // --- Smear: asymmetric paint transfer (not a lerp!) ---
   // Paint physically moves from upstream to current texel in wipe direction
+  // Outflow gated by LOCAL wetness; inflow gated by UPSTREAM wetness
   var result_K = existing.rgb;
   var result_weight = existing.a;
+  var smear_deposited = false;
 
-  let do_smear = has_direction && params.wipe_speed > 0.001 && smear_effectiveness > 0.05;
+  let do_smear = has_direction && params.wipe_speed > 0.001;
 
   if (do_smear) {
     // Sample upstream: where paint was before the rag pushed it here
-    let smear_dist = smear_fraction * params.radius * smear_effectiveness * 0.4;
+    // Geometric distance only — not gated by local wetness
+    // Look ~2 radii upstream (1 brush diameter) — rag carries paint over distance
+    let smear_dist = smear_fraction * params.radius * 4.0;
     let upstream_uv = uv - params.wipe_direction * smear_dist;
     let upstream_px = clamp(vec2i(upstream_uv * vec2f(dims)), vec2i(0), vec2i(dims) - 1);
     let upstream = textureLoad(accum_read, upstream_px, 0);
+    let upstream_state = textureLoad(state_read, upstream_px, 0);
 
     let speed_factor = saturate(params.wipe_speed);
-    let raw_transfer = saturate(contact * alpha * pressure_curve * smear_effectiveness * speed_factor * 0.25);
 
-    // Clamp outflow: never send more paint away than would bring us below the floor
+    // Outflow base: requires full cloth contact (rag lifts paint from ridges)
+    let out_base = saturate(contact * alpha * pressure_curve * speed_factor * 0.5);
+
+    // Inflow base: paint drips from loaded rag even in cloth valleys
+    let in_contact = max(contact, 0.15);
+    let in_base = saturate(in_contact * alpha * pressure_curve * speed_factor * 0.5);
+
+    // Upstream wetness/smear effectiveness for inflow
+    let upstream_wetness = calculate_wetness(upstream_state.r, params.session_time, params.surface_dry_speed, upstream_state.g);
+    let upstream_tacky = smoothstep(0.1, 0.25, upstream_wetness) * smoothstep(0.5, 0.35, upstream_wetness);
+    let upstream_oil = upstream_state.b * 0.3;
+    let upstream_smear_eff = saturate(upstream_wetness * (1.0 - upstream_tacky * 0.6) + upstream_oil);
+
+    // Outflow: gated by LOCAL smear effectiveness + headroom above floor
     let max_outflow = max(0.0, (existing.a - floor_val) / max(existing.a, 0.001));
-    let transfer = min(raw_transfer, max_outflow);
+    let out_transfer = min(out_base * smear_effectiveness, max_outflow);
+
+    // Inflow: gated by UPSTREAM smear effectiveness — NOT by local state
+    let in_transfer = in_base * upstream_smear_eff;
 
     // Paint leaving this texel downstream
-    let out_K = existing.rgb * transfer;
-    let out_w = existing.a * transfer;
+    let out_K = existing.rgb * out_transfer;
+    let out_w = existing.a * out_transfer;
 
     // Paint arriving from upstream
-    let in_K = upstream.rgb * transfer;
-    let in_w = upstream.a * transfer;
+    let in_K = upstream.rgb * in_transfer;
+    let in_w = upstream.a * in_transfer;
 
     // Net: current - out + in (paint redistribution, not erasure)
     result_K = existing.rgb - out_K + in_K;
     result_weight = existing.a - out_w + in_w;
 
+    // Track if bare pixel received paint
+    smear_deposited = existing.a < 0.001 && in_w > 0.0;
+
     // Accumulation ridge at wipe boundary — paint bulldozed to the edge
-    let ridge = smoothstep(0.85, 0.95, alpha) * transfer * 0.3;
+    let ridge = smoothstep(0.85, 0.95, alpha) * out_transfer * 0.3;
     result_weight += ridge * upstream.a;
   }
 
   // --- Lift: rag absorbs paint (secondary to smear) ---
-  let rag_absorb = 1.0 - params.rag_saturation;
-  let thin_lift_bonus = state.g * 0.05;
-  let base_lift = alpha * params.strength * grain_lift * contact * pressure_curve
-                  * lift_fraction * rag_absorb * 0.04;
-  let raw_lift = (base_lift + thin_lift_bonus) * wetness_factor;
+  // Gated by wetness — bare/dry pixels skip lift but can still receive smear
+  var final_K = result_K;
+  var final_weight = result_weight;
 
-  // Asymptotic decay: as paint approaches floor, lift drops quadratically
-  // This makes the stain approach the floor but never reach it quickly
-  let headroom = max(0.0, result_weight - floor_val) / max(existing.a, 0.001);
-  let asymptote = headroom * headroom;  // quadratic: slows dramatically near floor
-  let lift_amount = raw_lift * asymptote;
+  if (wetness > 0.02 && result_weight > 0.001) {
+    let rag_absorb = 1.0 - params.rag_saturation;
+    let thin_lift_bonus = state.g * 0.05;
+    let base_lift = alpha * params.strength * grain_lift * contact * pressure_curve
+                    * lift_fraction * rag_absorb * 0.04;
+    let raw_lift = (base_lift + thin_lift_bonus) * wetness_factor;
 
-  // Don't lift below floor; don't raise already-thin paint to floor
-  let effective_floor = min(existing.a, floor_val);
-  let new_weight = max(effective_floor, result_weight - lift_amount);
+    // Asymptotic decay: as paint approaches floor, lift drops quartically
+    // Quartic provides much stronger convergence near the floor
+    let headroom = max(0.0, result_weight - floor_val) / max(result_weight, 0.001);
+    let h2 = headroom * headroom;
+    let asymptote = h2 * h2;  // quartic: dramatic slowdown near floor
+    let lift_amount = raw_lift * asymptote;
 
-  // Scale K proportionally with weight change
-  let k_scale = select(1.0, new_weight / max(result_weight, 0.001), result_weight > 0.001);
-  var final_K = result_K * k_scale;
+    // Don't lift below floor; don't raise already-thin paint to floor
+    let effective_floor = min(existing.a, floor_val);
+    final_weight = max(effective_floor, result_weight - lift_amount);
 
-  // Ghost stain — K values never drop below a visible fraction of original pigment
-  // Uses floor_val as the retention fraction so the stain is always visible
-  let ghost_floor = existing.rgb * floor_val;
-  final_K = max(ghost_floor, final_K);
+    // Scale K proportionally with weight change
+    let k_scale = select(1.0, final_weight / max(result_weight, 0.001), result_weight > 0.001);
+    final_K = result_K * k_scale;
+
+    // Ghost stain — K values never drop below a visible fraction of original pigment
+    let ghost_floor = existing.rgb * floor_val;
+    final_K = max(ghost_floor, final_K);
+  }
 
   // --- Rag contamination deposit (dirty rag tints the surface) ---
-  var final_weight = new_weight;
   if (params.rag_saturation > 0.05) {
     let rag_K = vec3f(params.rag_Kr, params.rag_Kg, params.rag_Kb);
     let deposit_strength = params.rag_saturation * contact * alpha * pressure_curve;
@@ -184,6 +208,12 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
   }
 
   textureStore(accum_write, vec2i(gid.xy), vec4f(final_K, final_weight));
-  // Wiping doesn't refresh paint time — keep existing state
-  textureStore(state_write, vec2i(gid.xy), state);
+
+  // Update state: if smear deposited paint on bare pixel, set paint_time
+  // so deposited paint is treated as wet by subsequent dabs
+  var new_state = state;
+  if (smear_deposited) {
+    new_state = vec4f(params.session_time, state.g, state.b, state.a);
+  }
+  textureStore(state_write, vec2i(gid.xy), new_state);
 }
