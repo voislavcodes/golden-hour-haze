@@ -13,6 +13,7 @@ export interface BristleTip {
   bendDir: Vec2;
   load: number;
   oil: number;
+  anchor: number;
   colorKr: number;
   colorKg: number;
   colorKb: number;
@@ -124,6 +125,7 @@ export function createBundle(seed: number, age: number): BristleBundle {
         bendDir: [0, 0],
         load: 0,
         oil: 0,
+        anchor: 0,
         colorKr: 0,
         colorKg: 0,
         colorKb: 0,
@@ -271,13 +273,14 @@ export function updateBundle(
   bundle.lastPos = [pos[0], pos[1]];
 }
 
-export function dipBundle(bundle: BristleBundle, kr: number, kg: number, kb: number, oil: number, load: number) {
+export function dipBundle(bundle: BristleBundle, kr: number, kg: number, kb: number, oil: number, anchor: number, load: number) {
   for (const tip of bundle.tips) {
     // Steeper capillary loading gradient — inner bristles hold more paint
     const ringNorm = tip.ringIndex / MAX_RING;
     const ringFalloff = 1.0 - ringNorm * ringNorm * 0.6;
     tip.load = load * ringFalloff;
     tip.oil = oil;
+    tip.anchor = anchor;
 
     if (tip.contamination > 0.01) {
       const contam = tip.contamination * 0.3;
@@ -297,6 +300,7 @@ export function wipeBundle(bundle: BristleBundle) {
     tip.load *= 0.15;
     tip.contamination *= 0.15;
     tip.oil = 0;
+    tip.anchor = 0;
   }
 }
 

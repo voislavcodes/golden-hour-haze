@@ -22,7 +22,7 @@ struct BrushParams {
   surface_dry_speed: f32,       // offset 64
   vertex_count: u32,            // offset 68
   oil_remaining: f32,           // offset 72  — oil on brush (0=none, 1=full)
-  _pad: f32,                    // offset 76  — pad to 80
+  anchor_intensity: f32,         // offset 76  — anchor chroma unlock (0=none, 1=full)
 };
 
 struct StrokeVertex {
@@ -254,7 +254,8 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
       let smear_time = select(state.r, upstream_state.r, upstream.a > existing.a && drag_wetness > 0.3);
       let smear_thin = select(state.g, upstream_state.g, upstream.a > existing.a);
       let smear_oil = select(state.b, upstream_state.b, upstream.a > existing.a);
-      textureStore(state_write, vec2i(gid.xy), vec4f(smear_time, smear_thin, smear_oil, 0.0));
+      let smear_anchor = select(state.a, upstream_state.a, upstream.a > existing.a);
+      textureStore(state_write, vec2i(gid.xy), vec4f(smear_time, smear_thin, smear_oil, smear_anchor));
       return;
     }
 
@@ -269,7 +270,7 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
   // Pure medium mode — thinners > 0.9 wets surface without depositing pigment
   if (params.thinners > 0.9) {
     textureStore(accum_write, vec2i(gid.xy), existing);
-    textureStore(state_write, vec2i(gid.xy), vec4f(params.session_time, 1.0, state.b, 0.0));
+    textureStore(state_write, vec2i(gid.xy), vec4f(params.session_time, 1.0, state.b, state.a));
     return;
   }
 
@@ -324,5 +325,6 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
   // Write paint state — timestamp + thinners for wetness tracking
   let new_state = select(state.rg, vec2f(params.session_time, params.thinners), effective_alpha > 0.01);
   let new_oil = select(state.b, params.oil_remaining, effective_alpha > 0.01);
-  textureStore(state_write, vec2i(gid.xy), vec4f(new_state, new_oil, 0.0));
+  let new_anchor = select(state.a, params.anchor_intensity, effective_alpha > 0.01);
+  textureStore(state_write, vec2i(gid.xy), vec4f(new_state, new_oil, new_anchor));
 }

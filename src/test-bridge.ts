@@ -10,7 +10,7 @@ import { deriveAtmosphere } from './mood/derive-atmosphere.js';
 import { extractHuesFromImage, type ExtractionResult } from './mood/photo-extract.js';
 import { bendThroughMood, bentColorsToPiles } from './mood/oklch.js';
 import { getMaterial } from './surface/materials.js';
-import { syncBrushSlotsFromSession, setActiveBrushSlot, setBrushSlotAge, dipBrush, wipeOnRag, toggleOil, sampleTonalColumn, getActiveComplement } from './painting/palette.js';
+import { syncBrushSlotsFromSession, setActiveBrushSlot, setBrushSlotAge, dipBrush, wipeOnRag, toggleOil, toggleAnchor, sampleTonalColumn, getActiveComplement } from './painting/palette.js';
 import { clearSurface, getSurfaceWidth, getSurfaceHeight } from './painting/surface.js';
 import { getActiveBundle, getAverageLoad, resetActiveBundle } from './painting/bristle-bundle.js';
 import { reloadBrush } from './painting/brush-engine.js';
@@ -395,6 +395,37 @@ const bridge = {
     return result;
   },
 
+  /** Read pixel from paint state surface (time, thinners, oil, anchor) */
+  async readStatePixel(x: number, y: number): Promise<number[]> {
+    const { device } = getGPU();
+    const tex = getStateReadTexture();
+    const bytesPerPixel = 16; // rgba32float
+    const bytesPerRow = 256;
+    const readBuffer = device.createBuffer({
+      size: bytesPerRow,
+      usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ,
+    });
+    markAllDirty();
+    await new Promise<void>(resolve => {
+      requestAnimationFrame(() => {
+        const encoder = device.createCommandEncoder();
+        encoder.copyTextureToBuffer(
+          { texture: tex, origin: { x, y, z: 0 } },
+          { buffer: readBuffer, bytesPerRow },
+          { width: 1, height: 1 },
+        );
+        device.queue.submit([encoder.finish()]);
+        device.queue.onSubmittedWorkDone().then(() => resolve());
+      });
+    });
+    await readBuffer.mapAsync(GPUMapMode.READ);
+    const f32 = new Float32Array(readBuffer.getMappedRange(0, bytesPerPixel));
+    const result = [f32[0], f32[1], f32[2], f32[3]];
+    readBuffer.unmap();
+    readBuffer.destroy();
+    return result;
+  },
+
   /** Render one frame with GPU error scope to catch validation errors */
   async renderWithErrorCheck() {
     const { device } = getGPU();
@@ -433,6 +464,7 @@ const bridge = {
   setTool: (t: Tool) => uiStore.set({ activeTool: t }),
   wipeOnRag,
   toggleOil,
+  toggleAnchor,
   getAllMoods,
 
   // --- Image color extraction ---

@@ -64,6 +64,10 @@ fn aces_tonemap(x: vec3f) -> vec3f {
   return clamp(a / b, vec3f(0.0), vec3f(1.0));
 }
 
+fn reinhard_tonemap(x: vec3f) -> vec3f {
+  return x / (x + 1.0);
+}
+
 fn linear_to_srgb(c: vec3f) -> vec3f {
   let cutoff = step(c, vec3f(0.0031308));
   let low = c * 12.92;
@@ -77,13 +81,11 @@ fn km_reflectance(K: f32) -> f32 {
   return clamp(R, 0.0, 1.0);
 }
 
-fn km_to_rgb(Kr: f32, Kg: f32, Kb: f32) -> vec3f {
-  // pow(0.65) instead of sqrt(0.5) — preserves more color separation
-  // through the ACES tonemap + sRGB pipeline
+fn km_to_rgb(Kr: f32, Kg: f32, Kb: f32, gamma: f32) -> vec3f {
   return vec3f(
-    pow(km_reflectance(Kr), 0.65),
-    pow(km_reflectance(Kg), 0.65),
-    pow(km_reflectance(Kb), 0.65)
+    pow(km_reflectance(Kr), gamma),
+    pow(km_reflectance(Kg), gamma),
+    pow(km_reflectance(Kb), gamma)
   );
 }
 
@@ -98,9 +100,12 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4f {
   //    Thicker paint absorbs more light (K-M depth scaling).
   let accum = textureSample(accum_tex, tex_sampler, uv);
   let paint_weight = accum.a;
+  let state = textureLoad(paint_state_tex, vec2i(in.position.xy), 0);
+  let anchor = state.a;
+  let anchor_gamma = mix(0.65, 0.85, anchor);
   let depth_factor = max(paint_weight - 0.5, 0.0);
   let depth_scale = 1.0 + depth_factor / (depth_factor + 1.5);
-  let paint_rgb = km_to_rgb(accum.r * depth_scale, accum.g * depth_scale, accum.b * depth_scale);
+  let paint_rgb = km_to_rgb(accum.r * depth_scale, accum.g * depth_scale, accum.b * depth_scale, anchor_gamma);
 
   // 3. Surface color — physical material between atmosphere and paint
   let surface_tiling = globals.resolution / 2048.0;
@@ -121,7 +126,6 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4f {
   color += grain_tint;
 
   // 5. Visual drying — sinking in (oil medium prevents sinking)
-  let state = textureLoad(paint_state_tex, vec2i(in.position.xy), 0);
   let wetness = calculate_wetness(state.r, comp_params.session_time, comp_params.surface_dry_speed, state.g);
   let paint_thinners = state.g;
   let oil = state.b;

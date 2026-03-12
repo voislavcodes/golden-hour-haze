@@ -2,7 +2,7 @@ import { html, css } from 'lit';
 import { customElement, state } from 'lit/decorators.js';
 import { BaseControl } from './base-control.js';
 import { uiStore, pointerQueue, type Tool } from '../state/ui-state.js';
-import { getOilRemaining } from '../painting/palette.js';
+import { getOilRemaining, getAnchorRemaining } from '../painting/palette.js';
 
 const BRUSH_TOOLS = new Set<Tool>(['form', 'scrape', 'wipe']);
 
@@ -44,6 +44,13 @@ export class CanvasOverlay extends BaseControl {
       .brush-cursor.oiled {
         box-shadow: 0 0 6px 2px rgba(255, 200, 50, var(--oil-opacity, 0.6));
       }
+      .brush-cursor.anchored {
+        box-shadow: 0 0 6px 2px rgba(64, 200, 232, var(--anchor-opacity, 0.6));
+      }
+      .brush-cursor.oiled.anchored {
+        box-shadow: 0 0 6px 2px rgba(255, 200, 50, var(--oil-opacity, 0.6)),
+                    0 0 10px 4px rgba(64, 200, 232, var(--anchor-opacity, 0.4));
+      }
 
       .blade-cursor {
         position: fixed;
@@ -83,6 +90,9 @@ export class CanvasOverlay extends BaseControl {
 
   @state()
   private _oilGlow = 0;
+
+  @state()
+  private _anchorGlow = 0;
 
   @state()
   private _horizonGuideY: number = 0;
@@ -146,6 +156,7 @@ export class CanvasOverlay extends BaseControl {
     const rect = this._getCanvasRect();
     this._brushDiameter = effectiveRadius * 2 * rect.height;
     this._oilGlow = getOilRemaining();
+    this._anchorGlow = getAnchorRemaining();
   }
 
   private _normalizeCoords(e: PointerEvent): { x: number; y: number } {
@@ -257,8 +268,8 @@ export class CanvasOverlay extends BaseControl {
     return html`
       ${this._showBrushCircle && this._activeTool !== 'scrape' ? html`
         <div
-          class="brush-cursor ${this._oilGlow > 0 ? 'oiled' : ''}"
-          style="left:${this._mx}px;top:${this._my}px;width:${this._brushDiameter}px;height:${this._brushDiameter}px${this._oilGlow > 0 ? `;--oil-opacity:${this._oilGlow}` : ''}"
+          class="brush-cursor ${this._oilGlow > 0 ? 'oiled' : ''} ${this._anchorGlow > 0 ? 'anchored' : ''}"
+          style="left:${this._mx}px;top:${this._my}px;width:${this._brushDiameter}px;height:${this._brushDiameter}px${this._oilGlow > 0 ? `;--oil-opacity:${this._oilGlow}` : ''}${this._anchorGlow > 0 ? `;--anchor-opacity:${this._anchorGlow}` : ''}"
         ></div>
       ` : ''}
       ${this._activeTool === 'scrape' ? html`

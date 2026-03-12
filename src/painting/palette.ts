@@ -75,6 +75,19 @@ export function depleteOil() {
   if (oilRemaining < 0.01) oilRemaining = 0;
 }
 
+// --- Anchor chroma unlock state ---
+
+let anchorArmed = false;
+let anchorRemaining = 0;
+
+export function isAnchorArmed(): boolean { return anchorArmed; }
+export function getAnchorRemaining(): number { return anchorRemaining; }
+
+export function toggleAnchor() {
+  anchorArmed = !anchorArmed;
+  document.dispatchEvent(new CustomEvent('anchor-changed'));
+}
+
 // --- Tonal column sampling ---
 
 function lerpColor(a: KColor, b: KColor, t: number): KColor {
@@ -197,6 +210,7 @@ export function wipeOnRag() {
   const slot = brushSlots[activeBrushSlot];
   slot.residueAmount *= 0.15;
   oilRemaining = 0;
+  anchorRemaining = 0;
 }
 
 export function getActiveComplement(): ComplementConfig {
@@ -236,6 +250,14 @@ export function dipBrush(hueIndex: number) {
     oilArmed = false;
     document.dispatchEvent(new CustomEvent('oil-changed'));
   }
+
+  if (anchorArmed) {
+    anchorRemaining = 1.0;
+    anchorArmed = false;
+    document.dispatchEvent(new CustomEvent('anchor-changed'));
+  } else {
+    anchorRemaining = 0;
+  }
 }
 
 /** Sync brush slot ages and seeds from session store into runtime slots */
@@ -265,4 +287,19 @@ export function getActiveKS(): { Kr: number; Kg: number; Kb: number; color: KCol
 
   const ks = rgbToKS(finalColor);
   return { ...ks, color: finalColor };
+}
+
+/** Simulate compositor pipeline for UI preview: K-M → reflectance → gamma → tonemap → sRGB */
+export function previewColor(c: KColor, anchored: boolean): KColor {
+  const ks = rgbToKS(c);
+  const gamma = anchored ? 0.85 : 0.65;
+  let r = Math.pow(clamp(reflectanceFromKS(ks.Kr), 0, 1), gamma);
+  let g = Math.pow(clamp(reflectanceFromKS(ks.Kg), 0, 1), gamma);
+  let b = Math.pow(clamp(reflectanceFromKS(ks.Kb), 0, 1), gamma);
+  // ACES Narkowicz tonemap (same for both paths — gamma does the chroma work)
+  r = (r * (r * 2.51 + 0.03)) / (r * (r * 2.43 + 0.59) + 0.14);
+  g = (g * (g * 2.51 + 0.03)) / (g * (g * 2.43 + 0.59) + 0.14);
+  b = (b * (b * 2.51 + 0.03)) / (b * (b * 2.43 + 0.59) + 0.14);
+  const toSrgb = (v: number) => v <= 0.0031308 ? v * 12.92 : 1.055 * Math.pow(v, 1 / 2.4) - 0.055;
+  return { r: clamp(toSrgb(r), 0, 1), g: clamp(toSrgb(g), 0, 1), b: clamp(toSrgb(b), 0, 1) };
 }

@@ -6,7 +6,7 @@
 import { getGPU } from '../gpu/context.js';
 import { createComputePipeline } from '../gpu/pipeline-cache.js';
 import { getAccumPP, getStatePP, swapSurface, getSurfaceWidth, getSurfaceHeight } from './surface.js';
-import { getActiveKS, getBrushSlot, getActiveBrushSlot, getOilRemaining, depleteOil } from './palette.js';
+import { getActiveKS, getBrushSlot, getActiveBrushSlot, getOilRemaining, getAnchorRemaining, depleteOil } from './palette.js';
 import { getSurfaceHeightTexture } from '../surface/surface-material.js';
 import { getMaterial } from '../surface/materials.js';
 import { sceneStore } from '../state/scene-state.js';
@@ -205,7 +205,7 @@ export function reloadBrush() {
   }
   const mat = getMaterial(scene.surface.material);
   setSurfaceProperties(bundle, mat.friction, mat.tooth);
-  dipBundle(bundle, ks.Kr, ks.Kg, ks.Kb, getOilRemaining(), load > 0 ? 1.0 : 0);
+  dipBundle(bundle, ks.Kr, ks.Kg, ks.Kb, getOilRemaining(), getAnchorRemaining(), load > 0 ? 1.0 : 0);
 }
 
 /** Wipe brush on rag — reduces bundle tip loads */
@@ -392,7 +392,7 @@ function dispatchPolyline(
   f32[16] = scene.surface.drySpeed;
   u32[17] = vertexCount;
   f32[18] = getOilRemaining();
-  f32[19] = 0;
+  f32[19] = getAnchorRemaining();
   device.queue.writeBuffer(uniformBuffer, 0, ab);
 
   // Write vertex buffer

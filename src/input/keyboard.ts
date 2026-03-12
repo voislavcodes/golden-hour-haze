@@ -1,5 +1,5 @@
 import { uiStore, type Tool } from '../state/ui-state.js';
-import { wipeOnRag, toggleOil } from '../painting/palette.js';
+import { wipeOnRag, toggleOil, toggleAnchor } from '../painting/palette.js';
 import { wipeBrush } from '../painting/brush-engine.js';
 import { setTimeMultiplier } from '../session/session-timer.js';
 
@@ -40,6 +40,12 @@ export function initKeyboardInput() {
     // Oil medium toggle
     if (e.key.toLowerCase() === 'o' && !e.ctrlKey && !e.metaKey) {
       toggleOil();
+      return;
+    }
+
+    // Anchor chroma unlock toggle
+    if (e.key.toLowerCase() === 'a' && !e.ctrlKey && !e.metaKey) {
+      toggleAnchor();
       return;
     }
 
