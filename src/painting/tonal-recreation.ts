@@ -526,9 +526,9 @@ function budgetStrokes(strokes: StrokeCommand[], max: number): StrokeCommand[] {
   return result;
 }
 
-// --- Full pipeline ---
+// --- Full pipeline (legacy span-based) ---
 
-export function createPaintingPlan(
+export function createPaintingPlanLegacy(
   imageData: ImageData,
   paletteColors: KColor[],
   complement: ComplementConfig,
@@ -541,6 +541,70 @@ export function createPaintingPlan(
   quantizeCells(map, luts);
   const spans = generateSpans(map);
   return assemblePlan(spans, map, luts);
+}
+
+// --- Full pipeline (region-based, V3) ---
+
+import { extractRegions, detectHorizon, computeRegionFeatures } from './region-analysis.js';
+import { classifyAllHeuristic, classifyRegionHeuristic } from './region-classify-heuristic.js';
+import { initClassifier, isClassifierReady, classifyRegionsBatch, getConfidenceThreshold } from './region-classify-ml.js';
+import { extractPatch } from './region-patches.js';
+import { assembleRegionPlan } from './region-strokes.js';
+
+export async function createPaintingPlan(
+  imageData: ImageData,
+  paletteColors: KColor[],
+  complement: ComplementConfig,
+  gridCols = 40,
+  gridRows = 30,
+  fullResImageData?: ImageData,
+): Promise<PaintingPlan> {
+  // Steps 1-4: tonal analysis (unchanged)
+  const map = analyzeTonalStructure(imageData, gridCols, gridRows);
+  assignHuesToCells(map, paletteColors);
+  const luts = buildMeldrumLUTs(paletteColors, complement);
+  quantizeCells(map, luts);
+
+  // Step 5: Connected component analysis
+  const regions = extractRegions(map);
+  const horizonRow = detectHorizon(map);
+
+  // Step 6: Classification
+  // Try ML first, fall back to heuristic
+  let usedML = false;
+  await initClassifier().catch(() => false);
+
+  if (isClassifierReady() && fullResImageData) {
+    try {
+      const patches = regions.map(r => extractPatch(fullResImageData, r, gridCols, gridRows));
+      const features = regions.map(r => computeRegionFeatures(r, gridCols, gridRows));
+      const mlResults = await classifyRegionsBatch(patches, features);
+      const threshold = getConfidenceThreshold();
+
+      for (let i = 0; i < regions.length; i++) {
+        if (mlResults[i].confidence >= threshold) {
+          regions[i].classification = mlResults[i].classification;
+          regions[i].confidence = mlResults[i].confidence;
+        } else {
+          // Low confidence — use heuristic for this region
+          const features_i = computeRegionFeatures(regions[i], gridCols, gridRows);
+          const result = classifyRegionHeuristic(regions[i], features_i, horizonRow, gridRows);
+          regions[i].classification = result.classification;
+          regions[i].confidence = result.confidence;
+        }
+      }
+      usedML = true;
+    } catch {
+      // ML failed — fall through to heuristic
+    }
+  }
+
+  if (!usedML) {
+    classifyAllHeuristic(regions, horizonRow, gridRows);
+  }
+
+  // Step 7: Assemble region-based painting plan
+  return assembleRegionPlan(regions, map, luts, map.motherHueIndex);
 }
 
 // --- Utility: downsample image to grid-sized ImageData ---

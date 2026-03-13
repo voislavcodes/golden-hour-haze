@@ -12,7 +12,12 @@ import { bendThroughMood, bentColorsToPiles } from './mood/oklch.js';
 import { getMaterial } from './surface/materials.js';
 import { syncBrushSlotsFromSession, setActiveBrushSlot, setBrushSlotAge, dipBrush, wipeOnRag, toggleOil, toggleAnchor, sampleTonalColumn, getActiveComplement, previewColor, MELDRUM_VALUES } from './painting/palette.js';
 import { clearSurface, getSurfaceWidth, getSurfaceHeight } from './painting/surface.js';
-import { analyzeTonalStructure, assignHuesToCells, buildMeldrumLUTs, quantizeCells, generateSpans, assemblePlan, createPaintingPlan, downsampleImage } from './painting/tonal-recreation.js';
+import { analyzeTonalStructure, assignHuesToCells, buildMeldrumLUTs, quantizeCells, generateSpans, assemblePlan, createPaintingPlan, createPaintingPlanLegacy, downsampleImage } from './painting/tonal-recreation.js';
+import { extractRegions, detectHorizon, computeRegionFeatures } from './painting/region-analysis.js';
+import { classifyAllHeuristic, classifyRegionHeuristic } from './painting/region-classify-heuristic.js';
+import { initClassifier, isClassifierReady, classifyRegionsBatch } from './painting/region-classify-ml.js';
+import { extractPatch } from './painting/region-patches.js';
+import { generateRegionStrokes, assembleRegionPlan } from './painting/region-strokes.js';
 import { getActiveBundle, getAverageLoad, resetActiveBundle } from './painting/bristle-bundle.js';
 import { reloadBrush, wipeBrush, getReservoir } from './painting/brush-engine.js';
 import { resetSessionTimer, setTimeMultiplier } from './session/session-timer.js';
@@ -538,22 +543,54 @@ const bridge = {
   generateSpans,
   assemblePlan,
   createPaintingPlan,
+  createPaintingPlanLegacy,
   downsampleImage,
 
-  /** Analyze reference image and create a full painting plan.
-   *  Returns plan + tonal map metadata for diagnostics. */
+  // --- Region analysis ---
+  extractRegions,
+  detectHorizon,
+  computeRegionFeatures,
+  classifyAllHeuristic,
+  classifyRegionHeuristic,
+  initClassifier,
+  isClassifierReady,
+  classifyRegionsBatch,
+  extractPatch,
+  generateRegionStrokes,
+  assembleRegionPlan,
+
+  /** Analyze reference image using the region pipeline (V3).
+   *  Returns plan + region metadata for diagnostics. */
   async analyzeImage(imageBlob: Blob, gridCols = 40, gridRows = 30) {
     const imageData = await downsampleImage(imageBlob, gridCols, gridRows);
+    // Also get full-res for patch extraction
+    const fullBitmap = await createImageBitmap(imageBlob);
+    const fullCanvas = new OffscreenCanvas(fullBitmap.width, fullBitmap.height);
+    const fullCtx = fullCanvas.getContext('2d')!;
+    fullCtx.drawImage(fullBitmap, 0, 0);
+    fullBitmap.close();
+    const fullResImageData = fullCtx.getImageData(0, 0, fullCanvas.width, fullCanvas.height);
+
     const palette = sceneStore.get().palette;
     const paletteColors = palette.colors.map(c => ({ r: c.r, g: c.g, b: c.b }));
     const complement = getActiveComplement();
 
+    const plan = await createPaintingPlan(imageData, paletteColors, complement, gridCols, gridRows, fullResImageData);
+
+    // Also extract region metadata for diagnostics
     const map = analyzeTonalStructure(imageData, gridCols, gridRows);
     assignHuesToCells(map, paletteColors);
     const luts = buildMeldrumLUTs(paletteColors, complement);
     quantizeCells(map, luts);
-    const spans = generateSpans(map);
-    const plan = assemblePlan(spans, map, luts);
+    const regions = extractRegions(map);
+    const horizonRow = detectHorizon(map);
+    classifyAllHeuristic(regions, horizonRow, gridRows);
+
+    // Region class summary
+    const classCounts: Record<string, number> = {};
+    for (const r of regions) {
+      classCounts[r.classification] = (classCounts[r.classification] || 0) + 1;
+    }
 
     return {
       plan,
@@ -564,7 +601,21 @@ const bridge = {
         motherHueIndex: map.motherHueIndex,
       },
       luts: luts.map(l => ({ hueIndex: l.hueIndex, luminances: [...l.luminances] })),
-      spanCount: spans.length,
+      spanCount: 0, // legacy — no longer primary
+      regionCount: regions.length,
+      horizonRow,
+      classCounts,
+      regions: regions.map(r => ({
+        id: r.id,
+        classification: r.classification,
+        confidence: r.confidence,
+        cellCount: r.cells.length,
+        areaFraction: r.areaFraction,
+        centroid: r.centroid,
+        meldrumIndex: r.meldrumIndex,
+        maxChroma: r.maxChroma,
+        aspectRatio: r.aspectRatio,
+      })),
     };
   },
 
