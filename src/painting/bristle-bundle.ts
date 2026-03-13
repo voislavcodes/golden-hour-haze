@@ -257,10 +257,11 @@ export function updateBundle(
     }
 
     // Per-tip depletion — edges deplete first (cubic gradient)
-    // Real brushes: outer tips have far less capillary reservoir
+    // Gentle rate: sigmoidal curve in brush-engine handles macro-depletion,
+    // tips add micro-texture (edge drying) without creating visible gaps
     if (tip.load > 0) {
       const edgeFactor = ringNorm * ringNorm * ringNorm; // cubic: 0 center → 1 edge
-      const depletionRate = (0.3 + edgeFactor * 1.2) * tipPressure * 2.0;
+      const depletionRate = (0.05 + edgeFactor * 0.25) * tipPressure;
       tip.load = Math.max(0, tip.load - depletionRate * dt);
     }
 
@@ -297,8 +298,8 @@ export function dipBundle(bundle: BristleBundle, kr: number, kg: number, kb: num
 
 export function wipeBundle(bundle: BristleBundle) {
   for (const tip of bundle.tips) {
-    tip.load *= 0.15;
-    tip.contamination *= 0.15;
+    tip.load *= 0.2;
+    tip.contamination *= 0.2;
     tip.oil = 0;
     tip.anchor = 0;
   }
@@ -317,6 +318,67 @@ export function getAverageLoad(bundle: BristleBundle): number {
 export function setSurfaceProperties(bundle: BristleBundle, friction: number, tooth: number) {
   bundle.friction = friction;
   bundle.tooth = tooth;
+}
+
+// --- 1D bristle density profile for GPU dry brush ---
+// Projects all 1024 tips onto the cross-stroke (perpendicular) axis,
+// producing a density profile the shader samples instead of hash-noise lanes.
+// Natural ring layout + splay + age drift → irregular clumping.
+export const BRISTLE_PROFILE_SIZE = 64;
+
+export function buildBristleProfile(bundle: BristleBundle, dirX: number, dirY: number): Float32Array {
+  const profile = new Float32Array(BRISTLE_PROFILE_SIZE);
+  const { tips } = bundle;
+
+  // Perpendicular to stroke direction
+  const perpX = -dirY;
+  const perpY = dirX;
+
+  // Find max extent of tips along perp axis for normalization
+  let maxExtent = 0;
+  for (let i = 0; i < tips.length; i++) {
+    const proj = Math.abs(tips[i].currentOffset[0] * perpX + tips[i].currentOffset[1] * perpY);
+    if (proj > maxExtent) maxExtent = proj;
+  }
+  if (maxExtent < 0.001) {
+    // No clear direction — fill profile uniformly
+    profile.fill(1.0);
+    return profile;
+  }
+
+  for (let i = 0; i < tips.length; i++) {
+    const tip = tips[i];
+    const perpProj = tip.currentOffset[0] * perpX + tip.currentOffset[1] * perpY;
+
+    // Map from [-maxExtent, maxExtent] to [0, PROFILE_SIZE-1]
+    const normalized = (perpProj / maxExtent + 1) * 0.5;
+    const bin = Math.floor(normalized * (BRISTLE_PROFILE_SIZE - 1));
+    if (bin < 0 || bin >= BRISTLE_PROFILE_SIZE) continue;
+
+    // In-contact tips: full contribution weighted by load
+    // Out-of-contact: faint residue from tips that barely graze the surface
+    const weight = tip.inContact
+      ? Math.max(tip.load, 0.08)
+      : tip.load * 0.12;
+
+    // Spread across neighboring bins — tip has physical width
+    profile[bin] += weight * 0.5;
+    if (bin > 0) profile[bin - 1] += weight * 0.25;
+    if (bin < BRISTLE_PROFILE_SIZE - 1) profile[bin + 1] += weight * 0.25;
+  }
+
+  // Normalize peak to 1.0
+  let maxVal = 0;
+  for (let i = 0; i < BRISTLE_PROFILE_SIZE; i++) {
+    if (profile[i] > maxVal) maxVal = profile[i];
+  }
+  if (maxVal > 0) {
+    for (let i = 0; i < BRISTLE_PROFILE_SIZE; i++) {
+      profile[i] /= maxVal;
+    }
+  }
+
+  return profile;
 }
 
 // --- Module-level bundle instance ---

@@ -33,6 +33,7 @@ struct StrokeVertex {
 
 @group(0) @binding(0) var<uniform> params: BrushParams;
 @group(0) @binding(1) var<storage, read> vertices: array<StrokeVertex>;
+@group(0) @binding(2) var<storage, read> bristle_profile: array<f32>;
 @group(1) @binding(0) var accum_read: texture_2d<f32>;
 @group(1) @binding(1) var accum_write: texture_storage_2d<rgba16float, write>;
 @group(2) @binding(0) var surface_height: texture_2d<f32>;
@@ -46,6 +47,18 @@ struct StrokeVertex {
 fn hash_noise(angle: f32, seed: f32) -> f32 {
   let s = sin(angle * 127.1 + seed * 311.7) * 43758.5453;
   return fract(s);
+}
+
+// 2D smooth value noise — coherent patches for dry brush contact variation
+fn value_noise_2d(p: vec2f, seed: f32) -> f32 {
+  let ip = floor(p);
+  let fp = fract(p);
+  let u = fp * fp * (3.0 - 2.0 * fp);
+  let a = fract(sin(dot(ip, vec2f(127.1, 311.7)) + seed * 43.17) * 43758.5453);
+  let b = fract(sin(dot(ip + vec2f(1.0, 0.0), vec2f(127.1, 311.7)) + seed * 43.17) * 43758.5453);
+  let c = fract(sin(dot(ip + vec2f(0.0, 1.0), vec2f(127.1, 311.7)) + seed * 43.17) * 43758.5453);
+  let d = fract(sin(dot(ip + vec2f(1.0, 1.0), vec2f(127.1, 311.7)) + seed * 43.17) * 43758.5453);
+  return mix(mix(a, b, u.x), mix(c, d, u.x), u.y);
 }
 
 // Capsule SDF: returns (signed_distance, t_along_segment)
@@ -136,52 +149,60 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
   }
 
   // Bristle clump density — irregular groups via non-harmonic sines
-  // Creates ~3-5 wide clump peaks across brush width, not uniform grooves
   let bristle_angle = dot(uv - nearest, perp) / max(local_r, 0.0001);
   let ba = bristle_angle * 6.28;
-  let clump_cross = 0.5
-    + 0.28 * sin(ba * 2.7 + params.bristle_seed * 5.1)
-    + 0.15 * sin(ba * 6.3 + params.bristle_seed * 3.7)
-    + 0.07 * sin(ba * 11.1 + params.bristle_seed * 8.3);
+  let clump_cross = 0.65
+    + 0.18 * sin(ba * 2.7 + params.bristle_seed * 5.1)
+    + 0.10 * sin(ba * 6.3 + params.bristle_seed * 3.7)
+    + 0.05 * sin(ba * 11.1 + params.bristle_seed * 8.3);
 
-  // Along-stroke variation — ADDITIVE so gaps can bridge and reopen
+  // Along-stroke variation — cross-stroke phase shift breaks up horizontal bands.
+  // Each bristle position has a different phase, so light patches are irregular, not full-width.
   let along_uv = dot(uv, dir);
   let along_freq = 1.0 / max(local_r * 2.0, 0.001);
+  let along_phase = bristle_angle * 2.3;
   let along_variation =
-      0.12 * sin(along_uv * along_freq * 1.7 + ba * 3.1 + params.bristle_seed * 2.3)
-    + 0.06 * sin(along_uv * along_freq * 4.3 + ba * 6.7 + params.bristle_seed * 6.1);
+      0.03 * sin(along_uv * along_freq * 1.7 + along_phase + params.bristle_seed * 2.3)
+    + 0.015 * sin(along_uv * along_freq * 4.3 + along_phase * 1.7 + params.bristle_seed * 6.1);
 
-  let bristle_load = saturate(clump_cross + along_variation);
+  // Floor at 0.4 — capillary action ensures continuous paint film, never zero
+  let bristle_load = max(0.4, saturate(clump_cross + along_variation));
 
   // Radial bias — edges always slightly thinner + deplete first
-  // Real brushes: fewer bristle tips at edges, less capillary reservoir
   let radial_pos = min(abs(bristle_angle), 1.0);
-  let edge_sq = radial_pos * radial_pos; // quadratic edge emphasis
-  let base_edge = 1.0 - edge_sq * 0.12;  // always some edge thinning (fewer tips)
+  let edge_sq = radial_pos * radial_pos;
+  let base_edge = 1.0 - edge_sq * 0.12;
   let radial_bias = base_edge * (1.0 - edge_sq * 0.55 * (1.0 - local_reservoir));
 
-  // Squared depletion ramp — gentle change at high reservoir (no visible dab
-  // boundaries), progressive separation at low reservoir (dry-brush effect).
+  // Dry brush detection — activates for rag-wiped brush (reservoir ~0.2) and
+  // natural late-stroke depletion. Starts at 0.5, fully active at 0.1.
+  let dry_brush_t = smoothstep(0.5, 0.1, local_reservoir);
+
+  // Depletion drives grain/texture interactions downstream
   let reservoir_depletion = pow(1.0 - local_reservoir, 2.0);
-  let variation = reservoir_depletion;
+  // Bell curve for bristle separation: solid when loaded, visible at mid-depletion.
+  // In dry brush mode, bristle pattern is suppressed — surface texture takes over.
+  let variation_raw = smoothstep(0.8, 0.35, local_reservoir) * smoothstep(0.0, 0.25, local_reservoir);
+  let variation = variation_raw * (1.0 - dry_brush_t);
   let bristle_reservoir = local_reservoir * mix(1.0, bristle_load, variation) * radial_bias;
   let final_reservoir = bristle_reservoir;
 
-  // Fine bristle texture — subtle surface marks, not the dominant pattern
+  // Fine bristle texture — subtle surface marks at mid-depletion only
   let bristle_count = mix(8.0, 16.0, params.age);
   let fine_pos = bristle_angle * bristle_count + params.bristle_seed * 6.28;
   let fine_groove = smoothstep(0.0, 0.15, fract(fine_pos))
                   * smoothstep(1.0, 0.85, fract(fine_pos));
   let depth = max(-min_dist, 0.0) / max(local_r, 0.0001);
   let edge_emphasis = smoothstep(0.2, 0.85, 1.0 - depth);
-  // Fine texture — worn brushes show more grooves
   let depletion = 1.0 - final_reservoir;
-  let fine_vis = smoothstep(0.5, 1.0, depletion) * (0.04 + params.age * 0.25);
+  // Bell curve: peak at mid-depletion, invisible when loaded or dry
+  let fine_bell = smoothstep(0.3, 0.6, depletion) * smoothstep(0.95, 0.75, depletion) * (1.0 - dry_brush_t);
+  let fine_vis = fine_bell * (0.03 + params.age * 0.2);
   let bristle_pattern = 1.0 - edge_emphasis * (1.0 - fine_groove) * fine_vis;
 
-  // Edge softness + roughness
-  let edge_softness = local_r * (0.08 + params.thinners * 0.4);
-  let roughness_strength = 0.05 + params.age * 0.22 + depletion * 0.15;
+  // Edge softness — dry brush gets wider, softer edges (feathered contact)
+  let edge_softness = local_r * (0.08 + params.thinners * 0.4 + dry_brush_t * 0.3);
+  let roughness_strength = 0.05 + params.age * 0.22 + fine_bell * 0.12;
   let edge_noise = hash_noise(bristle_angle * 3.0, params.bristle_seed) * 0.7
                  + hash_noise(bristle_angle * 12.0, params.bristle_seed + 5.0) * 0.3;
   let edge_roughness = edge_noise * roughness_strength * local_r;
@@ -194,24 +215,54 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
 
   // === Paint physics uses delta (incremental alpha) ===
 
-  // Grain-aware deposition — thin paint catches only on raised surface peaks
-  // As paint depletes, surface texture increasingly gates where paint deposits
+  // Surface grain sampling
   let grain_uv = uv * vec2f(f32(dims.x) / 2048.0, f32(dims.y) / 2048.0);
   let grain = textureSampleLevel(surface_height, grain_sampler, grain_uv, 0.0).r;
-  // Use reservoir directly (uniform per frame) — avoids visible dab ridges
-  // Depletion drives grain influence: pow(depletion, 1.5) for steeper onset
+
+  // Grain-aware deposition — surface texture gates paint more as brush depletes
   let depletion_curve = pow(reservoir_depletion, 1.5);
   let grain_factor = params.thinners * 0.15 + depletion_curve * 0.85;
-  // At high depletion, apply threshold: surface valleys get zero paint
+  // Dry brush: surface height FULLY gates deposition (paint only on raised peaks)
+  let grain_factor_final = mix(grain_factor, 1.0, dry_brush_t);
   let grain_thresh = mix(0.0, 0.45, depletion_curve);
-  let grain_gated = smoothstep(grain_thresh, grain_thresh + 0.15, grain);
-  let grain_interaction = mix(1.0, grain_gated, grain_factor);
+  // Dry brush: moderate threshold — raised peaks and ridges make contact (not just tallest)
+  let dry_thresh = mix(grain_thresh, 0.35, dry_brush_t);
+  let grain_gated = smoothstep(dry_thresh, dry_thresh + 0.12, grain);
+  let grain_interaction = mix(1.0, grain_gated, grain_factor_final);
+
+  // Dry brush bristle contact — physical 1024-tip bundle density profile.
+  // CPU projects all bristle tips onto the cross-stroke axis each frame.
+  // Natural ring layout + splay + age drift → irregular clumping and varying widths.
+  // Gaps have faint residue from out-of-contact tips that barely graze the surface.
+  let profile_uv = clamp((bristle_angle + 1.0) * 0.5, 0.0, 1.0);
+  let profile_pos = profile_uv * 63.0;
+  let idx0 = u32(floor(profile_pos));
+  let idx1 = min(idx0 + 1u, 63u);
+  let profile_frac = fract(profile_pos);
+  let bristle_density = mix(bristle_profile[idx0], bristle_profile[idx1], profile_frac);
+  // Along-stroke modulation — bristle tips lift and re-engage as brush moves.
+  // Two incommensurate frequencies create irregular lift pattern.
+  // Phase shifts with bristle_angle so adjacent cross-stroke rows are staggered.
+  let along_base = along_uv * along_freq;
+  let along_mod = 0.55
+    + 0.28 * sin(along_base * 3.0 + bristle_angle * 5.0 + params.bristle_seed * 4.3)
+    + 0.17 * sin(along_base * 7.0 + bristle_angle * 3.1 + params.bristle_seed * 7.1);
+  let streak_gate = smoothstep(0.05, 0.4, bristle_density * along_mod);
+  // Multi-pass gap filling: where previous strokes deposited paint, bristles have
+  // better contact (existing paint fills surface valleys, bridging gaps).
+  // Pass 1 = streaky on bare surface. Pass 2+ fills gaps progressively.
+  let existing_fill = saturate(existing.a * 4.0);
+  let gate_strength = saturate(dry_brush_t * 1.5) * (1.0 - existing_fill);
+  let contact_gate = mix(1.0, streak_gate, gate_strength);
 
   // Diminishing returns — per-stroke only; new strokes arrive at full opacity
   let layers_this_stroke = max(existing.a - params.stroke_start_layers, 0.0);
-  // Thick paint is more opaque — covers in fewer passes
   let opacity_boost = mix(2.2, 1.0, params.thinners);
-  let effective_alpha = delta * params.pigment_density * opacity_boost * pow(params.falloff, layers_this_stroke) * final_reservoir * grain_interaction;
+
+  // Dry brush: thin bristle coating transfers efficiently to surface peaks.
+  // Proportional boost (3x) keeps fresh dry brush visible but allows full depletion.
+  let dry_reservoir = mix(final_reservoir, final_reservoir * 3.0, dry_brush_t);
+  let effective_alpha = delta * params.pigment_density * opacity_boost * pow(params.falloff, layers_this_stroke) * dry_reservoir * grain_interaction * contact_gate;
 
   // === Depleted brush interaction — the brush always does something ===
   // Dry brush drags paint from upstream (opposite of stroke direction) onto current pixel.

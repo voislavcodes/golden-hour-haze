@@ -205,10 +205,10 @@ export function setBrushSlotSeed(index: number, seed: number) {
   brushSlots[clamp(index, 0, NUM_BRUSH_SLOTS - 1)].bristleSeed = seed;
 }
 
-/** Wipe brush on rag — reduce residue to 15% */
+/** Wipe brush on rag — reduce residue (dry brush technique) */
 export function wipeOnRag() {
   const slot = brushSlots[activeBrushSlot];
-  slot.residueAmount *= 0.15;
+  slot.residueAmount *= 0.2;
   oilRemaining = 0;
   anchorRemaining = 0;
 }

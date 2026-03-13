@@ -17,6 +17,7 @@ import {
   createBundle, updateBundle, dipBundle, wipeBundle,
   getAverageLoad, setSurfaceProperties,
   ensureBundle, getActiveBundle, setActiveBundle,
+  buildBristleProfile, BRISTLE_PROFILE_SIZE,
 } from './bristle-bundle.js';
 import brushShader from '../shaders/brush/brush.wgsl';
 
@@ -26,6 +27,7 @@ type SegPoint = { pos: Vec2; pressure: number; tiltX: number; tiltY: number };
 let pipeline: GPUComputePipeline;
 let uniformBuffer: GPUBuffer;
 let vertexBuffer: GPUBuffer;
+let profileBuffer: GPUBuffer;
 let paramLayout: GPUBindGroupLayout;
 let textureLayout: GPUBindGroupLayout;
 let auxLayout: GPUBindGroupLayout;
@@ -58,6 +60,7 @@ let lastReservoir = 1.0;
 let totalDistance = 0;
 let strokeDabCount = 0;
 let lastFrameTime = 0;
+let loadScale = 1.0;   // rag wipe reduces this; dip resets to 1.0
 
 // Cumulative polyline — grows over the entire stroke lifetime
 // Each frame re-renders the full stroke from a pre-stroke snapshot
@@ -87,6 +90,7 @@ export function initBrushEngine() {
     entries: [
       { binding: 0, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'uniform' } },
       { binding: 1, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'read-only-storage' } },
+      { binding: 2, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'read-only-storage' } },
     ],
   });
 
@@ -118,7 +122,7 @@ export function initBrushEngine() {
     addressModeV: 'repeat',
   });
 
-  pipeline = createComputePipeline('brush-v7', device, {
+  pipeline = createComputePipeline('brush-v8', device, {
     label: 'brush-compute',
     layout: device.createPipelineLayout({
       bindGroupLayouts: [paramLayout, textureLayout, auxLayout],
@@ -140,6 +144,16 @@ export function initBrushEngine() {
     size: MAX_VERTICES * VERTEX_STRIDE,
     usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
   });
+
+  profileBuffer = device.createBuffer({
+    label: 'brush-bristle-profile',
+    size: BRISTLE_PROFILE_SIZE * 4,
+    usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+  });
+  // Initialize to uniform 1.0 — no gating until first bundle update
+  const initProfile = new Float32Array(BRISTLE_PROFILE_SIZE);
+  initProfile.fill(1.0);
+  device.queue.writeBuffer(profileBuffer, 0, initProfile.buffer, initProfile.byteOffset, initProfile.byteLength);
 
   reloadBrush();
 }
@@ -193,6 +207,7 @@ export function reloadBrush() {
   const load = scene.load;
 
   // Reset distance-based reservoir
+  loadScale = 1.0;
   reservoir = load > 0 ? 1.0 : 0;
   lastReservoir = reservoir;
   totalDistance = 0;
@@ -208,10 +223,14 @@ export function reloadBrush() {
   dipBundle(bundle, ks.Kr, ks.Kg, ks.Kb, getOilRemaining(), getAnchorRemaining(), load > 0 ? 1.0 : 0);
 }
 
-/** Wipe brush on rag — reduces bundle tip loads */
+/** Wipe brush on rag — reduces paint load + bundle tip loads (dry brush) */
 export function wipeBrush() {
   const bundle = getActiveBundle();
   if (bundle) wipeBundle(bundle);
+  loadScale *= 0.2;
+  reservoir *= 0.2;
+  lastReservoir = reservoir;
+  totalDistance = 0;
 }
 
 export function getReservoir(): number {
@@ -420,6 +439,7 @@ function dispatchPolyline(
     entries: [
       { binding: 0, resource: { buffer: uniformBuffer } },
       { binding: 1, resource: { buffer: vertexBuffer } },
+      { binding: 2, resource: { buffer: profileBuffer } },
     ],
   });
   const texBG = device.createBindGroup({
@@ -537,6 +557,17 @@ export function dispatchBrushDabs(encoder: GPUCommandEncoder, x: number, y: numb
     updateBundle(bundle, wp.pos, wp.pressure, wp.tiltX, wp.tiltY, dtPerWp, radius);
   }
 
+  // Build bristle density profile for GPU dry brush contact gate
+  const bVel = bundle.lastVelocity;
+  const bSpeed = Math.sqrt(bVel[0] ** 2 + bVel[1] ** 2);
+  if (bSpeed > 0.001) {
+    const bDirX = bVel[0] / bSpeed;
+    const bDirY = bVel[1] / bSpeed;
+    const profile = buildBristleProfile(bundle, bDirX, bDirY);
+    const { device } = getGPU();
+    device.queue.writeBuffer(profileBuffer, 0, profile.buffer, profile.byteOffset, profile.byteLength);
+  }
+
   // Accumulate pixel distance for paint depletion
   const w = getSurfaceWidth();
   for (let i = 1; i < points.length; i++) {
@@ -549,31 +580,39 @@ export function dispatchBrushDabs(encoder: GPUCommandEncoder, x: number, y: numb
   // Real paint: plateau (capillary reservoir feeds freely), then rapid drop,
   // then long residual tail (paint trapped in bristle roots)
   const load = scene.load;
-  if (load <= 0) {
+  // effectiveLoad: rag wipe reduces this so the brush behaves as if less paint was loaded
+  const effectiveLoad = load * loadScale;
+  if (effectiveLoad <= 0) {
     reservoir = 0;
   } else {
     const radiusPixels = radius * w;
+    // Dry brush (rag-wiped): thin bristle coating depletes faster than loaded brush.
+    // Real dry brush has just a thin film — it runs out in a few brush-widths.
+    const isDryBrush = loadScale < 0.5;
+    const holdMultiplier = isDryBrush ? 8 : 18;
+    const transMultiplier = isDryBrush ? 15 : 25;
     // Hold phase: paint flows freely from inter-bristle capillary reservoirs
-    const holdDistance = load * radiusPixels * 18;
+    const holdDistance = effectiveLoad * radiusPixels * holdMultiplier;
     const drainDistance = totalDistance - holdDistance;
     if (drainDistance <= 0) {
-      reservoir = 1.0;
+      reservoir = loadScale;  // cap at loadScale, not 1.0
     } else {
       // Sigmoidal: logistic curve centered at transition point
-      // steepness controls how sharp the drop-off is
-      const transitionDist = load * radiusPixels * 25;
-      const steepness = (1.0 - load) * 0.008 + 0.003;
+      const transitionDist = effectiveLoad * radiusPixels * transMultiplier;
+      const steepness = (1.0 - effectiveLoad) * 0.008 + 0.003;
       const logistic = 1.0 / (1.0 + Math.exp(steepness * (drainDistance - transitionDist)));
       // Residual floor: paint trapped in bristle roots (never fully empty)
-      const residual = 0.03 * load;
-      reservoir = residual + (1.0 - residual) * logistic;
+      // Dry brush: no residual — thin film exhausts completely
+      const residual = isDryBrush ? 0 : 0.03 * effectiveLoad;
+      reservoir = residual + (loadScale - residual) * logistic;
     }
   }
 
-  // Clamp reservoir to bundle average load (tips depleting faster = less paint)
+  // Bundle average load gently nudges reservoir down only when tips are truly depleted.
+  // The sigmoidal curve handles macro depletion; bundle tips add micro-texture only.
   const bundleLoad = getAverageLoad(bundle);
-  if (bundleLoad < reservoir) {
-    reservoir = reservoir * 0.7 + bundleLoad * 0.3;
+  if (bundleLoad < 0.3 && bundleLoad < reservoir) {
+    reservoir = reservoir * 0.9 + bundleLoad * 0.1;
   }
 
   // Build StrokeVertex array — bundle splay modulates radius

@@ -10,10 +10,10 @@ import { deriveAtmosphere } from './mood/derive-atmosphere.js';
 import { extractHuesFromImage, type ExtractionResult } from './mood/photo-extract.js';
 import { bendThroughMood, bentColorsToPiles } from './mood/oklch.js';
 import { getMaterial } from './surface/materials.js';
-import { syncBrushSlotsFromSession, setActiveBrushSlot, setBrushSlotAge, dipBrush, wipeOnRag, toggleOil, toggleAnchor, sampleTonalColumn, getActiveComplement } from './painting/palette.js';
+import { syncBrushSlotsFromSession, setActiveBrushSlot, setBrushSlotAge, dipBrush, wipeOnRag, toggleOil, toggleAnchor, sampleTonalColumn, getActiveComplement, previewColor } from './painting/palette.js';
 import { clearSurface, getSurfaceWidth, getSurfaceHeight } from './painting/surface.js';
 import { getActiveBundle, getAverageLoad, resetActiveBundle } from './painting/bristle-bundle.js';
-import { reloadBrush } from './painting/brush-engine.js';
+import { reloadBrush, wipeBrush, getReservoir } from './painting/brush-engine.js';
 import { resetSessionTimer } from './session/session-timer.js';
 import { DEFAULT_COMPLEMENT, DEFAULT_LENS } from './mood/moods.js';
 import { getGPU } from './gpu/context.js';
@@ -444,6 +444,7 @@ const bridge = {
   // Tonal column sampling
   sampleTonalColumn,
   getActiveComplement,
+  previewColor,
   DEFAULT_COMPLEMENT,
 
   // Direct store access
@@ -463,6 +464,8 @@ const bridge = {
   })),
   setTool: (t: Tool) => uiStore.set({ activeTool: t }),
   wipeOnRag,
+  wipeBrush,
+  getReservoir,
   toggleOil,
   toggleAnchor,
   getAllMoods,
