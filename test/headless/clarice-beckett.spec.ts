@@ -1,6 +1,6 @@
 // Clarice Beckett recreation — foggy Melbourne street scene
 // Tonalist method (Meldrum/Beckett): tone is primary, color secondary.
-// Mother color (warm cream-grey) permeates everything. 5 tones, narrow value range.
+// Mother color (warm cream-grey) permeates everything. 5 discrete Meldrum tones.
 // Forms EMERGE from the dominant tone through layered tonal buildup.
 // Figure built in 3 tonal layers (soft outer → medium → dark core) for soft edges.
 // Run: CHROME=1 npx playwright test test/headless/clarice-beckett.spec.ts
@@ -13,6 +13,9 @@ import { fileURLToPath } from 'url';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const OUTPUT_DIR = path.resolve(__dirname, '../output/clarice-beckett');
 
+// Meldrum 5-tone indices
+const WHITE = 0, LIGHT = 1, MID = 2, DARK = 3, BLACK = 4;
+
 test.beforeAll(() => {
   fs.mkdirSync(OUTPUT_DIR, { recursive: true });
 });
@@ -23,14 +26,10 @@ async function snap(page: any, name: string) {
   console.log(`  -> ${name}`);
 }
 
-async function setTonal(page: any, hue: number, value: number) {
+async function setTonal(page: any, hue: number, tonalIndex: number) {
   await page.evaluate((o: any) => {
-    (window as any).__ghz.stores.scene.update((s: any) => {
-      const tv = [...s.palette.tonalValues];
-      tv[o.h] = o.v;
-      return { palette: { ...s.palette, tonalValues: tv } };
-    });
-  }, { h: hue, v: value });
+    (window as any).__ghz.setTonalIndex(o.h, o.t);
+  }, { h: hue, t: tonalIndex });
 }
 
 async function wipeRag(page: any) {
@@ -105,36 +104,10 @@ async function fill(
   }
 }
 
-// Dome-shaped fill for umbrella (elliptical boundary)
-async function fillDome(
-  page: any, cx: number, yTop: number, yBot: number,
-  rx: number, opts: any, passes = 1
-) {
-  const bs = opts.brushSize || 0.02;
-  const spacing = bs * 0.25;
-  const ry = (yBot - yTop) / 2;
-  const cy = yTop + ry;
-  const rows = Math.ceil((yBot - yTop) / spacing);
-  for (let pass = 0; pass < passes; pass++) {
-    const off = pass * spacing * 0.35;
-    for (let i = 0; i < rows; i++) {
-      const y = yTop + i * spacing + off;
-      if (y > yBot) break;
-      const dy = (y - cy) / ry;
-      const halfW = rx * Math.sqrt(Math.max(0, 1 - dy * dy));
-      if (halfW < bs * 0.5) continue;
-      const x0 = cx - halfW * 1.05; // slight leftward bias
-      const x1 = cx + halfW * 0.95;
-      const n = Math.max(8, Math.round((x1 - x0) * 160));
-      await paint(page, H(y, x0, x1, opts.pressure || 0.55, n), opts);
-    }
-  }
-}
-
 // ═══════════════════════════════════════════════════════════════════════════
 // TONALIST METHOD (Meldrum/Beckett):
 // 1. Establish dominant tone (mother color) — warm cream-grey EVERYWHERE
-// 2. Add tonal variations within a narrow range — most values within 15%
+// 2. Add tonal variations within 5 discrete Meldrum steps
 // 3. Build forms from general to specific — large areas → small accents
 // 4. Forms EMERGE from the tone, not placed ON it
 // 5. Only the figure breaks significantly from the dominant tone
@@ -269,70 +242,67 @@ test('Clarice Beckett — foggy Melbourne street', async ({ page }) => {
   const HEDGE = pickByHue(99);
   const TRAM = pickByHue(45);
   const HORIZON = pickByHue(351);
-  const DARK = pickByLum(false);
+  const DARK_HUE = pickByLum(false);
   const SKY = pickByLum(true);
-  const roles = { SKY, HEDGE, DARK, HORIZON, TRAM };
+  const roles = { SKY, HEDGE, DARK: DARK_HUE, HORIZON, TRAM };
   console.log('Role mapping:', JSON.stringify(roles));
 
   await snap(page, '00-blank.png');
 
   // ─────────────────────────────────────────────────────────────────────────
   // LAYER 1: MOTHER COLOR — warm cream-grey permeating everything
-  // This is the dominant tone that unifies the entire painting.
-  // Thick, opaque, 3 passes. Sky and road nearly identical in value.
+  // LIGHT tone (0.25) — lighter coverage for the base wash
   // ─────────────────────────────────────────────────────────────────────────
   console.log('L1: Mother color...');
-  await setTonal(page, HORIZON, 0.20);
+  await setTonal(page, HORIZON, LIGHT);
   await fill(page, 0.0, 1.0, 0.0, 1.0, {
-    brushSlot: 4, hueIndex: HORIZON, brushSize: 0.20, thinners: 0.0, load: 0.85, pressure: 0.55,
+    brushSlot: 4, hueIndex: HORIZON, brushSize: 0.20, thinners: 0.0, load: 0.75, pressure: 0.55,
   }, 2);
   await snap(page, '01-mother.png');
 
   // ─────────────────────────────────────────────────────────────────────────
   // LAYER 2: TONAL GRADATION — sky slightly darker at top, warm horizon band
-  // All within the narrow value range. Road stays as mother color.
+  // LIGHT tone throughout — multiple passes and varying pressure for gradation
   // ─────────────────────────────────────────────────────────────────────────
   console.log('L2: Tonal gradation...');
-  // Upper sky — notably darker (reference sky is dark warm grey, not white)
-  await setTonal(page, SKY, 0.30);
+  // Upper sky — LIGHT tone, heavier load for darker coverage
+  await setTonal(page, SKY, LIGHT);
   await fill(page, 0.0, 0.16, 0.0, 1.0, {
     brushSlot: 4, hueIndex: SKY, brushSize: 0.16, thinners: 0.0, load: 0.65, pressure: 0.48,
   });
-  // Gradual transition into mid-sky
-  await setTonal(page, SKY, 0.22);
+  // Gradual transition into mid-sky — lighter pass
   await fill(page, 0.08, 0.28, 0.0, 1.0, {
-    brushSlot: 4, hueIndex: SKY, brushSize: 0.20, thinners: 0.01, load: 0.45, pressure: 0.36,
+    brushSlot: 4, hueIndex: SKY, brushSize: 0.20, thinners: 0.01, load: 0.35, pressure: 0.30,
   });
-  // Warm horizon band — subtle pink-brown glow
-  await setTonal(page, HORIZON, 0.22);
+  // Warm horizon band
+  await setTonal(page, HORIZON, LIGHT);
   await fill(page, 0.28, 0.42, 0.0, 1.0, {
     brushSlot: 4, hueIndex: HORIZON, brushSize: 0.10, thinners: 0.01, load: 0.45, pressure: 0.36,
   });
   // Warmer center — where the light source would be (behind fog)
-  await setTonal(page, HORIZON, 0.26);
   await fill(page, 0.30, 0.38, 0.10, 0.55, {
-    brushSlot: 4, hueIndex: HORIZON, brushSize: 0.08, thinners: 0.01, load: 0.38, pressure: 0.32,
+    brushSlot: 4, hueIndex: HORIZON, brushSize: 0.08, thinners: 0.01, load: 0.42, pressure: 0.34,
   });
   await snap(page, '02-gradation.png');
 
   // ─────────────────────────────────────────────────────────────────────────
   // LAYER 3: HEDGE — barely visible olive-grey darkening, left side only
-  // Should almost disappear into the atmosphere.
+  // LIGHT for distant, MID for dense sections
   // ─────────────────────────────────────────────────────────────────────────
   console.log('L3: Hedge...');
   await wipeRag(page);
-  // Main hedge band
-  await setTonal(page, HEDGE, 0.28);
+  // Main hedge band — LIGHT tone, low load
+  await setTonal(page, HEDGE, LIGHT);
   await fill(page, 0.38, 0.44, 0.0, 0.40, {
     brushSlot: 2, hueIndex: HEDGE, brushSize: 0.025, thinners: 0.04, load: 0.30, pressure: 0.26,
   });
-  // Denser left section
-  await setTonal(page, HEDGE, 0.34);
+  // Denser left section — MID tone
+  await setTonal(page, HEDGE, MID);
   await fill(page, 0.39, 0.44, 0.0, 0.20, {
-    brushSlot: 2, hueIndex: HEDGE, brushSize: 0.020, thinners: 0.02, load: 0.36, pressure: 0.30,
+    brushSlot: 2, hueIndex: HEDGE, brushSize: 0.020, thinners: 0.02, load: 0.30, pressure: 0.26,
   });
-  // Distant trees above hedge — soft blobs
-  await setTonal(page, HEDGE, 0.22);
+  // Distant trees above hedge — LIGHT, very soft
+  await setTonal(page, HEDGE, LIGHT);
   for (const [cx, yMid, w] of [
     [0.08, 0.30, 0.05], [0.16, 0.28, 0.05], [0.24, 0.29, 0.04], [0.32, 0.31, 0.03],
   ] as const) {
@@ -344,22 +314,22 @@ test('Clarice Beckett — foggy Melbourne street', async ({ page }) => {
 
   // ─────────────────────────────────────────────────────────────────────────
   // LAYER 4: GHOST FIGURES — barely darker than atmosphere
-  // Warm grey, thin, dissolving. Should almost NOT be there.
+  // MID tone, very low load/pressure to keep them ethereal
   // ─────────────────────────────────────────────────────────────────────────
   console.log('L4: Ghosts...');
   await wipeRag(page);
-  const ghosts: [number, number, number, number, number, number][] = [
-    // [x, yTop, yBot, tonal, passes, brushSize]
-    [0.42, 0.38, 0.52, 0.40, 2, 0.014],
-    [0.49, 0.40, 0.50, 0.36, 2, 0.012],
-    [0.54, 0.41, 0.48, 0.32, 1, 0.010],
+  await setTonal(page, HORIZON, MID);
+  const ghosts: [number, number, number, number, number][] = [
+    // [x, yTop, yBot, passes, brushSize]
+    [0.42, 0.38, 0.52, 2, 0.014],
+    [0.49, 0.40, 0.50, 2, 0.012],
+    [0.54, 0.41, 0.48, 1, 0.010],
   ];
-  for (const [gx, gy0, gy1, tv, passes, bs] of ghosts) {
-    await setTonal(page, HORIZON, tv);
+  for (const [gx, gy0, gy1, passes, bs] of ghosts) {
     for (let p = 0; p < passes; p++) {
       const off = (p - 0.5) * bs * 0.2;
-      await paint(page, taperV(gx + off, gy0, gy1, 0.30, 0.12, 14), {
-        brushSlot: 1, hueIndex: HORIZON, brushSize: bs, thinners: 0.03, load: 0.34,
+      await paint(page, taperV(gx + off, gy0, gy1, 0.24, 0.10, 14), {
+        brushSlot: 1, hueIndex: HORIZON, brushSize: bs, thinners: 0.03, load: 0.28,
       });
     }
   }
@@ -367,12 +337,12 @@ test('Clarice Beckett — foggy Melbourne street', async ({ page }) => {
 
   // ─────────────────────────────────────────────────────────────────────────
   // LAYER 5: TELEGRAPH POLES — thin dark verticals with organic wobble
-  // Short overlapping dabs to avoid bristle depletion.
+  // DARK tone, varying load for thickness variation
   // ─────────────────────────────────────────────────────────────────────────
   console.log('L5: Poles...');
   await wipeRag(page);
-  // Pole 1 — tallest, darkest
-  await setTonal(page, HORIZON, 0.72);
+  await setTonal(page, HORIZON, DARK);
+  // Pole 1 — tallest, heaviest load
   for (let seg = 0; seg < 14; seg++) {
     const y0 = 0.06 + seg * 0.044;
     const y1 = Math.min(0.66, y0 + 0.065);
@@ -382,34 +352,33 @@ test('Clarice Beckett — foggy Melbourne street', async ({ page }) => {
       });
     }
   }
-  // Pole 2
-  await setTonal(page, HORIZON, 0.66);
+  // Pole 2 — lighter load
   for (let seg = 0; seg < 11; seg++) {
     const y0 = 0.08 + seg * 0.048;
     const y1 = Math.min(0.62, y0 + 0.065);
     for (let p = 0; p < 2; p++) {
       await paint(page, V(0.67 + Math.sin(seg * 0.9) * 0.001, y0, y1, 0.44, 8), {
-        brushSlot: 0, hueIndex: HORIZON, brushSize: 0.005, thinners: 0.0, load: 0.80,
+        brushSlot: 0, hueIndex: HORIZON, brushSize: 0.005, thinners: 0.0, load: 0.72,
       });
     }
   }
-  // Pole 3 — thinnest
-  await setTonal(page, HORIZON, 0.58);
+  // Pole 3 — thinnest, lightest load
   for (let seg = 0; seg < 8; seg++) {
     const y0 = 0.14 + seg * 0.052;
     const y1 = Math.min(0.56, y0 + 0.065);
     await paint(page, V(0.73 + Math.sin(seg * 1.1) * 0.001, y0, y1, 0.36, 8), {
-      brushSlot: 0, hueIndex: HORIZON, brushSize: 0.004, thinners: 0.01, load: 0.62,
+      brushSlot: 0, hueIndex: HORIZON, brushSize: 0.004, thinners: 0.01, load: 0.55,
     });
   }
   await snap(page, '05-poles.png');
 
   // ─────────────────────────────────────────────────────────────────────────
   // LAYER 6: BOLLARDS — small dark marks along the road edge
+  // DARK tone
   // ─────────────────────────────────────────────────────────────────────────
   console.log('L6: Bollards...');
   await wipeRag(page);
-  await setTonal(page, HORIZON, 0.64);
+  await setTonal(page, HORIZON, DARK);
   for (const bx of [0.36, 0.42, 0.48, 0.54]) {
     for (let p = 0; p < 3; p++) {
       await paint(page, dash(bx + p * 0.001, 0.54, 0.04, 0.44), {
@@ -419,16 +388,14 @@ test('Clarice Beckett — foggy Melbourne street', async ({ page }) => {
   }
 
   // ─────────────────────────────────────────────────────────────────────────
-  // LAYER 7: FIGURE — darkest element, built in 3 tonal layers
-  // Outer halo (medium grey) → middle (darker) → core (darkest)
-  // Creates naturally soft edges through tonal layering.
+  // LAYER 7: FIGURE — darkest element, built in tonal layers
+  // DARK for outer halo, BLACK for core
   // ─────────────────────────────────────────────────────────────────────────
   console.log('L7: Figure...');
   await wipeRag(page);
 
-  // --- Layer A: Medium tone — flat-topped dome + body ---
-  // NOT elliptical — stacked rectangular fills that taper naturally
-  await setTonal(page, HORIZON, 0.70);
+  // --- Layer A: DARK tone — flat-topped dome + body ---
+  await setTonal(page, HORIZON, DARK);
   // Umbrella: flat crown, then tapering sides
   await fill(page, 0.24, 0.27, 0.220, 0.340, {
     brushSlot: 1, hueIndex: HORIZON, brushSize: 0.018, thinners: 0.0, load: 0.68, pressure: 0.48,
@@ -446,8 +413,8 @@ test('Clarice Beckett — foggy Melbourne street', async ({ page }) => {
     });
   }
 
-  // --- Layer B: Dark core ---
-  await setTonal(page, HORIZON, 0.92);
+  // --- Layer B: BLACK tone — dark core ---
+  await setTonal(page, HORIZON, BLACK);
   // Umbrella dark: narrower version of crown shape
   await fill(page, 0.25, 0.27, 0.235, 0.325, {
     brushSlot: 0, hueIndex: HORIZON, brushSize: 0.014, thinners: 0.0, load: 0.88, pressure: 0.60,
@@ -470,8 +437,8 @@ test('Clarice Beckett — foggy Melbourne street', async ({ page }) => {
       brushSlot: 0, hueIndex: HORIZON, brushSize: 0.008, thinners: 0.0, load: 0.76,
     });
   }
-  // Legs — thin, dissolving into reflection
-  await setTonal(page, HORIZON, 0.84);
+  // Legs — DARK tone, dissolving into reflection
+  await setTonal(page, HORIZON, DARK);
   for (let p = 0; p < 3; p++) {
     await paint(page, taperV(0.272, 0.53, 0.62, 0.42, 0.14, 12), {
       brushSlot: 0, hueIndex: HORIZON, brushSize: 0.005, thinners: 0.0, load: 0.74,
@@ -484,24 +451,21 @@ test('Clarice Beckett — foggy Melbourne street', async ({ page }) => {
 
   // ─────────────────────────────────────────────────────────────────────────
   // LAYER 8: TRAM — small warm accent emerging from fog
-  // The ONLY chromatic note. Soft edges, emerging not placed.
-  // Warm glow first, then anchor+oil center.
+  // LIGHT for glow, MID for body, anchor+oil for vivid center
   // ─────────────────────────────────────────────────────────────────────────
   console.log('L8: Tram...');
   await wipeRag(page);
-  // Warm atmospheric glow around tram area
-  await setTonal(page, TRAM, 0.24);
+  // Warm atmospheric glow around tram area — LIGHT
+  await setTonal(page, TRAM, LIGHT);
   await fill(page, 0.32, 0.50, 0.76, 0.94, {
     brushSlot: 4, hueIndex: TRAM, brushSize: 0.04, thinners: 0.04, load: 0.26, pressure: 0.22,
   });
-  // Base warm fill — muted, no anchor
-  await setTonal(page, TRAM, 0.38);
+  // Base warm fill — MID, no anchor
+  await setTonal(page, TRAM, MID);
   await fill(page, 0.35, 0.47, 0.80, 0.90, {
     brushSlot: 3, hueIndex: TRAM, brushSize: 0.028, thinners: 0.01, load: 0.48, pressure: 0.38,
   });
-  // Vivid center — anchor+oil, fill for uniform coverage
-  await setTonal(page, TRAM, 0.44);
-  // Each fill row needs anchor+oil re-armed, so do it row by row
+  // Vivid center — MID with anchor+oil
   const tramBS = 0.024;
   const tramSpacing = tramBS * 0.20;
   for (let y = 0.37; y <= 0.45; y += tramSpacing) {
@@ -511,9 +475,9 @@ test('Clarice Beckett — foggy Melbourne street', async ({ page }) => {
       brushSlot: 2, hueIndex: TRAM, brushSize: tramBS, thinners: 0.0, load: 0.62,
     });
   }
-  // Subtle dark structure hints
+  // Subtle dark structure hints — DARK
   await wipeRag(page);
-  await setTonal(page, HORIZON, 0.60);
+  await setTonal(page, HORIZON, DARK);
   await paint(page, H(0.34, 0.79, 0.91, 0.32, 14), {
     brushSlot: 0, hueIndex: HORIZON, brushSize: 0.005, thinners: 0.01, load: 0.48,
   });
@@ -524,25 +488,26 @@ test('Clarice Beckett — foggy Melbourne street', async ({ page }) => {
 
   // ─────────────────────────────────────────────────────────────────────────
   // LAYER 9: REFLECTIONS — subtle vertical smears on wet road
+  // LIGHT and MID tones
   // ─────────────────────────────────────────────────────────────────────────
   console.log('L9: Reflections...');
-  // Figure reflection
-  await setTonal(page, HORIZON, 0.46);
+  // Figure reflection — MID
+  await setTonal(page, HORIZON, MID);
   for (let p = 0; p < 3; p++) {
     await paint(page, taperV(0.28 + p * 0.003, 0.62, 0.82, 0.32, 0.08, 20), {
       brushSlot: 1, hueIndex: HORIZON, brushSize: 0.008, thinners: 0.02, load: 0.38,
     });
   }
-  // Pole reflections
-  await setTonal(page, HORIZON, 0.38);
+  // Pole reflections — LIGHT
+  await setTonal(page, HORIZON, LIGHT);
   await paint(page, taperV(0.61, 0.60, 0.78, 0.20, 0.04, 18), {
     brushSlot: 0, hueIndex: HORIZON, brushSize: 0.004, thinners: 0.03, load: 0.28,
   });
   await paint(page, taperV(0.67, 0.58, 0.74, 0.16, 0.04, 16), {
     brushSlot: 0, hueIndex: HORIZON, brushSize: 0.003, thinners: 0.03, load: 0.24,
   });
-  // Tram reflection — warm vertical glow
-  await setTonal(page, TRAM, 0.30);
+  // Tram reflection — LIGHT with anchor+oil
+  await setTonal(page, TRAM, LIGHT);
   for (let p = 0; p < 2; p++) {
     await armAnchor(page);
     await armOil(page);
@@ -554,18 +519,16 @@ test('Clarice Beckett — foggy Melbourne street', async ({ page }) => {
 
   // ─────────────────────────────────────────────────────────────────────────
   // LAYER 10: ATMOSPHERIC VEIL — final fog unification
-  // Thin warm glazes push everything back into the atmosphere.
-  // This makes forms DISSOLVE into fog — the key tonalist effect.
+  // WHITE tone — very low load for transparent glazes
   // ─────────────────────────────────────────────────────────────────────────
   console.log('L10: Atmospheric veil...');
   await wipeRag(page);
+  await setTonal(page, HORIZON, WHITE);
   // Sky fog
-  await setTonal(page, HORIZON, 0.06);
   await fill(page, 0.0, 0.22, 0.0, 1.0, {
     brushSlot: 4, hueIndex: HORIZON, brushSize: 0.16, thinners: 0.07, load: 0.12, pressure: 0.12,
   });
   // Mid-ground fog — LEFT of figure
-  await setTonal(page, HORIZON, 0.08);
   await fill(page, 0.22, 0.56, 0.0, 0.21, {
     brushSlot: 4, hueIndex: HORIZON, brushSize: 0.10, thinners: 0.06, load: 0.12, pressure: 0.11,
   });
@@ -574,7 +537,6 @@ test('Clarice Beckett — foggy Melbourne street', async ({ page }) => {
     brushSlot: 4, hueIndex: HORIZON, brushSize: 0.10, thinners: 0.06, load: 0.12, pressure: 0.11,
   });
   // Road haze — avoid figure reflection (x=0.22-0.34) and tram (x>0.76)
-  await setTonal(page, HORIZON, 0.06);
   await fill(page, 0.62, 0.90, 0.0, 0.20, {
     brushSlot: 4, hueIndex: HORIZON, brushSize: 0.14, thinners: 0.07, load: 0.10, pressure: 0.10,
   });

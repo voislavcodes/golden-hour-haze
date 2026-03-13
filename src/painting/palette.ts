@@ -88,6 +88,20 @@ export function toggleAnchor() {
   document.dispatchEvent(new CustomEvent('anchor-changed'));
 }
 
+// --- Meldrum 5-tone values ---
+
+export const MELDRUM_VALUES = [0.0, 0.25, 0.5, 0.75, 1.0] as const;
+
+export function snapToMeldrum(v: number): { index: number; value: number } {
+  let best = 0;
+  let bestDist = Math.abs(v - MELDRUM_VALUES[0]);
+  for (let i = 1; i < MELDRUM_VALUES.length; i++) {
+    const d = Math.abs(v - MELDRUM_VALUES[i]);
+    if (d < bestDist) { bestDist = d; best = i; }
+  }
+  return { index: best, value: MELDRUM_VALUES[best] };
+}
+
 // --- Tonal column sampling ---
 
 function lerpColor(a: KColor, b: KColor, t: number): KColor {

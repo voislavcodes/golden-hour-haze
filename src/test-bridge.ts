@@ -10,7 +10,7 @@ import { deriveAtmosphere } from './mood/derive-atmosphere.js';
 import { extractHuesFromImage, type ExtractionResult } from './mood/photo-extract.js';
 import { bendThroughMood, bentColorsToPiles } from './mood/oklch.js';
 import { getMaterial } from './surface/materials.js';
-import { syncBrushSlotsFromSession, setActiveBrushSlot, setBrushSlotAge, dipBrush, wipeOnRag, toggleOil, toggleAnchor, sampleTonalColumn, getActiveComplement, previewColor } from './painting/palette.js';
+import { syncBrushSlotsFromSession, setActiveBrushSlot, setBrushSlotAge, dipBrush, wipeOnRag, toggleOil, toggleAnchor, sampleTonalColumn, getActiveComplement, previewColor, MELDRUM_VALUES } from './painting/palette.js';
 import { clearSurface, getSurfaceWidth, getSurfaceHeight } from './painting/surface.js';
 import { getActiveBundle, getAverageLoad, resetActiveBundle } from './painting/bristle-bundle.js';
 import { reloadBrush, wipeBrush, getReservoir } from './painting/brush-engine.js';
@@ -80,6 +80,7 @@ function applyMood(index: number) {
     palette: {
       colors: mood.piles.map(p => ({ r: p.medium.r, g: p.medium.g, b: p.medium.b, a: 1 })),
       activeIndex: 0,
+      activeTonalIndex: 2,
       tonalValues: [0.5, 0.5, 0.5, 0.5, 0.5],
     },
   }));
@@ -112,6 +113,7 @@ function selectMood(index: number) {
     palette: {
       colors: mood.piles.map(p => ({ r: p.medium.r, g: p.medium.g, b: p.medium.b, a: 1 })),
       activeIndex: 0,
+      activeTonalIndex: 2,
       tonalValues: [0.5, 0.5, 0.5, 0.5, 0.5],
     },
   }));
@@ -446,6 +448,16 @@ const bridge = {
   getActiveComplement,
   previewColor,
   DEFAULT_COMPLEMENT,
+  MELDRUM_VALUES,
+
+  setTonalIndex: (hueIndex: number, tonalIndex: number) => {
+    const value = MELDRUM_VALUES[tonalIndex];
+    sceneStore.update(s => {
+      const tv = [...s.palette.tonalValues];
+      tv[hueIndex] = value;
+      return { palette: { ...s.palette, tonalValues: tv, activeTonalIndex: tonalIndex } };
+    });
+  },
 
   // Direct store access
   stores: { scene: sceneStore, session: sessionStore, ui: uiStore },

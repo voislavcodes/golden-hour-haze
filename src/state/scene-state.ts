@@ -25,6 +25,7 @@ export interface PaletteColor {
 export interface PaletteState {
   colors: PaletteColor[];
   activeIndex: number;
+  activeTonalIndex: number;  // 0-4 Meldrum row (0=white, 2=mid, 4=black)
   tonalValues: number[];  // per-swatch value, 0=light 1=dark, default 0.5
 }
 
@@ -78,6 +79,7 @@ const defaultPalette: PaletteState = {
     { r: 0.80, g: 0.75, b: 0.60, a: 1 }, // warm cream
   ],
   activeIndex: 0,
+  activeTonalIndex: 2,
   tonalValues: [0.5, 0.5, 0.5, 0.5, 0.5],
 };
 

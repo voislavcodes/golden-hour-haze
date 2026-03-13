@@ -194,6 +194,7 @@ export class PreparePanel extends BaseControl {
       palette: {
         colors: mood.piles.map(p => ({ r: p.medium.r, g: p.medium.g, b: p.medium.b, a: 1 })),
         activeIndex: 0,
+        activeTonalIndex: 2,
         tonalValues: [0.5, 0.5, 0.5, 0.5, 0.5],
       },
     }));

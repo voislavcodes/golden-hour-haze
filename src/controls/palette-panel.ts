@@ -1,9 +1,9 @@
-// 5 scrollable tonal column swatches + rag
+// 5x5 Meldrum tonal grid — 5 hues × 5 discrete tones + rag/oil/anchor
 import { html, css } from 'lit';
 import { customElement, state } from 'lit/decorators.js';
 import { BaseControl } from './base-control.js';
 import { sceneStore } from '../state/scene-state.js';
-import { dipBrush, wipeOnRag, getActiveHue, sampleTonalColumn, getActiveComplement, toggleOil, isOilArmed, toggleAnchor, isAnchorArmed, getAnchorRemaining, previewColor } from '../painting/palette.js';
+import { dipBrush, wipeOnRag, getActiveHue, sampleTonalColumn, getActiveComplement, toggleOil, isOilArmed, toggleAnchor, isAnchorArmed, getAnchorRemaining, previewColor, MELDRUM_VALUES } from '../painting/palette.js';
 import { reloadBrush, wipeBrush } from '../painting/brush-engine.js';
 import type { KColor } from '../mood/moods.js';
 
@@ -14,7 +14,7 @@ function colorToCSS(c: KColor): string {
 @customElement('ghz-palette-panel')
 export class PalettePanel extends BaseControl {
   @state() private _activeHue = 0;
-  @state() private _tonalValues = [0.5, 0.5, 0.5, 0.5, 0.5];
+  @state() private _activeTonalIndex = 2;
   @state() private _oilArmed = false;
   @state() private _anchorArmed = false;
 
@@ -34,36 +34,25 @@ export class PalettePanel extends BaseControl {
         gap: 4px;
         padding: 6px;
       }
-      .columns {
-        display: flex;
-        gap: 4px;
-        justify-content: center;
+      .grid {
+        display: grid;
+        grid-template-columns: repeat(5, 1fr);
+        gap: 3px;
       }
-      .column {
-        position: relative;
-        width: 20px;
-        height: 48px;
+      .swatch {
+        width: 36px;
+        height: 36px;
         border-radius: 4px;
         border: 2px solid transparent;
         cursor: pointer;
-        transition: border-color 180ms ease;
-        overflow: hidden;
+        transition: border-color 180ms ease, box-shadow 180ms ease;
       }
-      .column:hover {
+      .swatch:hover {
         border-color: rgba(255, 200, 120, 0.3);
       }
-      .column.active {
+      .swatch.active {
         border-color: var(--ghz-accent);
         box-shadow: 0 0 8px rgba(232, 168, 64, 0.4);
-      }
-      .indicator {
-        position: absolute;
-        left: 0;
-        right: 0;
-        height: 2px;
-        background: rgba(255, 255, 255, 0.9);
-        box-shadow: 0 0 3px rgba(0, 0, 0, 0.5);
-        pointer-events: none;
       }
       .rag {
         margin-top: 4px;
@@ -88,22 +77,6 @@ export class PalettePanel extends BaseControl {
         border-color: var(--ghz-accent);
         box-shadow: 0 0 10px rgba(232, 168, 64, 0.6);
         color: var(--ghz-accent);
-      }
-      .previews {
-        display: flex;
-        gap: 4px;
-        justify-content: center;
-        margin-bottom: 2px;
-      }
-      .preview-swatch {
-        width: 20px;
-        height: 16px;
-        border-radius: 3px;
-        border: 1.5px solid rgba(255, 255, 255, 0.15);
-        transition: background-color 180ms ease;
-      }
-      .preview-swatch.active {
-        border-color: var(--ghz-accent);
       }
       .anchor-btn {
         margin-top: 2px;
@@ -131,13 +104,14 @@ export class PalettePanel extends BaseControl {
     this._oilArmed = isOilArmed();
     this._anchorArmed = isAnchorArmed();
     const palette = sceneStore.get().palette;
-    this._tonalValues = [...palette.tonalValues];
+    this._activeTonalIndex = palette.activeTonalIndex;
     document.addEventListener('oil-changed', this._onOilChanged);
     document.addEventListener('anchor-changed', this._onAnchorChanged);
     this._unsub = sceneStore.select(
       (s) => s.palette,
       (palette) => {
-        this._tonalValues = [...palette.tonalValues];
+        this._activeTonalIndex = palette.activeTonalIndex;
+        this._activeHue = palette.activeIndex;
         this.requestUpdate();
       }
     );
@@ -154,61 +128,21 @@ export class PalettePanel extends BaseControl {
     return isAnchorArmed() || getAnchorRemaining() > 0;
   }
 
-  private _gradientCSS(baseColor: KColor): string {
-    const comp = getActiveComplement();
-    const anchored = this._isAnchorPreview();
-    const stops = [0.0, 0.25, 0.5, 0.65, 0.80, 0.92, 1.0];
-    return `linear-gradient(to bottom, ${
-      stops.map(v => {
-        const raw = sampleTonalColumn(baseColor, v, comp);
-        const display = previewColor(raw, anchored);
-        return `${colorToCSS(display)} ${v * 100}%`;
-      }).join(', ')
-    })`;
-  }
-
   private _onOilChanged = () => { this._oilArmed = isOilArmed(); };
   private _onOilClick() { toggleOil(); }
   private _onAnchorChanged = () => { this._anchorArmed = isAnchorArmed(); };
   private _onAnchorClick() { toggleAnchor(); }
 
-  private _onColumnClick(index: number) {
-    dipBrush(index);
-    reloadBrush();
-    this._activeHue = index;
-    this._oilArmed = isOilArmed();
-    this._anchorArmed = isAnchorArmed();
+  private _onSwatchClick(hueIndex: number, tonalIndex: number) {
+    const newValues = [...sceneStore.get().palette.tonalValues];
+    newValues[hueIndex] = MELDRUM_VALUES[tonalIndex];
     sceneStore.update((s) => ({
-      palette: { ...s.palette, activeIndex: index },
+      palette: { ...s.palette, tonalValues: newValues, activeIndex: hueIndex, activeTonalIndex: tonalIndex },
     }));
-  }
-
-  private _onColumnWheel(index: number, e: WheelEvent) {
-    e.preventDefault();
-    const delta = e.deltaY * 0.002;
-    const palette = sceneStore.get().palette;
-    const newValues = [...palette.tonalValues];
-    newValues[index] = Math.max(0, Math.min(1, newValues[index] + delta));
-    sceneStore.update((s) => ({
-      palette: { ...s.palette, tonalValues: newValues, activeIndex: index },
-    }));
-    dipBrush(index);
+    dipBrush(hueIndex);
     reloadBrush();
-    this._activeHue = index;
-    this._oilArmed = isOilArmed();
-    this._anchorArmed = isAnchorArmed();
-  }
-
-  private _onColumnDblClick(index: number) {
-    const palette = sceneStore.get().palette;
-    const newValues = [...palette.tonalValues];
-    newValues[index] = 0.5;
-    sceneStore.update((s) => ({
-      palette: { ...s.palette, tonalValues: newValues, activeIndex: index },
-    }));
-    dipBrush(index);
-    reloadBrush();
-    this._activeHue = index;
+    this._activeHue = hueIndex;
+    this._activeTonalIndex = tonalIndex;
     this._oilArmed = isOilArmed();
     this._anchorArmed = isAnchorArmed();
   }
@@ -222,36 +156,27 @@ export class PalettePanel extends BaseControl {
   render() {
     const palette = sceneStore.get().palette;
     const colors = palette.colors;
+    const comp = getActiveComplement();
+    const anchored = this._isAnchorPreview();
 
     return html`
       <div class="panel glass">
-        <div class="previews">
-          ${colors.map((color, i) => {
-            const baseColor: KColor = { r: color.r, g: color.g, b: color.b };
-            const raw = sampleTonalColumn(baseColor, this._tonalValues[i], getActiveComplement());
-            const display = previewColor(raw, this._isAnchorPreview());
-            return html`
-              <div class="preview-swatch ${this._activeHue === i ? 'active' : ''}"
-                   style="background: ${colorToCSS(display)}"></div>
-            `;
-          })}
-        </div>
-        <div class="columns">
-          ${colors.map((color, i) => {
-            const baseColor: KColor = { r: color.r, g: color.g, b: color.b };
-            const indicatorY = this._tonalValues[i] * 44; // 48px height - 4px border
-            return html`
-              <div
-                class="column ${this._activeHue === i ? 'active' : ''}"
-                style="background: ${this._gradientCSS(baseColor)}"
-                @click=${() => this._onColumnClick(i)}
-                @wheel=${(e: WheelEvent) => this._onColumnWheel(i, e)}
-                @dblclick=${() => this._onColumnDblClick(i)}
-              >
-                <div class="indicator" style="top: ${indicatorY}px"></div>
-              </div>
-            `;
-          })}
+        <div class="grid">
+          ${MELDRUM_VALUES.map((tonalValue, row) =>
+            colors.map((color, col) => {
+              const baseColor: KColor = { r: color.r, g: color.g, b: color.b };
+              const raw = sampleTonalColumn(baseColor, tonalValue, comp);
+              const display = previewColor(raw, anchored);
+              const isActive = this._activeHue === col && this._activeTonalIndex === row;
+              return html`
+                <div
+                  class="swatch ${isActive ? 'active' : ''}"
+                  style="background: ${colorToCSS(display)}"
+                  @click=${() => this._onSwatchClick(col, row)}
+                ></div>
+              `;
+            })
+          )}
         </div>
         <button class="glass-button rag" @click=${this._onRagClick}>rag (X)</button>
         <button class="glass-button oil-btn ${this._oilArmed ? 'armed' : ''}"
