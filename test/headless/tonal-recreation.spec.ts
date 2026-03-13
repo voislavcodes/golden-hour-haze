@@ -76,7 +76,7 @@ test('Tonal recreation — procedural Beckett from reference', async ({ page }) 
     const bytes = new Uint8Array(binary.length);
     for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
     const blob = new Blob([bytes], { type: 'image/png' });
-    return await ghz.analyzeImage(blob, 40, 30);
+    return await ghz.analyzeImage(blob, 80, 60);
   }, base64);
 
   // --- Sanity checks ---
@@ -102,7 +102,7 @@ test('Tonal recreation — procedural Beckett from reference', async ({ page }) 
   for (const layer of plan.layers) {
     console.log(`  ${layer.name}: ${layer.strokes.length} strokes`);
   }
-  expect(plan.metadata.strokeCount).toBeLessThan(600);
+  expect(plan.metadata.strokeCount).toBeLessThan(2200);
 
   // --- Execute painting plan layer by layer ---
   for (let li = 0; li < plan.layers.length; li++) {
@@ -111,6 +111,11 @@ test('Tonal recreation — procedural Beckett from reference', async ({ page }) 
 
     await page.evaluate(async (layerData: any) => {
       const ghz = (window as any).__ghz;
+
+      // Dry previous layers — accelerate time 10× for 30 frames
+      ghz.setTimeMultiplier(10);
+      await ghz.waitFrames(30);
+      ghz.setTimeMultiplier(1);
 
       // Wipe rag between layers for clean brush
       ghz.wipeOnRag();

@@ -249,13 +249,13 @@ export function generateSpans(map: TonalMap): Span[] {
 // --- Step 6: Assemble plan ---
 
 const LAYER_CONFIG: Record<string, { brushSlot: number; pressure: number; thinners: number; load: number }> = {
-  mother:     { brushSlot: 4, pressure: 0.45, thinners: 0.0,  load: 0.70 },
-  background: { brushSlot: 4, pressure: 0.38, thinners: 0.02, load: 0.50 },
-  midtone:    { brushSlot: 3, pressure: 0.48, thinners: 0.01, load: 0.55 },
-  dark:       { brushSlot: 3, pressure: 0.55, thinners: 0.0,  load: 0.72 },
-  darkBlack:  { brushSlot: 2, pressure: 0.62, thinners: 0.0,  load: 0.88 },
+  mother:     { brushSlot: 4, pressure: 0.45, thinners: 0.08, load: 0.55 },
+  background: { brushSlot: 4, pressure: 0.45, thinners: 0.02, load: 0.65 },
+  midtone:    { brushSlot: 3, pressure: 0.55, thinners: 0.01, load: 0.70 },
+  dark:       { brushSlot: 3, pressure: 0.65, thinners: 0.0,  load: 0.85 },
+  darkBlack:  { brushSlot: 2, pressure: 0.70, thinners: 0.0,  load: 0.92 },
   accent:     { brushSlot: 1, pressure: 0.65, thinners: 0.0,  load: 0.65 },
-  veil:       { brushSlot: 4, pressure: 0.15, thinners: 0.06, load: 0.14 },
+  vertical:   { brushSlot: 1, pressure: 0.60, thinners: 0.0,  load: 0.80 },
 };
 
 function spanToStroke(
@@ -275,7 +275,7 @@ function spanToStroke(
     const t = i / (nPoints - 1);
     const col = span.colStart + t * (span.colEnd - span.colStart);
     const x = (col + 0.5) / cols;
-    const y = (span.row + 0.5) / rows + (Math.sin(i * 0.73 + span.row * 0.37) * 0.3 * cellH);
+    const y = (span.row + 0.5) / rows + (Math.sin(i * 0.73 + span.row * 0.37) * 0.5 * cellH);
     const p = cfg.pressure + Math.sin(i * 0.47) * 0.015;
     points.push({ x, y, pressure: Math.max(0.05, Math.min(0.95, p)) });
   }
@@ -301,21 +301,29 @@ function fillStrokes(
   passes = 1,
 ): StrokeCommand[] {
   const bs = BRUSH_SLOT_SIZES[cfg.brushSlot];
-  const spacing = bs * 0.20;
+  const spacing = bs * 0.15;
   const strokes: StrokeCommand[] = [];
   const nPts = Math.max(30, Math.round((x1 - x0) * 80));
 
   for (let pass = 0; pass < passes; pass++) {
-    const off = pass * spacing * 0.4;
+    const off = pass * spacing * 0.5;
     const rowCount = Math.ceil((yEnd - yStart) / spacing);
     for (let i = 0; i < rowCount; i++) {
       const y = yStart + i * spacing + off;
       if (y > yEnd) break;
-      const points = Array.from({ length: nPts }, (_, pi) => ({
-        x: x0 + (pi / (nPts - 1)) * (x1 - x0),
-        y: y + Math.sin(pi * 0.31) * 0.002,
-        pressure: cfg.pressure + Math.sin(pi * 0.47) * 0.01,
-      }));
+      // Alternate stroke direction for natural look
+      const reverse = (i + pass) % 2 === 1;
+      const points = Array.from({ length: nPts }, (_, pi) => {
+        const t = pi / (nPts - 1);
+        const xPos = reverse ? (x1 - t * (x1 - x0)) : (x0 + t * (x1 - x0));
+        // Crosshatch drift: alternating +/- diagonal to break up banding
+        const drift = (t - 0.5) * spacing * 0.8 * ((i % 2 === 0) ? 1 : -1);
+        return {
+          x: xPos,
+          y: y + Math.sin(pi * 0.31 + pass * 1.7) * 0.006 + drift,
+          pressure: cfg.pressure + Math.sin(pi * 0.47) * 0.01,
+        };
+      });
       strokes.push({
         points, brushSlot: cfg.brushSlot, brushSize: bs,
         hueIndex, meldrumIndex, thinners: cfg.thinners, load: cfg.load,
@@ -326,68 +334,164 @@ function fillStrokes(
   return strokes;
 }
 
+// Detect vertical features by contrast + aspect ratio.
+// Finds tall, narrow features (poles, figure silhouettes) that the horizontal span
+// system misses. Uses aspect ratio filtering to reject short/wide dark patches.
+function detectVerticalStrokes(map: TonalMap): StrokeCommand[] {
+  const strokes: StrokeCommand[] = [];
+  const { cols, rows } = map;
+  const cfg = LAYER_CONFIG.vertical;
+
+  for (let col = 1; col < cols - 1; col++) {
+    let r = 0;
+    while (r < rows) {
+      const cell = map.cells[r][col];
+      const leftL = map.cells[r][col - 1].labL;
+      const rightL = map.cells[r][col + 1].labL;
+      const contrast = (leftL + rightL) / 2 - cell.labL;
+
+      // Darker than at least one neighbor, or absolutely DARK
+      const isFeature = cell.meldrumIndex >= DARK || contrast > 0.04;
+
+      if (isFeature) {
+        let end = r;
+        while (end + 1 < rows) {
+          const next = map.cells[end + 1][col];
+          const nLeft = map.cells[end + 1][col - 1].labL;
+          const nRight = map.cells[end + 1][col + 1].labL;
+          const nContrast = (nLeft + nRight) / 2 - next.labL;
+          if (next.meldrumIndex >= DARK || nContrast > 0.04) end++;
+          else break;
+        }
+
+        const height = end - r + 1;
+
+        // Measure average width of the dark region at this column
+        let totalWidth = 0;
+        for (let i = r; i <= end; i++) {
+          let w = 1;
+          for (let c = col - 1; c >= 0 && map.cells[i][c].meldrumIndex >= DARK; c--) w++;
+          for (let c = col + 1; c < cols && map.cells[i][c].meldrumIndex >= DARK; c++) w++;
+          totalWidth += w;
+        }
+        const avgWidth = totalWidth / height;
+
+        // Aspect ratio filter: only tall-relative-to-width features
+        const aspectRatio = height / avgWidth;
+        const isThinPole = avgWidth <= 2 && height >= 4 && aspectRatio >= 2;
+        const isFigure = avgWidth <= 8 && height >= 6 && aspectRatio >= 1.5;
+
+        if (isThinPole || isFigure) {
+          const x = (col + 0.5) / cols;
+          const yStart = (r + 0.3) / rows;
+          const yEnd = (end + 0.7) / rows;
+          const nPts = Math.max(10, height * 3);
+          const hueIdx = map.cells[r][col].assignedHueIndex;
+
+          let maxMeldrum = 0;
+          for (let i = r; i <= end; i++) {
+            maxMeldrum = Math.max(maxMeldrum, map.cells[i][col].meldrumIndex);
+          }
+          const mIdx = Math.max(maxMeldrum, DARK);
+
+          // Thin poles: Small brush, 3 passes. Wider features: Small brush, 3 passes.
+          const brushSlot = cfg.brushSlot; // Small brush for all verticals
+          const passCount = 3;
+
+          for (let pass = 0; pass < passCount; pass++) {
+            const xOff = (pass - 1) * (isThinPole ? 0.003 : 0.005);
+            strokes.push({
+              points: Array.from({ length: nPts }, (_, i) => ({
+                x: x + xOff + Math.sin(i * 0.5 + col * 0.3 + pass) * 0.003,
+                y: yStart + (i / (nPts - 1)) * (yEnd - yStart),
+                pressure: cfg.pressure + Math.sin(i * 0.3) * 0.01,
+              })),
+              brushSlot,
+              brushSize: BRUSH_SLOT_SIZES[brushSlot],
+              hueIndex: hueIdx,
+              meldrumIndex: mIdx,
+              thinners: cfg.thinners,
+              load: cfg.load,
+              useOil: false,
+              useAnchor: false,
+            });
+          }
+        }
+        r = end + 1;
+      } else {
+        r++;
+      }
+    }
+  }
+  return strokes;
+}
+
 export function assemblePlan(
   spans: Span[],
   map: TonalMap,
+  luts: MeldrumLUT[],
 ): PaintingPlan {
   const { cols, rows, motherHueIndex } = map;
   const layers: { name: string; strokes: StrokeCommand[] }[] = [];
 
-  // Layer 1: Mother — full-coverage wash, 2 passes
-  const motherStrokes = fillStrokes(0.0, 1.0, 0.0, 1.0, LAYER_CONFIG.mother, motherHueIndex, LIGHT, 2);
-  layers.push({ name: 'Mother', strokes: motherStrokes });
+  // Compute mother meldrum: closest LUT match to motherTone, at least MID
+  const motherLut = luts[motherHueIndex];
+  let motherMeldrum = MID;
+  let bestDist = Infinity;
+  for (let i = 0; i < 5; i++) {
+    const d = Math.abs(map.motherTone - motherLut.luminances[i]);
+    if (d < bestDist) { bestDist = d; motherMeldrum = i; }
+  }
+  motherMeldrum = Math.max(motherMeldrum, MID);
 
   // Categorize spans
-  const bgSpans = spans.filter(s => (s.meldrumIndex === WHITE || s.meldrumIndex === LIGHT) && !s.isAccent);
+  const bgSpans = spans.filter(s => s.meldrumIndex < motherMeldrum && !s.isAccent);
   const midSpans = spans.filter(s => s.meldrumIndex === MID && !s.isAccent);
   const darkSpans = spans.filter(s => s.meldrumIndex === DARK && !s.isAccent);
   const blackSpans = spans.filter(s => s.meldrumIndex === BLACK && !s.isAccent);
   const accentSpans = spans.filter(s => s.isAccent);
 
-  // Layer 2: Background
-  const bgStrokes = bgSpans.map(s => spanToStroke(s, cols, rows, LAYER_CONFIG.background, false, false));
-  layers.push({ name: 'Background', strokes: budgetStrokes(bgStrokes, 80) });
+  // Layer 1: Mother wash — 2 passes for moderate coverage
+  const motherStrokes = fillStrokes(0.0, 1.0, 0.0, 1.0, LAYER_CONFIG.mother, motherHueIndex, motherMeldrum, 2);
+  layers.push({ name: 'Mother', strokes: motherStrokes });
 
-  // Layer 3: Midtone
+  // Layer 2: Background — tripled spans for sky/ground lightening
+  const bgStrokes = bgSpans.flatMap(s => [
+    spanToStroke(s, cols, rows, LAYER_CONFIG.background, false, false),
+    spanToStroke({ ...s, row: s.row + 0.4 }, cols, rows, LAYER_CONFIG.background, false, false),
+    spanToStroke({ ...s, row: s.row - 0.4 }, cols, rows, LAYER_CONFIG.background, false, false),
+  ]);
+  layers.push({ name: 'Background', strokes: budgetStrokes(bgStrokes, 450) });
+
+  // Layer 3: Midtone — hue variation at mother value
   const midStrokes = midSpans.map(s => spanToStroke(s, cols, rows, LAYER_CONFIG.midtone, false, false));
-  layers.push({ name: 'Midtone', strokes: budgetStrokes(midStrokes, 120) });
+  layers.push({ name: 'Midtone', strokes: budgetStrokes(midStrokes, 350) });
 
-  // Layer 4: Dark forms
+  // Layer 4: Dark forms — tripled horizontal spans for better Y coverage
   const darkStrokes = [
-    ...darkSpans.map(s => spanToStroke(s, cols, rows, LAYER_CONFIG.dark, false, false)),
-    ...blackSpans.map(s => spanToStroke(s, cols, rows, LAYER_CONFIG.darkBlack, false, false)),
+    ...darkSpans.flatMap(s => [
+      spanToStroke(s, cols, rows, LAYER_CONFIG.dark, false, false),
+      spanToStroke({ ...s, row: s.row + 0.3 }, cols, rows, LAYER_CONFIG.dark, false, false),
+      spanToStroke({ ...s, row: s.row - 0.3 }, cols, rows, LAYER_CONFIG.dark, false, false),
+    ]),
+    ...blackSpans.flatMap(s => [
+      spanToStroke(s, cols, rows, LAYER_CONFIG.darkBlack, false, false),
+      spanToStroke({ ...s, row: s.row + 0.3 }, cols, rows, LAYER_CONFIG.darkBlack, false, false),
+      spanToStroke({ ...s, row: s.row - 0.3 }, cols, rows, LAYER_CONFIG.darkBlack, false, false),
+    ]),
   ];
-  layers.push({ name: 'Dark forms', strokes: budgetStrokes(darkStrokes, 100) });
+  layers.push({ name: 'Dark forms', strokes: budgetStrokes(darkStrokes, 500) });
 
-  // Layer 5: Accents (high chroma)
-  const accentStrokes = accentSpans.map(s => spanToStroke(s, cols, rows, LAYER_CONFIG.accent, true, true));
-  layers.push({ name: 'Accents', strokes: budgetStrokes(accentStrokes, 40) });
+  // Layer 5: Vertical features — contrast-detected thin strokes (poles, figure edges)
+  const verticalStrokes = detectVerticalStrokes(map);
+  layers.push({ name: 'Verticals', strokes: budgetStrokes(verticalStrokes, 150) });
 
-  // Layer 6: Atmospheric veil — skip dark regions
-  const veilStrokes: StrokeCommand[] = [];
-  for (let row = 0; row < rows; row += 3) {
-    let darkCount = 0;
-    for (let col = 0; col < cols; col++) {
-      if (map.cells[row][col].meldrumIndex >= DARK) darkCount++;
-    }
-    if (darkCount > cols * 0.5) continue;
-
-    const nPoints = 12;
-    const y = (row + 0.5) / rows;
-    const points = Array.from({ length: nPoints }, (_, i) => ({
-      x: i / (nPoints - 1),
-      y: y + Math.sin(i * 0.6 + row * 0.2) * 0.004,
-      pressure: 0.14 + Math.sin(i * 0.4) * 0.015,
-    }));
-    veilStrokes.push({
-      points,
-      brushSlot: 4, brushSize: BRUSH_SLOT_SIZES[4],
-      hueIndex: motherHueIndex, meldrumIndex: WHITE,
-      thinners: 0.06, load: 0.14,
-      useOil: false, useAnchor: false,
-    });
-  }
-  layers.push({ name: 'Atmospheric veil', strokes: budgetStrokes(veilStrokes, 20) });
+  // Layer 6: Accents (high chroma) — double-pass for prominence
+  const accentStrokes = accentSpans.flatMap(s => [
+    spanToStroke(s, cols, rows, LAYER_CONFIG.accent, true, true),
+    spanToStroke(s, cols, rows, { ...LAYER_CONFIG.accent, pressure: 0.55, load: 0.55 }, true, true),
+  ]);
+  layers.push({ name: 'Accents', strokes: budgetStrokes(accentStrokes, 120) });
 
   // Metadata
   const hueAssignments: { hueIndex: number; hue: number }[] = [];
@@ -436,7 +540,7 @@ export function createPaintingPlan(
   const luts = buildMeldrumLUTs(paletteColors, complement);
   quantizeCells(map, luts);
   const spans = generateSpans(map);
-  return assemblePlan(spans, map);
+  return assemblePlan(spans, map, luts);
 }
 
 // --- Utility: downsample image to grid-sized ImageData ---

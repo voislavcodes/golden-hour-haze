@@ -15,7 +15,7 @@ import { clearSurface, getSurfaceWidth, getSurfaceHeight } from './painting/surf
 import { analyzeTonalStructure, assignHuesToCells, buildMeldrumLUTs, quantizeCells, generateSpans, assemblePlan, createPaintingPlan, downsampleImage } from './painting/tonal-recreation.js';
 import { getActiveBundle, getAverageLoad, resetActiveBundle } from './painting/bristle-bundle.js';
 import { reloadBrush, wipeBrush, getReservoir } from './painting/brush-engine.js';
-import { resetSessionTimer } from './session/session-timer.js';
+import { resetSessionTimer, setTimeMultiplier } from './session/session-timer.js';
 import { DEFAULT_COMPLEMENT, DEFAULT_LENS } from './mood/moods.js';
 import { getGPU } from './gpu/context.js';
 import { getTexture } from './gpu/texture-pool.js';
@@ -352,6 +352,7 @@ const bridge = {
   selectMood,
   setPhase,
   replayStroke,
+  setTimeMultiplier,
   waitFrames,
   readCanvasPixel,
   readTexturePixel,
@@ -552,7 +553,7 @@ const bridge = {
     const luts = buildMeldrumLUTs(paletteColors, complement);
     quantizeCells(map, luts);
     const spans = generateSpans(map);
-    const plan = assemblePlan(spans, map);
+    const plan = assemblePlan(spans, map, luts);
 
     return {
       plan,
