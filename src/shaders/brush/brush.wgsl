@@ -360,7 +360,11 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
   let wet_blend = scumble_deposited / (paint_depth + scumble_deposited + 0.001);
   // Force blend_factor toward 1.0 on dry layer — new paint dominates, no mixing
   let blend_factor = mix(wet_blend, max(wet_blend, 0.85), dry_layer);
-  let scumble_weight = existing.a + scumble_deposited;
+  // Wet-into-wet: new paint merges into existing film (weight converges).
+  // Dry: full additive stacking (physically correct ridge).
+  let merge_strength = wetness * saturate(existing.a * 4.0);
+  let effective_deposit = scumble_deposited * (1.0 - merge_strength * 0.85);
+  let scumble_weight = existing.a + effective_deposit;
 
   // Wet paint: full K-M mixing. Dry paint: overlay (less subtractive blend)
   let wet_result = mix(existing.rgb + absorbed_stain, input_K_final, blend_factor);
