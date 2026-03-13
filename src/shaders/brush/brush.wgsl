@@ -148,16 +148,20 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
     perp = vec2f(-dir.y, dir.x);
   }
 
-  // Bristle clump density — irregular groups via non-harmonic sines
+  // Bristle density from physical 1024-tip bundle profile.
+  // CPU projects all tips onto cross-stroke axis each frame → 64-bin density array.
+  // Loaded brush: relatively uniform (all tips loaded). Mid-depletion: edge tips
+  // deplete first → variation emerges. Dry brush: patchy contact pattern.
   let bristle_angle = dot(uv - nearest, perp) / max(local_r, 0.0001);
-  let ba = bristle_angle * 6.28;
-  let clump_cross = 0.65
-    + 0.18 * sin(ba * 2.7 + params.bristle_seed * 5.1)
-    + 0.10 * sin(ba * 6.3 + params.bristle_seed * 3.7)
-    + 0.05 * sin(ba * 11.1 + params.bristle_seed * 8.3);
+  let profile_uv = clamp((bristle_angle + 1.0) * 0.5, 0.0, 1.0);
+  let profile_pos = profile_uv * 63.0;
+  let idx0 = u32(floor(profile_pos));
+  let idx1 = min(idx0 + 1u, 63u);
+  let profile_frac = fract(profile_pos);
+  let bristle_density = mix(bristle_profile[idx0], bristle_profile[idx1], profile_frac);
 
-  // Along-stroke variation — cross-stroke phase shift breaks up horizontal bands.
-  // Each bristle position has a different phase, so light patches are irregular, not full-width.
+  // Along-stroke variation — subtle texture from tips lifting/re-engaging.
+  // Cross-stroke phase shift ensures light patches are staggered, not full-width.
   let along_uv = dot(uv, dir);
   let along_freq = 1.0 / max(local_r * 2.0, 0.001);
   let along_phase = bristle_angle * 2.3;
@@ -165,8 +169,9 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
       0.03 * sin(along_uv * along_freq * 1.7 + along_phase + params.bristle_seed * 2.3)
     + 0.015 * sin(along_uv * along_freq * 4.3 + along_phase * 1.7 + params.bristle_seed * 6.1);
 
-  // Floor at 0.4 — capillary action ensures continuous paint film, never zero
-  let bristle_load = max(0.4, saturate(clump_cross + along_variation));
+  // Floor at 0.4 — capillary action ensures continuous paint film, never zero.
+  // Physical profile drives cross-stroke structure; along_variation adds subtle texture.
+  let bristle_load = max(0.4, bristle_density + along_variation);
 
   // Radial bias — edges always slightly thinner + deplete first
   let radial_pos = min(abs(bristle_angle), 1.0);
@@ -230,17 +235,8 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
   let grain_gated = smoothstep(dry_thresh, dry_thresh + 0.12, grain);
   let grain_interaction = mix(1.0, grain_gated, grain_factor_final);
 
-  // Dry brush bristle contact — physical 1024-tip bundle density profile.
-  // CPU projects all bristle tips onto the cross-stroke axis each frame.
-  // Natural ring layout + splay + age drift → irregular clumping and varying widths.
-  // Gaps have faint residue from out-of-contact tips that barely graze the surface.
-  let profile_uv = clamp((bristle_angle + 1.0) * 0.5, 0.0, 1.0);
-  let profile_pos = profile_uv * 63.0;
-  let idx0 = u32(floor(profile_pos));
-  let idx1 = min(idx0 + 1u, 63u);
-  let profile_frac = fract(profile_pos);
-  let bristle_density = mix(bristle_profile[idx0], bristle_profile[idx1], profile_frac);
-  // Along-stroke modulation — bristle tips lift and re-engage as brush moves.
+  // Dry brush contact gate — reuses bristle_density from profile (computed above).
+  // Along-stroke modulation: tips lift and re-engage as brush moves.
   // Two incommensurate frequencies create irregular lift pattern.
   // Phase shifts with bristle_angle so adjacent cross-stroke rows are staggered.
   let along_base = along_uv * along_freq;
