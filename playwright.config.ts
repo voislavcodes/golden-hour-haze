@@ -1,10 +1,19 @@
 import { defineConfig } from '@playwright/test';
 
 export default defineConfig({
-  testDir: './test/headless',
   timeout: 120_000,
   retries: 0,
   reporter: 'list',
+  projects: [
+    {
+      name: 'headless',
+      testDir: './test/headless',
+    },
+    {
+      name: 'clarice',
+      testDir: './test/clarice',
+    },
+  ],
   use: {
     baseURL: 'http://localhost:5188',
     viewport: { width: 1920, height: 1080 },

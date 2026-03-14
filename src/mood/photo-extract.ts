@@ -72,13 +72,15 @@ export async function extractHuesFromImage(file: File, detailed?: boolean): Prom
   // Scale: 0.15 chroma = full saturation (1.0), 0.01 = very muted (0.33)
   const chromaScale = Math.min(1, Math.max(0.33, medianChroma / 0.15));
 
-  // Chroma-weighted sampling: oversample chromatic pixels aggressively
-  // A pixel with chroma 0.15 gets 24× the representation of one with chroma ~0
-  // This ensures vivid accents (like a tram in fog) claim their own cluster
+  // Chroma-weighted sampling: oversample chromatic pixels proportional to image saturation.
+  // Vivid images (chromaScale=1): 24× weight for chromatic pixels (accents claim clusters).
+  // Muted images (chromaScale=0.33): 4× weight — preserves neutral character while still
+  // letting any chromatic accent claim a cluster.
   const maxChroma = Math.max(...raw.map(p => p.chroma), 0.01);
+  const chromaWeight = 3 + 20 * chromaScale; // 3-23× based on image saturation
   const samples: [number, number, number][] = [];
   for (const p of raw) {
-    const weight = 1 + 23 * (p.chroma / maxChroma);
+    const weight = 1 + chromaWeight * (p.chroma / maxChroma);
     const copies = Math.round(weight);
     for (let c = 0; c < copies; c++) {
       samples.push(p.lab);
@@ -102,11 +104,13 @@ export async function extractHuesFromImage(file: File, detailed?: boolean): Prom
   });
   colorsWithChroma.sort((a, b) => b.chroma - a.chroma);
 
-  // Boost cluster chromas — K-means averaging dampens chroma significantly
-  // because cluster centers are means of many nearby-hue pixels.
-  // 3x recovers perceptual chroma lost to averaging; capped to avoid gamut issues
+  // Boost cluster chromas — K-means averaging dampens chroma significantly.
+  // Boost scales with image saturation: vivid images get full 3× recovery,
+  // muted images (tonalist paintings) get lighter boost to preserve mutedness.
+  const chromaBoost = 1.5 + 1.5 * chromaScale; // 1.5× for muted → 3.0× for vivid
+  const chromaCap = 0.08 + 0.12 * chromaScale;  // 0.08 for muted → 0.20 for vivid
   for (const cc of colorsWithChroma) {
-    cc.lch.c = Math.min(cc.lch.c * 3.0, 0.20);
+    cc.lch.c = Math.min(cc.lch.c * chromaBoost, chromaCap);
     cc.chroma = cc.lch.c;
   }
 

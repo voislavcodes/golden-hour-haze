@@ -12,12 +12,7 @@ import { bendThroughMood, bentColorsToPiles } from './mood/oklch.js';
 import { getMaterial } from './surface/materials.js';
 import { syncBrushSlotsFromSession, setActiveBrushSlot, setBrushSlotAge, dipBrush, wipeOnRag, toggleOil, toggleAnchor, sampleTonalColumn, getActiveComplement, previewColor, MELDRUM_VALUES } from './painting/palette.js';
 import { clearSurface, getSurfaceWidth, getSurfaceHeight } from './painting/surface.js';
-import { analyzeTonalStructure, assignHuesToCells, buildMeldrumLUTs, quantizeCells, generateSpans, assemblePlan, createPaintingPlan, createPaintingPlanLegacy, downsampleImage } from './painting/tonal-recreation.js';
-import { extractRegions, detectHorizon, computeRegionFeatures } from './painting/region-analysis.js';
-import { classifyAllHeuristic, classifyRegionHeuristic } from './painting/region-classify-heuristic.js';
-import { initClassifier, isClassifierReady, classifyRegionsBatch } from './painting/region-classify-ml.js';
-import { extractPatch } from './painting/region-patches.js';
-import { generateRegionStrokes, assembleRegionPlan } from './painting/region-strokes.js';
+import { analyzeTonalStructure, assignHuesToCells, buildMeldrumLUTs, quantizeCells, generateSpans, assemblePlan, createPaintingPlan, createPaintingPlanLegacy, downsampleImage, extractRegions, detectHorizon, computeRegionFeatures, classifyAllHeuristic, classifyRegionHeuristic, initClassifier, isClassifierReady, classifyRegionsBatch, extractPatch, generateRegionStrokes, assembleRegionPlan, clariceHierarchy, clariceHierarchyDebug, mapDepths, analyzeColors, mapTones, detectEdges, detectAccents, inferStrokeTypes, classifyRecipes, aggregateFeatures, classifyComposition, locateFocalPoint, readAtmosphere, allocateBudget, refineParameters, conductPainting, executeRecipe, assembleHierarchyPlan, initModel, isModelReady, initAllModels, inferStrokeTypesML, classifyRecipesML, classifyCompositionML, refineParametersML, conductPaintingML, serializeSceneFeatures, serializeRegionContext, serializeConductorInput, SCENE_FEATURE_ORDER } from './painting/clarice/index.js';
 import { getActiveBundle, getAverageLoad, resetActiveBundle } from './painting/bristle-bundle.js';
 import { reloadBrush, wipeBrush, getReservoir } from './painting/brush-engine.js';
 import { resetSessionTimer, setTimeMultiplier } from './session/session-timer.js';
@@ -558,6 +553,40 @@ const bridge = {
   extractPatch,
   generateRegionStrokes,
   assembleRegionPlan,
+
+  // --- Hierarchy ---
+  clariceHierarchy,
+  clariceHierarchyDebug,
+  mapDepths,
+  analyzeColors,
+  mapTones,
+  detectEdges,
+  detectAccents,
+  inferStrokeTypes,
+  classifyRecipes,
+  aggregateFeatures,
+  classifyComposition,
+  locateFocalPoint,
+  readAtmosphere,
+  allocateBudget,
+  refineParameters,
+  conductPainting,
+  executeRecipe,
+  assembleHierarchyPlan,
+
+  // --- ML models ---
+  initModel,
+  isModelReady,
+  initAllModels,
+  inferStrokeTypesML,
+  classifyRecipesML,
+  classifyCompositionML,
+  refineParametersML,
+  conductPaintingML,
+  serializeSceneFeatures,
+  serializeRegionContext,
+  serializeConductorInput,
+  SCENE_FEATURE_ORDER,
 
   /** Analyze reference image using the region pipeline (V3).
    *  Returns plan + region metadata for diagnostics. */
