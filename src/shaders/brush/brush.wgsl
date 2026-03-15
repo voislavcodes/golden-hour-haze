@@ -179,9 +179,12 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
   let base_edge = 1.0 - edge_sq * 0.12;
   let radial_bias = base_edge * (1.0 - edge_sq * 0.55 * (1.0 - local_reservoir));
 
-  // Dry brush detection — activates for rag-wiped brush (reservoir ~0.2) and
-  // natural late-stroke depletion. Starts at 0.5, fully active at 0.1.
-  let dry_brush_t = smoothstep(0.5, 0.1, local_reservoir);
+  // Dry brush detection — age-dependent transition.
+  // NEW brush holds paint uniformly → transitions later.
+  // OLD brush has uneven retention → transitions earlier.
+  let dry_onset = 0.4 + params.age * 0.2;
+  let dry_full  = 0.08 + params.age * 0.07;
+  let dry_brush_t = smoothstep(dry_onset, dry_full, local_reservoir);
 
   // Depletion drives grain/texture interactions downstream
   let reservoir_depletion = pow(1.0 - local_reservoir, 2.0);

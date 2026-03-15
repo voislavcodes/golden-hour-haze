@@ -2,6 +2,9 @@
 // Drives per-vertex splay, depletion, age effects for the polyline SDF renderer.
 // The GPU renders capsule SDFs; this module computes the physical brush state
 // that modulates per-vertex radius and reservoir.
+//
+// Physics: Poisson disk layout, pink noise load capacity, spring-damper splay,
+// Ornstein-Uhlenbeck bristle paths, stochastic edge contact, exponential depletion.
 
 type Vec2 = [number, number];
 
@@ -18,7 +21,10 @@ export interface BristleTip {
   colorKg: number;
   colorKb: number;
   contamination: number;
-  ringIndex: number;
+  ringNorm: number;      // distance from center [0, 1] — continuous radial position
+  loadCapacity: number;  // pink noise [0.7, 1.0] — persistent per-bristle
+  noiseX: number;        // Ornstein-Uhlenbeck deviation X
+  noiseY: number;        // Ornstein-Uhlenbeck deviation Y
   inContact: boolean;
 }
 
@@ -26,6 +32,7 @@ export interface BristleBundle {
   tips: BristleTip[];
   tipCount: number;
   splay: number;
+  splayVelocity: number;    // spring-damper dynamics
   contactPressure: number;
   dominantBendDir: Vec2;
   age: number;
@@ -38,6 +45,7 @@ export interface BristleBundle {
   springBackFrames: number;
   friction: number;
   tooth: number;
+  frameCount: number;       // for stochastic seeding
 }
 
 // --- Pickup grid (64x64 low-res color tracking) ---
@@ -76,64 +84,206 @@ function depositGrid(x: number, y: number, kr: number, kg: number, kb: number, l
   cell.weight = Math.min(1.0, cell.weight + load * 0.05);
 }
 
-// --- Ring layout ---
-const RING_COUNT = 13;
-const TIP_COUNT = 1024;
-const MAX_RING = RING_COUNT - 1;
-
-function buildRingCounts(): number[] {
-  const counts = [1];
-  let total = 1;
-  const rawCounts: number[] = [];
-  let rawTotal = 0;
-  for (let r = 1; r < RING_COUNT; r++) {
-    const c = Math.round(6 * r);
-    rawCounts.push(c);
-    rawTotal += c;
-  }
-  for (let r = 0; r < rawCounts.length; r++) {
-    const scaled = Math.round(rawCounts[r] * (TIP_COUNT - 1) / rawTotal);
-    counts.push(scaled);
-    total += scaled;
-  }
-  counts[counts.length - 1] += TIP_COUNT - total;
-  return counts;
+// --- Seeded PRNG (splitmix32) ---
+function splitmix32(seed: number): () => number {
+  let state = seed | 0;
+  return () => {
+    state = (state + 0x9e3779b9) | 0;
+    let z = state;
+    z = Math.imul(z ^ (z >>> 16), 0x85ebca6b);
+    z = Math.imul(z ^ (z >>> 13), 0xc2b2ae35);
+    z = z ^ (z >>> 16);
+    return (z >>> 0) / 0x100000000;
+  };
 }
 
-const RING_COUNTS = buildRingCounts();
+// --- Hash functions for stochastic contact and Brownian bridge ---
+function hashFloat(a: number, b: number, c: number): number {
+  let h = ((a * 127 + b * 311 + c * 74) | 0) & 0x7fffffff;
+  h = ((h << 13) ^ h) | 0;
+  h = (Math.imul(h, Math.imul(h, h) * 15731 + 789221) + 1376312589) & 0x7fffffff;
+  return h / 0x7fffffff;
+}
+
+function hashNormal(seed: number, index: number, frame: number): number {
+  const u1 = Math.max(1e-10, hashFloat(seed, index, frame));
+  const u2 = hashFloat(seed + 5557, index + 3571, frame + 7919);
+  return Math.sqrt(-2 * Math.log(u1)) * Math.cos(2 * Math.PI * u2);
+}
+
+// --- Poisson disk in unit disk (Bridson's algorithm) ---
+const TIP_COUNT = 1024;
+const POISSON_MIN_DIST = 0.048;
+const POISSON_CANDIDATES = 30;
+
+function poissonDiskInUnitDisk(count: number, minDist: number, seed: number): Vec2[] {
+  const rng = splitmix32(seed);
+  const cellSize = minDist / Math.SQRT2;
+  const gridSize = Math.ceil(2.0 / cellSize);
+  // Flat grid array: -1 = empty, else point index
+  const grid = new Int32Array(gridSize * gridSize).fill(-1);
+  const points: Vec2[] = [];
+  const active: number[] = [];
+
+  const toGridIdx = (x: number, y: number): number => {
+    const gx = Math.floor((x + 1) / cellSize);
+    const gy = Math.floor((y + 1) / cellSize);
+    if (gx < 0 || gx >= gridSize || gy < 0 || gy >= gridSize) return -1;
+    return gy * gridSize + gx;
+  };
+
+  // Seed with center point
+  points.push([0, 0]);
+  active.push(0);
+  const centerIdx = toGridIdx(0, 0);
+  if (centerIdx >= 0) grid[centerIdx] = 0;
+
+  while (active.length > 0 && points.length < count * 2) {
+    const activeIdx = Math.floor(rng() * active.length);
+    const [px, py] = points[active[activeIdx]];
+    let foundAny = false;
+
+    for (let k = 0; k < POISSON_CANDIDATES; k++) {
+      const angle = rng() * Math.PI * 2;
+      const r = minDist + rng() * minDist;
+      const cx = px + Math.cos(angle) * r;
+      const cy = py + Math.sin(angle) * r;
+
+      // Reject outside unit disk
+      if (cx * cx + cy * cy > 1.0) continue;
+
+      const gx = Math.floor((cx + 1) / cellSize);
+      const gy = Math.floor((cy + 1) / cellSize);
+      if (gx < 0 || gx >= gridSize || gy < 0 || gy >= gridSize) continue;
+
+      // Check neighbors in 5×5 grid
+      let tooClose = false;
+      for (let dy = -2; dy <= 2 && !tooClose; dy++) {
+        for (let dx = -2; dx <= 2 && !tooClose; dx++) {
+          const nx = gx + dx;
+          const ny = gy + dy;
+          if (nx < 0 || nx >= gridSize || ny < 0 || ny >= gridSize) continue;
+          const ni = grid[ny * gridSize + nx];
+          if (ni === -1) continue;
+          const [npx, npy] = points[ni];
+          const ddx = cx - npx;
+          const ddy = cy - npy;
+          if (ddx * ddx + ddy * ddy < minDist * minDist) {
+            tooClose = true;
+          }
+        }
+      }
+
+      if (!tooClose) {
+        const newIdx = points.length;
+        points.push([cx, cy]);
+        active.push(newIdx);
+        grid[gy * gridSize + gx] = newIdx;
+        foundAny = true;
+      }
+    }
+
+    if (!foundAny) {
+      active[activeIdx] = active[active.length - 1];
+      active.pop();
+    }
+  }
+
+  // Trim to count (take first `count` — center point first, then by discovery order)
+  if (points.length >= count) {
+    return points.slice(0, count);
+  }
+
+  // Pad by jittering existing points
+  while (points.length < count) {
+    const src = points[Math.floor(rng() * points.length)];
+    const jx = src[0] + (rng() - 0.5) * minDist * 0.3;
+    const jy = src[1] + (rng() - 0.5) * minDist * 0.3;
+    if (jx * jx + jy * jy <= 1.0) {
+      points.push([jx, jy]);
+    }
+  }
+
+  return points.slice(0, count);
+}
+
+// --- Pink noise (Voss-McCartney) ---
+function generatePinkNoise(count: number, seed: number): Float32Array {
+  const rng = splitmix32(seed + 7919);
+  const OCTAVES = 6;
+  const rows = new Float32Array(OCTAVES);
+  for (let i = 0; i < OCTAVES; i++) rows[i] = rng();
+
+  const result = new Float32Array(count);
+  for (let i = 0; i < count; i++) {
+    // Update rows based on trailing zeros of (i+1)
+    let v = i + 1;
+    let tz = 0;
+    while ((v & 1) === 0 && tz < OCTAVES - 1) { tz++; v >>= 1; }
+    rows[tz] = rng();
+
+    let sum = 0;
+    for (let j = 0; j < OCTAVES; j++) sum += rows[j];
+    result[i] = sum / OCTAVES;
+  }
+
+  // Normalize to [0.7, 1.0]
+  let minVal = Infinity, maxVal = -Infinity;
+  for (let i = 0; i < count; i++) {
+    if (result[i] < minVal) minVal = result[i];
+    if (result[i] > maxVal) maxVal = result[i];
+  }
+  const range = maxVal - minVal || 1;
+  for (let i = 0; i < count; i++) {
+    result[i] = 0.7 + 0.3 * (result[i] - minVal) / range;
+  }
+
+  return result;
+}
+
+// --- Bundle creation ---
 
 export function createBundle(seed: number, age: number): BristleBundle {
   const stiffness = 1.0 - age * 0.5;
   const recoveryRate = 1.0 - age * 0.4;
+
+  // Generate Poisson disk positions in unit disk
+  const positions = poissonDiskInUnitDisk(TIP_COUNT, POISSON_MIN_DIST, seed);
+
+  // Generate pink noise load capacities
+  const loadCapacities = generatePinkNoise(TIP_COUNT, seed);
+
   const tips: BristleTip[] = [];
 
-  for (let ring = 0; ring < RING_COUNT; ring++) {
-    const count = RING_COUNTS[ring];
-    const ringRadius = ring / MAX_RING;
-    for (let i = 0; i < count; i++) {
-      const angle = (i / count) * Math.PI * 2 + ring * 0.618;
-      const drift = age * 0.08 * (Math.sin(seed * 127.1 + i * 311.7) * 0.5 + 0.5);
-      const r = ringRadius * (1.0 + drift);
-      const ox = Math.cos(angle) * r;
-      const oy = Math.sin(angle) * r;
+  for (let i = 0; i < TIP_COUNT; i++) {
+    const [ox, oy] = positions[i];
+    const ringNorm = Math.sqrt(ox * ox + oy * oy);
 
-      tips.push({
-        restOffset: [ox, oy],
-        currentOffset: [ox, oy],
-        velocity: [0, 0],
-        bend: 0,
-        bendDir: [0, 0],
-        load: 0,
-        oil: 0,
-        anchor: 0,
-        colorKr: 0,
-        colorKg: 0,
-        colorKb: 0,
-        contamination: 0,
-        ringIndex: ring,
-        inContact: false,
-      });
-    }
+    // Age-driven radial drift — worn brushes splay outward
+    const drift = age * 0.08 * (hashFloat(seed, i, 0) * 0.5 + 0.5);
+    const scale = ringNorm > 0.001 ? (1.0 + drift) : 1.0;
+    const rx = ox * scale;
+    const ry = oy * scale;
+
+    tips.push({
+      restOffset: [rx, ry],
+      currentOffset: [rx, ry],
+      velocity: [0, 0],
+      bend: 0,
+      bendDir: [0, 0],
+      load: 0,
+      oil: 0,
+      anchor: 0,
+      colorKr: 0,
+      colorKg: 0,
+      colorKb: 0,
+      contamination: 0,
+      ringNorm,
+      loadCapacity: loadCapacities[i],
+      noiseX: 0,
+      noiseY: 0,
+      inContact: false,
+    });
   }
 
   initPickupGrid();
@@ -142,6 +292,7 @@ export function createBundle(seed: number, age: number): BristleBundle {
     tips,
     tipCount: tips.length,
     splay: 0,
+    splayVelocity: 0,
     contactPressure: 0,
     dominantBendDir: [0, 0],
     age,
@@ -154,6 +305,7 @@ export function createBundle(seed: number, age: number): BristleBundle {
     springBackFrames: 0,
     friction: 0.3,
     tooth: 0.4,
+    frameCount: 0,
   };
 }
 
@@ -169,6 +321,7 @@ export function updateBundle(
   brushRadius: number,
 ): void {
   const { tips, stiffness, age } = bundle;
+  bundle.frameCount++;
 
   // Velocity from position delta
   let velX = 0, velY = 0;
@@ -187,11 +340,14 @@ export function updateBundle(
     moveDir = [bundle.lastVelocity[0] / speed, bundle.lastVelocity[1] / speed];
   }
 
-  // Splay from pressure — quadratic response (Euler-Bernoulli beam bending)
-  // Light pressure barely changes footprint; heavy pressure dramatically expands
+  // Splay from pressure — momentum-accelerated approach with overshoot.
+  // Velocity carries momentum: fast convergence (~5 calls) with ~10% overshoot
+  // on press-down, lag on lift-off. Frame-rate independent (per-call, like old lerp).
   const pressureSq = pressure * pressure;
-  const targetSplay = pressureSq * 0.85 + 0.15;
-  bundle.splay += (targetSplay - bundle.splay) * 0.4;
+  const targetSplay = pressureSq * 0.85 + 0.15; // [0.15, 1.0]
+  const error = targetSplay - bundle.splay;
+  bundle.splayVelocity = bundle.splayVelocity * 0.5 + error * 0.25;
+  bundle.splay = Math.max(0, Math.min(1.5, bundle.splay + bundle.splayVelocity));
   bundle.contactPressure = pressure;
 
   // Dominant bend direction — trails movement
@@ -206,7 +362,7 @@ export function updateBundle(
 
   for (let i = 0; i < tips.length; i++) {
     const tip = tips[i];
-    const ringNorm = tip.ringIndex / MAX_RING;
+    const ringNorm = tip.ringNorm;
 
     // Splay: radial outward
     const splayScale = bundle.splay * (1.0 + age * 0.3);
@@ -236,9 +392,26 @@ export function updateBundle(
     tip.currentOffset[0] += tip.velocity[0] * dt;
     tip.currentOffset[1] += tip.velocity[1] * dt;
 
-    // Contact detection
+    // Ornstein-Uhlenbeck micro-deviation — bristles weave slightly
+    // Variance scales with age: NEW = tight, WORN = loose, OLD = wild
+    const sigma = (0.003 + age * 0.01) * brushRadius;
+    const theta = 5.0;
+    const rand1 = hashNormal(bundle.seed, i, bundle.frameCount);
+    const rand2 = hashNormal(bundle.seed, i + 4999, bundle.frameCount);
+    tip.noiseX += (-theta * tip.noiseX + sigma * rand1) * dt;
+    tip.noiseY += (-theta * tip.noiseY + sigma * rand2) * dt;
+    tip.currentOffset[0] += tip.noiseX;
+    tip.currentOffset[1] += tip.noiseY;
+
+    // Contact detection — stochastic skip for outer bristles (ragged edges)
     const contactThreshold = ringNorm * (1.0 - pressure * 0.9);
-    tip.inContact = pressure > contactThreshold;
+    let edgeContact = true;
+    if (ringNorm > 0.8) {
+      // Gradual fadeout: 70% contact at boundary, dropping to ~0% at rim
+      const skipThreshold = 0.3 + (ringNorm - 0.8) * 3.5;
+      edgeContact = hashFloat(bundle.seed + i, bundle.frameCount, i * 17) < (1.0 - skipThreshold);
+    }
+    tip.inContact = pressure > contactThreshold && edgeContact;
 
     if (!tip.inContact) continue;
 
@@ -256,13 +429,13 @@ export function updateBundle(
       tip.contamination = Math.min(1.0, tip.contamination + contaminationRate * 0.5);
     }
 
-    // Per-tip depletion — edges deplete first (cubic gradient)
-    // Gentle rate: sigmoidal curve in brush-engine handles macro-depletion,
-    // tips add micro-texture (edge drying) without creating visible gaps
+    // Per-tip depletion — EXPONENTIAL: each unit of contact transfers fraction of remaining
+    // Lower loadCapacity → thinner bristle → faster depletion rate
     if (tip.load > 0) {
       const edgeFactor = ringNorm * ringNorm * ringNorm; // cubic: 0 center → 1 edge
-      const depletionRate = (0.05 + edgeFactor * 0.25) * tipPressure;
-      tip.load = Math.max(0, tip.load - depletionRate * dt);
+      const depletionRate = (0.05 + edgeFactor * 0.25) * tipPressure / tip.loadCapacity;
+      const transferred = tip.load * depletionRate * dt;
+      tip.load = Math.max(0, tip.load - transferred);
     }
 
     // Deposit into pickup grid
@@ -276,10 +449,9 @@ export function updateBundle(
 
 export function dipBundle(bundle: BristleBundle, kr: number, kg: number, kb: number, oil: number, anchor: number, load: number) {
   for (const tip of bundle.tips) {
-    // Steeper capillary loading gradient — inner bristles hold more paint
-    const ringNorm = tip.ringIndex / MAX_RING;
-    const ringFalloff = 1.0 - ringNorm * ringNorm * 0.6;
-    tip.load = load * ringFalloff;
+    // Capillary loading gradient × per-bristle load capacity (pink noise)
+    const ringFalloff = 1.0 - tip.ringNorm * tip.ringNorm * 0.6;
+    tip.load = load * ringFalloff * tip.loadCapacity;
     tip.oil = oil;
     tip.anchor = anchor;
 
@@ -323,7 +495,7 @@ export function setSurfaceProperties(bundle: BristleBundle, friction: number, to
 // --- 1D bristle density profile for GPU dry brush ---
 // Projects all 1024 tips onto the cross-stroke (perpendicular) axis,
 // producing a density profile the shader samples instead of hash-noise lanes.
-// Natural ring layout + splay + age drift → irregular clumping.
+// Poisson disk layout + O-U noise + stochastic contact → irregular clumping.
 export const BRISTLE_PROFILE_SIZE = 64;
 
 export function buildBristleProfile(bundle: BristleBundle, dirX: number, dirY: number): Float32Array {
@@ -367,18 +539,35 @@ export function buildBristleProfile(bundle: BristleBundle, dirX: number, dirY: n
     if (bin < BRISTLE_PROFILE_SIZE - 1) profile[bin + 1] += weight * 0.25;
   }
 
+  // 5-tap weighted smoothing — reduces directional sensitivity from Poisson disk
+  // Without this, small velocity direction changes create dramatically different profiles
+  const smoothed = new Float32Array(BRISTLE_PROFILE_SIZE);
+  for (let i = 0; i < BRISTLE_PROFILE_SIZE; i++) {
+    let sum = profile[i] * 3;
+    let wt = 3;
+    for (const d of [-2, -1, 1, 2]) {
+      const j = i + d;
+      if (j >= 0 && j < BRISTLE_PROFILE_SIZE) {
+        const dw = Math.abs(d) === 1 ? 2 : 1;
+        sum += profile[j] * dw;
+        wt += dw;
+      }
+    }
+    smoothed[i] = sum / wt;
+  }
+
   // Normalize peak to 1.0
   let maxVal = 0;
   for (let i = 0; i < BRISTLE_PROFILE_SIZE; i++) {
-    if (profile[i] > maxVal) maxVal = profile[i];
+    if (smoothed[i] > maxVal) maxVal = smoothed[i];
   }
   if (maxVal > 0) {
     for (let i = 0; i < BRISTLE_PROFILE_SIZE; i++) {
-      profile[i] /= maxVal;
+      smoothed[i] /= maxVal;
     }
   }
 
-  return profile;
+  return smoothed;
 }
 
 // --- Module-level bundle instance ---

@@ -43,7 +43,6 @@ let needMaskClear = true;
 const UNIFORM_SIZE = 80;    // bytes — BrushParams struct
 const MAX_VERTICES = 4096;
 const VERTEX_STRIDE = 16;   // bytes per StrokeVertex (vec2f + f32 + pad)
-const TOUCH_RAMP_SEGS = 5;
 const GHOST_COUNT = 3;
 
 let lastPos: Vec2 | null = null;
@@ -57,10 +56,10 @@ let estimatedPeakLayers = 0;
 // Paint depletion state
 let reservoir = 0.5;
 let lastReservoir = 1.0;
-let totalDistance = 0;
 let strokeDabCount = 0;
 let lastFrameTime = 0;
 let loadScale = 1.0;   // rag wipe reduces this; dip resets to 1.0
+let smoothedPressure = 0; // pressure envelope — asymmetric attack/release
 
 // Cumulative polyline — grows over the entire stroke lifetime
 // Each frame re-renders the full stroke from a pre-stroke snapshot
@@ -206,11 +205,10 @@ export function reloadBrush() {
   const scene = sceneStore.get();
   const load = scene.load;
 
-  // Reset distance-based reservoir
+  // Reset reservoir — proportional to load amount
   loadScale = 1.0;
-  reservoir = load > 0 ? 1.0 : 0;
+  reservoir = load;
   lastReservoir = reservoir;
-  totalDistance = 0;
 
   // Init/dip the bristle bundle
   let bundle = getActiveBundle();
@@ -220,7 +218,7 @@ export function reloadBrush() {
   }
   const mat = getMaterial(scene.surface.material);
   setSurfaceProperties(bundle, mat.friction, mat.tooth);
-  dipBundle(bundle, ks.Kr, ks.Kg, ks.Kb, getOilRemaining(), getAnchorRemaining(), load > 0 ? 1.0 : 0);
+  dipBundle(bundle, ks.Kr, ks.Kg, ks.Kb, getOilRemaining(), getAnchorRemaining(), load);
 }
 
 /** Wipe brush on rag — reduces paint load + bundle tip loads (dry brush) */
@@ -230,7 +228,6 @@ export function wipeBrush() {
   loadScale *= 0.2;
   reservoir *= 0.2;
   lastReservoir = reservoir;
-  totalDistance = 0;
 }
 
 export function getReservoir(): number {
@@ -272,6 +269,7 @@ export function beginStroke(x: number, y: number, pressure: number) {
   lastRadius = 0;
   strokeSegIndex = 0;
   strokeDabCount = 0;
+  smoothedPressure = pressure; // start at actual pressure, not 0
   ghostsPending = false;
   needMaskClear = true;
   needSnapshotCapture = true;
@@ -289,6 +287,10 @@ export function beginStroke(x: number, y: number, pressure: number) {
   bundle.lastPos = [x, y];
   bundle.springBackActive = false;
   bundle.springBackFrames = 0;
+  // Snap splay to initial pressure target — no spring delay for first touch
+  const initPSq = pressure * pressure;
+  bundle.splay = initPSq * 0.85 + 0.15;
+  bundle.splayVelocity = 0;
 
   const scene = sceneStore.get();
   const mat = getMaterial(scene.surface.material);
@@ -568,63 +570,70 @@ export function dispatchBrushDabs(encoder: GPUCommandEncoder, x: number, y: numb
     device.queue.writeBuffer(profileBuffer, 0, profile.buffer, profile.byteOffset, profile.byteLength);
   }
 
-  // Accumulate pixel distance for paint depletion
+  // Compute frame distance in brush-widths for exponential paint transfer
   const w = getSurfaceWidth();
+  const radiusPixels = Math.max(1, radius * w);
+  let frameDist = 0;
   for (let i = 1; i < points.length; i++) {
     const dx = points[i].pos[0] - points[i - 1].pos[0];
     const dy = points[i].pos[1] - points[i - 1].pos[1];
-    totalDistance += Math.sqrt(dx * dx + dy * dy) * w;
+    frameDist += Math.sqrt(dx * dx + dy * dy) * w;
   }
+  const frameDistBrushWidths = frameDist / radiusPixels;
 
-  // Update reservoir based on sigmoidal depletion curve
-  // Real paint: plateau (capillary reservoir feeds freely), then rapid drop,
-  // then long residual tail (paint trapped in bristle roots)
+  // Exponential decay reservoir — each unit of contact transfers a fraction of remaining paint.
+  // Early in stroke: loaded head (lots remaining → lots transferred).
+  // Late in stroke: dry tail (little remaining → little transferred).
   const load = scene.load;
-  // effectiveLoad: rag wipe reduces this so the brush behaves as if less paint was loaded
   const effectiveLoad = load * loadScale;
   if (effectiveLoad <= 0) {
     reservoir = 0;
   } else {
-    const radiusPixels = radius * w;
-    // Dry brush (rag-wiped): thin bristle coating depletes faster than loaded brush.
-    // Real dry brush has just a thin film — it runs out in a few brush-widths.
+    const BASE_TRANSFER = 0.12;
     const isDryBrush = loadScale < 0.5;
-    const holdMultiplier = isDryBrush ? 8 : 18;
-    const transMultiplier = isDryBrush ? 15 : 25;
-    // Hold phase: paint flows freely from inter-bristle capillary reservoirs
-    const holdDistance = effectiveLoad * radiusPixels * holdMultiplier;
-    const drainDistance = totalDistance - holdDistance;
-    if (drainDistance <= 0) {
-      reservoir = loadScale;  // cap at loadScale, not 1.0
-    } else {
-      // Sigmoidal: logistic curve centered at transition point
-      const transitionDist = effectiveLoad * radiusPixels * transMultiplier;
-      const steepness = (1.0 - effectiveLoad) * 0.008 + 0.003;
-      const logistic = 1.0 / (1.0 + Math.exp(steepness * (drainDistance - transitionDist)));
-      // Residual floor: paint trapped in bristle roots (never fully empty)
-      // Dry brush: no residual — thin film exhausts completely
-      const residual = isDryBrush ? 0 : 0.03 * effectiveLoad;
-      reservoir = residual + (loadScale - residual) * logistic;
-    }
+    const transferMult = isDryBrush ? 2.5 : 1.0;
+    const RESIDUAL_FLOOR = isDryBrush ? 0 : 0.02 * effectiveLoad;
+    const avgPressure = points.reduce((sum, p) => sum + p.pressure, 0) / points.length;
+    const splay = bundle.splay * (1.0 + bundle.age * 0.3);
+    const transferRate = BASE_TRANSFER * transferMult
+      * (0.5 + 0.5 * avgPressure)
+      * (1.0 + scene.thinners * 0.3)
+      * splay;
+    const transferred = reservoir * transferRate * frameDistBrushWidths;
+    reservoir = Math.max(RESIDUAL_FLOOR, reservoir - transferred);
   }
 
-  // Bundle average load gently nudges reservoir down only when tips are truly depleted.
-  // The sigmoidal curve handles macro depletion; bundle tips add micro-texture only.
+  // Bundle average load nudges reservoir when tips deplete
   const bundleLoad = getAverageLoad(bundle);
-  if (bundleLoad < 0.3 && bundleLoad < reservoir) {
+  if (bundleLoad < 0.5 && bundleLoad < reservoir) {
     reservoir = reservoir * 0.9 + bundleLoad * 0.1;
   }
 
-  // Build StrokeVertex array — bundle splay modulates radius
+  // Build StrokeVertex array — pressure envelope + bundle splay modulates radius
   const spread = 1.0 + scene.thinners * 0.4;
-  const splay = bundle.splay * (1.0 + bundle.age * 0.3);
+  const splayCurrent = bundle.splay * (1.0 + bundle.age * 0.3);
+  const NORMAL_SPEED = 0.003; // normalized coords/frame for endpoint detection
   const verts: BakedVert[] = [];
 
   for (let i = 0; i < points.length; i++) {
-    const taper = 0.3 + 0.7 * Math.min(1.0, (strokeSegIndex + i) / TOUCH_RAMP_SEGS);
-    const r = pressureRadius(radius, points[i].pressure) * taper * spread * splay;
+    // Asymmetric pressure smoothing — fast attack, slow release
+    const targetP = points[i].pressure;
+    const rate = targetP > smoothedPressure ? 0.15 : 0.08;
+    smoothedPressure += (targetP - smoothedPressure) * rate;
+
+    const r = pressureRadius(radius, smoothedPressure) * spread * splayCurrent;
     const t = points.length > 1 ? i / (points.length - 1) : 1.0;
-    const vertRes = lastReservoir + (reservoir - lastReservoir) * t;
+    let vertRes = lastReservoir + (reservoir - lastReservoir) * t;
+
+    // Endpoint paint accumulation — slow brush movement pools paint
+    if (i > 0) {
+      const dx = points[i].pos[0] - points[i - 1].pos[0];
+      const dy = points[i].pos[1] - points[i - 1].pos[1];
+      const ptSpeed = Math.sqrt(dx * dx + dy * dy);
+      const slowBoost = 1.0 + 0.3 * Math.max(0, 1.0 - ptSpeed / NORMAL_SPEED);
+      vertRes = Math.min(1.0, vertRes * slowBoost);
+    }
+
     verts.push({ pos: points[i].pos, radius: r, reservoir: vertRes });
   }
 
