@@ -17,7 +17,7 @@ import {
   createBundle, updateBundle, dipBundle, wipeBundle,
   getAverageLoad, setSurfaceProperties,
   ensureBundle, getActiveBundle, setActiveBundle,
-  resetPaths, anyPathOverBudget, trimPathsToTail,
+  resetPaths, trimPathsToTail,
   snapTipOffsets, SELECTED_TIP_COUNT,
   type BristlePath,
 } from './bristle-bundle.js';
@@ -606,11 +606,8 @@ export function dispatchBrushDabs(encoder: GPUCommandEncoder, x: number, y: numb
   const dtPerWp = waypoints.length > 1 ? dt / waypoints.length : dt;
   const w = getSurfaceWidth();
   const aspectCorrection = getSurfaceHeight() / w;
-  for (const wp of waypoints) {
-    updateBundle(bundle, wp.pos, wp.pressure, wp.tiltX, wp.tiltY, dtPerWp, radius, aspectCorrection);
-  }
 
-  // Compute frame distance in brush-widths for exponential paint transfer
+  // Compute frame distance FIRST so reservoir depletes before path recording
   const radiusPixels = Math.max(1, radius * w);
   let frameDist = 0;
   for (let i = 1; i < points.length; i++) {
@@ -646,6 +643,11 @@ export function dispatchBrushDabs(encoder: GPUCommandEncoder, x: number, y: numb
     reservoir = reservoir * 0.9 + bundleLoad * 0.1;
   }
 
+  // Advance bundle physics AFTER reservoir depletion — per-vertex loads reflect current reservoir
+  for (const wp of waypoints) {
+    updateBundle(bundle, wp.pos, wp.pressure, wp.tiltX, wp.tiltY, dtPerWp, radius, aspectCorrection, reservoir);
+  }
+
   // Pressure smoothing for radius tracking
   for (let i = 0; i < points.length; i++) {
     const targetP = points[i].pressure;
@@ -673,8 +675,27 @@ export function dispatchBrushDabs(encoder: GPUCommandEncoder, x: number, y: numb
   const splayCurrent = bundle.splay * (1.0 + bundle.age * 0.3);
   lastRadius = pressureRadius(radius, smoothedPressure) * spread * splayCurrent;
 
-  // Mid-stroke commit: when any bristle path exceeds budget, commit snapshot + reset
-  if (anyPathOverBudget(bundle) && snapshotAccum) {
+  // Expand stroke AABB from all paths
+  for (const path of bundle.paths) {
+    if (path.count > 0) {
+      strokeAABB.minX = Math.min(strokeAABB.minX, path.aabb.minX);
+      strokeAABB.minY = Math.min(strokeAABB.minY, path.aabb.minY);
+      strokeAABB.maxX = Math.max(strokeAABB.maxX, path.aabb.maxX);
+      strokeAABB.maxY = Math.max(strokeAABB.maxY, path.aabb.maxY);
+    }
+  }
+
+  // Clear mask — each commit cycle starts fresh
+  needMaskClear = true;
+
+  // Dispatch current paths against snapshot
+  dispatchBristlePaths(encoder, bundle.paths, scene, slot, ks, 'brush-stroke',
+    strokeAABB, true);
+
+  // Continuous commit — bake rendered result into snapshot, trim paths to trailing edge.
+  // Paint is permanent the moment the brush moves past. Going back deposits new paint
+  // on top of what's already committed — real physics.
+  if (snapshotAccum) {
     const accumPP = getAccumPP();
     const statePP = getStatePP();
     const h = getSurfaceHeight();
@@ -695,23 +716,6 @@ export function dispatchBrushDabs(encoder: GPUCommandEncoder, x: number, y: numb
       }
     }
   }
-
-  // Expand cumulative stroke AABB from all paths
-  for (const path of bundle.paths) {
-    if (path.count > 0) {
-      strokeAABB.minX = Math.min(strokeAABB.minX, path.aabb.minX);
-      strokeAABB.minY = Math.min(strokeAABB.minY, path.aabb.minY);
-      strokeAABB.maxX = Math.max(strokeAABB.maxX, path.aabb.maxX);
-      strokeAABB.maxY = Math.max(strokeAABB.maxY, path.aabb.maxY);
-    }
-  }
-
-  // Clear mask every frame — re-render from scratch
-  needMaskClear = true;
-
-  // Dispatch all per-bristle paths against pre-stroke snapshot
-  dispatchBristlePaths(encoder, bundle.paths, scene, slot, ks, 'brush-stroke',
-    strokeAABB, true);
 
   // Update CPU-side peak weight estimate
   const pigmentDensity = Math.pow(1.0 - scene.thinners * 0.9, 1.5);

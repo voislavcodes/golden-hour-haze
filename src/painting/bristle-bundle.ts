@@ -478,6 +478,7 @@ export function updateBundle(
   dt: number,
   brushRadius: number,
   aspectCorrection: number = 1.0, // surfaceHeight / surfaceWidth — makes brush circular on screen
+  reservoirScale: number = 1.0,   // CPU reservoir (0-1) — modulates per-vertex load for depletion
 ): void {
   const { tips, stiffness, age } = bundle;
   bundle.frameCount++;
@@ -513,6 +514,14 @@ export function updateBundle(
   const bendSmooth = 0.25;
   bundle.dominantBendDir[0] = bundle.dominantBendDir[0] * (1 - bendSmooth) + (-moveDir[0]) * bendSmooth;
   bundle.dominantBendDir[1] = bundle.dominantBendDir[1] * (1 - bendSmooth) + (-moveDir[1]) * bendSmooth;
+
+  // Brush center distance this frame (for distance-based depletion)
+  let brushDist = 0;
+  if (bundle.lastPos) {
+    const ddx = pos[0] - bundle.lastPos[0];
+    const ddy = pos[1] - bundle.lastPos[1];
+    brushDist = Math.sqrt(ddx * ddx + ddy * ddy);
+  }
 
   const tiltNormX = (tiltX || 0) / 90;
   const tiltNormY = (tiltY || 0) / 90;
@@ -588,12 +597,16 @@ export function updateBundle(
       tip.contamination = Math.min(1.0, tip.contamination + contaminationRate * 0.5);
     }
 
-    // Per-tip depletion — EXPONENTIAL: each unit of contact transfers fraction of remaining
-    // Lower loadCapacity → thinner bristle → faster depletion rate
+    // Per-tip depletion — TWO-PHASE: loaded brush holds paint, then exponential dry tail
+    // Phase 1 (load > 0.35): slow depletion — solid coverage for several brush-widths
+    // Phase 2 (load < 0.35): faster exponential decay — dry brush tail with grain interaction
     if (tip.load > 0) {
       const edgeFactor = ringNorm * ringNorm * ringNorm; // cubic: 0 center → 1 edge
-      const depletionRate = (0.05 + edgeFactor * 0.25) * tipPressure / tip.loadCapacity;
-      const transferred = tip.load * depletionRate * dt;
+      const phase = tip.load > 0.35 ? 0.012 : 0.08; // slow loaded → faster dry tail
+      const baseRate = (phase + edgeFactor * 0.06) * tipPressure / tip.loadCapacity;
+      const distanceTerm = brushDist > 0 ? baseRate * (brushDist / brushRadius) : 0;
+      const contactTerm = baseRate * 0.1 * dt; // slow squeeze while stationary
+      const transferred = tip.load * (distanceTerm + contactTerm);
       tip.load = Math.max(0, tip.load - transferred);
     }
 
@@ -615,7 +628,7 @@ export function updateBundle(
     const wy: number = pos[1] + tip.currentOffset[1] * brushRadius;
     const splayScale = bundle.splay * (1.0 + bundle.age * 0.3);
     const rBristle = (brushRadius / Math.sqrt(SELECTED_TIP_COUNT))
-      * (1.1 - 0.2 * tip.ringNorm) * splayScale;
+      * (1.5 - 0.3 * tip.ringNorm) * splayScale;
 
     // Deduplicate: skip if identical to last position
     if (path.count > 0) {
@@ -627,7 +640,9 @@ export function updateBundle(
 
     path.positions.push([wx, wy]);
     path.radii.push(Math.max(rBristle, 0.0005));
-    path.loads.push(tip.load);
+    // Per-vertex load = per-tip paint × reservoir — captures both physical
+    // bristle depletion AND distance-based paint exhaustion
+    path.loads.push(tip.load * reservoirScale);
     path.count++;
 
     // Update per-bristle color from tip

@@ -100,7 +100,8 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
   var weighted_K = vec3f(0.0);
   var total_weight: f32 = 0.0;
   var any_contact = false;
-  var best_reservoir: f32 = 0.0;
+  var weighted_load: f32 = 0.0;
+  var load_weight_sum: f32 = 0.0;
   var closest_dist: f32 = 999.0;
   var closest_dir: vec2f = vec2f(1.0, 0.0);
 
@@ -149,7 +150,7 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
 
     // Edge softness for this bristle
     let depth = max(-b_min_dist, 0.0) / max(local_r, 0.0001);
-    let edge_softness = local_r * (0.08 + params.thinners * 0.4);
+    let edge_softness = local_r * (0.2 + params.thinners * 0.3);
     let edge_noise_angle = atan2(uv.y - vertices[vi0].pos.y, uv.x - vertices[vi0].pos.x);
     let roughness = 0.05 + params.age * 0.22;
     let edge_noise = hash_noise(edge_noise_angle * 3.0, params.bristle_seed + f32(bi)) * 0.7
@@ -160,11 +161,18 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
     // Radial bias — edges of the bundle deposit less
     let ring = info.ring_norm;
     let edge_sq = ring * ring;
-    let radial_bias = (1.0 - edge_sq * 0.12) * (1.0 - edge_sq * 0.55 * (1.0 - local_load));
+    let radial_bias = 1.0 - edge_sq * 0.4;
 
     // Per-bristle contribution: alpha × load × radial bias
-    let contrib = bristle_alpha * max(local_load, 0.01) * radial_bias;
+    // Loaded boost: when paint is full, each bristle covers more area (paint spreads
+    // between bristles). As load depletes, boost fades → gaps emerge as dry brush.
+    let load_boost = 1.0 + smoothstep(0.3, 0.7, local_load) * 1.2;
+    let contrib = bristle_alpha * max(local_load, 0.01) * radial_bias * load_boost;
     miss *= (1.0 - saturate(contrib));
+
+    // Accumulate weighted load for smooth dry brush transition
+    weighted_load += local_load * contrib;
+    load_weight_sum += contrib;
 
     // Weighted K-M color — per-bristle contamination/pickup
     let bristle_K = vec3f(info.color_kr, info.color_kg, info.color_kb);
@@ -175,10 +183,9 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
     weighted_K += effective_K * contrib;
     total_weight += contrib;
 
-    // Track closest bristle for direction/reservoir
+    // Track closest bristle for direction
     if (b_min_dist < closest_dist) {
       closest_dist = b_min_dist;
-      best_reservoir = local_load;
       let seg_vec = vertices[vi1].pos - vertices[vi0].pos;
       let seg_len = length(seg_vec);
       closest_dir = select(vec2f(1.0, 0.0), seg_vec / seg_len, seg_len > 0.0001);
@@ -197,7 +204,7 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
   }
 
   let final_K = weighted_K / max(total_weight, 0.001);
-  let final_reservoir = best_reservoir;
+  let final_reservoir = select(0.0, weighted_load / load_weight_sum, load_weight_sum > 0.001);
   let dir = closest_dir;
 
   // Stroke mask — only deposit the incremental coverage since last frame
