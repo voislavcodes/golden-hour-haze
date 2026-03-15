@@ -18,7 +18,7 @@ import {
   getAverageLoad, setSurfaceProperties,
   ensureBundle, getActiveBundle, setActiveBundle,
   resetPaths, anyPathOverBudget, trimPathsToTail,
-  SELECTED_TIP_COUNT,
+  snapTipOffsets, SELECTED_TIP_COUNT,
   type BristlePath,
 } from './bristle-bundle.js';
 import brushShader from '../shaders/brush/brush.wgsl';
@@ -459,6 +459,9 @@ export function beginStroke(x: number, y: number, pressure: number) {
   bundle.splay = initPSq * 0.85 + 0.15;
   bundle.splayVelocity = 0;
 
+  // Snap tip offsets to match new splay — prevents first-frame capture at stale positions
+  snapTipOffsets(bundle);
+
   // Reset per-bristle paths for new stroke
   resetPaths(bundle);
 
@@ -523,8 +526,9 @@ export function dispatchPendingGhosts(encoder: GPUCommandEncoder): boolean {
       const rBristle = (ui.brushSize / Math.sqrt(SELECTED_TIP_COUNT))
         * (1.1 - 0.2 * tip.ringNorm) * splay;
 
-      // Ghost position: offset from center by tip's current offset
-      const wx = pt.pos[0] + tip.currentOffset[0] * ui.brushSize;
+      // Ghost position: offset from center by tip's current offset (aspect-corrected)
+      const ghostAspect = getSurfaceHeight() / getSurfaceWidth();
+      const wx = pt.pos[0] + tip.currentOffset[0] * ui.brushSize * ghostAspect;
       const wy = pt.pos[1] + tip.currentOffset[1] * ui.brushSize;
 
       path.positions.push([wx, wy]);
@@ -600,12 +604,13 @@ export function dispatchBrushDabs(encoder: GPUCommandEncoder, x: number, y: numb
 
   // Advance bundle physics for each waypoint — this also appends to per-bristle paths
   const dtPerWp = waypoints.length > 1 ? dt / waypoints.length : dt;
+  const w = getSurfaceWidth();
+  const aspectCorrection = getSurfaceHeight() / w;
   for (const wp of waypoints) {
-    updateBundle(bundle, wp.pos, wp.pressure, wp.tiltX, wp.tiltY, dtPerWp, radius);
+    updateBundle(bundle, wp.pos, wp.pressure, wp.tiltX, wp.tiltY, dtPerWp, radius, aspectCorrection);
   }
 
   // Compute frame distance in brush-widths for exponential paint transfer
-  const w = getSurfaceWidth();
   const radiusPixels = Math.max(1, radius * w);
   let frameDist = 0;
   for (let i = 1; i < points.length; i++) {

@@ -457,6 +457,18 @@ export function createBundle(seed: number, age: number): BristleBundle {
 
 /** Advance bristle physics for one frame. Updates bundle state in-place.
  *  The engine reads bundle.splay and getAverageLoad() for per-vertex params. */
+/** Snap all tip offsets to match the current splay.
+ *  Call on stroke start to prevent first-frame capture at stale splay. */
+export function snapTipOffsets(bundle: BristleBundle): void {
+  const splayScale = bundle.splay * (1.0 + bundle.age * 0.3);
+  for (const tip of bundle.tips) {
+    tip.currentOffset[0] = tip.restOffset[0] * splayScale;
+    tip.currentOffset[1] = tip.restOffset[1] * splayScale;
+    tip.velocity[0] = 0;
+    tip.velocity[1] = 0;
+  }
+}
+
 export function updateBundle(
   bundle: BristleBundle,
   pos: Vec2,
@@ -465,6 +477,7 @@ export function updateBundle(
   tiltY: number,
   dt: number,
   brushRadius: number,
+  aspectCorrection: number = 1.0, // surfaceHeight / surfaceWidth — makes brush circular on screen
 ): void {
   const { tips, stiffness, age } = bundle;
   bundle.frameCount++;
@@ -493,7 +506,7 @@ export function updateBundle(
   const targetSplay = pressureSq * 0.85 + 0.15; // [0.15, 1.0]
   const error = targetSplay - bundle.splay;
   bundle.splayVelocity = bundle.splayVelocity * 0.5 + error * 0.25;
-  bundle.splay = Math.max(0, Math.min(1.5, bundle.splay + bundle.splayVelocity));
+  bundle.splay = Math.max(0, Math.min(1.0, bundle.splay + bundle.splayVelocity));
   bundle.contactPressure = pressure;
 
   // Dominant bend direction — trails movement
@@ -591,12 +604,14 @@ export function updateBundle(
   }
 
   // --- Per-bristle path tracking: append world-space positions for selected tips ---
+  // Tip positions use brushRadius directly — splay (already pressure-driven) determines spread.
+  // The cursor matches by showing brushSize * splay as its radius.
   for (let si = 0; si < bundle.selectedTips.length; si++) {
     const tipIdx = bundle.selectedTips[si];
     const tip = tips[tipIdx];
     const path = bundle.paths[si];
 
-    const wx: number = pos[0] + tip.currentOffset[0] * brushRadius;
+    const wx: number = pos[0] + tip.currentOffset[0] * brushRadius * aspectCorrection;
     const wy: number = pos[1] + tip.currentOffset[1] * brushRadius;
     const splayScale = bundle.splay * (1.0 + bundle.age * 0.3);
     const rBristle = (brushRadius / Math.sqrt(SELECTED_TIP_COUNT))

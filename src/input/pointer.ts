@@ -1,4 +1,5 @@
 import { uiStore, pointerQueue } from '../state/ui-state.js';
+import { initForceTouch, getForceTouchPressure, resetForceTouch } from './force-touch.js';
 
 let canvas: HTMLCanvasElement;
 
@@ -12,6 +13,7 @@ export function initPointerInput(c: HTMLCanvasElement) {
     canvas.addEventListener('pointermove', onPointerMove);
     canvas.addEventListener('pointerup', onPointerUp);
     canvas.addEventListener('pointercancel', onPointerUp);
+    initForceTouch();
   }
   canvas.addEventListener('contextmenu', (e) => e.preventDefault());
 }
@@ -24,6 +26,13 @@ function normalizeCoords(e: PointerEvent): { x: number; y: number } {
   };
 }
 
+function normalizePressure(e: PointerEvent): number {
+  if (e.pointerType === 'pen' && e.pressure > 0) return e.pressure;
+  const force = getForceTouchPressure();
+  if (force !== null) return force;
+  return e.pressure > 0 ? e.pressure : 0.5;
+}
+
 function onPointerDown(e: PointerEvent) {
   canvas.setPointerCapture(e.pointerId);
   const { x, y } = normalizeCoords(e);
@@ -31,7 +40,7 @@ function onPointerDown(e: PointerEvent) {
     mouseX: x,
     mouseY: y,
     mouseDown: true,
-    pressure: e.pressure,
+    pressure: normalizePressure(e),
     tiltX: e.tiltX,
     tiltY: e.tiltY,
     pointerType: e.pointerType,
@@ -41,12 +50,12 @@ function onPointerDown(e: PointerEvent) {
 function onPointerMove(e: PointerEvent) {
   // Queue all coalesced positions for the brush engine
   const events = e.getCoalescedEvents?.() ?? [e];
+  const rect = canvas.getBoundingClientRect();
   for (const ce of events) {
-    const rect = canvas.getBoundingClientRect();
     pointerQueue.push({
       x: (ce.clientX - rect.left) / rect.width,
       y: (ce.clientY - rect.top) / rect.height,
-      pressure: ce.pressure > 0 ? ce.pressure : 0.5,
+      pressure: normalizePressure(ce),
       tiltX: ce.tiltX || 0,
       tiltY: ce.tiltY || 0,
     });
@@ -58,7 +67,7 @@ function onPointerMove(e: PointerEvent) {
   uiStore.set({
     mouseX: x,
     mouseY: y,
-    pressure: last.pressure,
+    pressure: normalizePressure(last),
     tiltX: last.tiltX,
     tiltY: last.tiltY,
     pointerType: last.pointerType,
@@ -66,6 +75,7 @@ function onPointerMove(e: PointerEvent) {
 }
 
 function onPointerUp(e: PointerEvent) {
+  resetForceTouch();
   const { x, y } = normalizeCoords(e);
   uiStore.set({
     mouseX: x,

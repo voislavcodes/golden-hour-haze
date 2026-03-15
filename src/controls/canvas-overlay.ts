@@ -3,6 +3,7 @@ import { customElement, state } from 'lit/decorators.js';
 import { BaseControl } from './base-control.js';
 import { uiStore, pointerQueue, type Tool } from '../state/ui-state.js';
 import { getOilRemaining, getAnchorRemaining } from '../painting/palette.js';
+import { initForceTouch, getForceTouchPressure, resetForceTouch } from '../input/force-touch.js';
 
 const BRUSH_TOOLS = new Set<Tool>(['form', 'scrape', 'wipe']);
 
@@ -126,6 +127,7 @@ export class CanvasOverlay extends BaseControl {
     this._cursor = TOOL_CURSORS[this._activeTool];
     this._showBrushCircle = BRUSH_TOOLS.has(this._activeTool);
     this._updateBrushDiameter(uiStore.get().brushSize, uiStore.get().pressure || 0.5);
+    initForceTouch();
     this._unsubscribe = uiStore.subscribe((s) => {
       if (s.activeTool !== this._activeTool) {
         this._activeTool = s.activeTool;
@@ -151,8 +153,10 @@ export class CanvasOverlay extends BaseControl {
 
   private _updateBrushDiameter(brushSize: number, pressure: number = 0.5) {
     // brushSize is radius in normalized-Y space (0-1 of height)
-    // Pressure modulates effective radius: 0.3 + 0.7 * pressure
-    const effectiveRadius = brushSize * (0.3 + 0.7 * pressure);
+    // Cursor matches bristle splay physics: splay = p² × 0.85 + 0.15
+    // This is the envelope the bristle tips fill at this pressure level.
+    const splay = pressure * pressure * 0.85 + 0.15;
+    const effectiveRadius = brushSize * splay;
     const rect = this._getCanvasRect();
     this._brushDiameter = effectiveRadius * 2 * rect.height;
     this._oilGlow = getOilRemaining();
@@ -167,8 +171,13 @@ export class CanvasOverlay extends BaseControl {
     };
   }
 
-  // Trackpads on Mac report pressure 0; default to 0.5 for usable form sizes
   private _normalizePressure(e: PointerEvent): number {
+    // Stylus: use hardware pressure directly
+    if (e.pointerType === 'pen' && e.pressure > 0) return e.pressure;
+    // Mac trackpad Force Touch
+    const force = getForceTouchPressure();
+    if (force !== null) return force;
+    // Fallback for devices without Force Touch or pen
     return e.pressure > 0 ? e.pressure : 0.5;
   }
 
@@ -248,6 +257,7 @@ export class CanvasOverlay extends BaseControl {
   }
 
   private _onPointerUp(e: PointerEvent) {
+    resetForceTouch();
     const { x, y } = this._normalizeCoords(e);
     uiStore.set({
       mouseX: x,
