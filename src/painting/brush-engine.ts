@@ -44,6 +44,11 @@ let lastPressure = 0;
 let strokeStartLayers = 0;
 let estimatedPeakLayers = 0;
 
+// Hysteresis commit control — decouple physics rate from render rate
+let strokeDispatched = false;
+const BRISTLE_COMMIT = 0.4;    // commit when any bristle moves 0.4× its own radius
+const BRISTLE_SUBDIVIDE = 1.0; // subdivide when any bristle would jump > 1× its radius
+
 // Paint depletion state
 let reservoir = 0.5;
 let strokeDabCount = 0;
@@ -149,6 +154,12 @@ export function getReservoir(): number {
   return Math.min(reservoir, bundleLoad);
 }
 
+function dist2d(a: Vec2, b: Vec2): number {
+  const dx = b[0] - a[0];
+  const dy = b[1] - a[1];
+  return Math.sqrt(dx * dx + dy * dy);
+}
+
 function subdivideIfNeeded(prev: SegPoint, curr: SegPoint, maxLen: number): SegPoint[] {
   const dx = curr.pos[0] - prev.pos[0];
   const dy = curr.pos[1] - prev.pos[1];
@@ -178,6 +189,8 @@ function dispatchSegments(
   scene: ReturnType<typeof sceneStore.get>,
   slot: ReturnType<typeof getBrushSlot>,
   ks: { Kr: number; Kg: number; Kb: number },
+  tStart: number = 0,
+  tEnd: number = 1,
 ) {
   const { device } = getGPU();
   const w = getSurfaceWidth();
@@ -195,27 +208,37 @@ function dispatchSegments(
     const path = paths[bi];
     if (!path.dirty || !path.prevPos || !path.currPos) continue;
 
+    // Interpolate positions, radius, load for sub-capsule range [tStart, tEnd]
+    const px = path.prevPos[0] + (path.currPos[0] - path.prevPos[0]) * tStart;
+    const py = path.prevPos[1] + (path.currPos[1] - path.prevPos[1]) * tStart;
+    const cx = path.prevPos[0] + (path.currPos[0] - path.prevPos[0]) * tEnd;
+    const cy = path.prevPos[1] + (path.currPos[1] - path.prevPos[1]) * tEnd;
+    const pr = path.prevRadius + (path.currRadius - path.prevRadius) * tStart;
+    const cr = path.prevRadius + (path.currRadius - path.prevRadius) * tEnd;
+    const pl = path.prevLoad + (path.currLoad - path.prevLoad) * tStart;
+    const cl = path.prevLoad + (path.currLoad - path.prevLoad) * tEnd;
+
     const off = bi * 12;
-    segData[off + 0] = path.prevPos[0];   // prev_pos.x
-    segData[off + 1] = path.prevPos[1];   // prev_pos.y
-    segData[off + 2] = path.currPos[0];   // curr_pos.x
-    segData[off + 3] = path.currPos[1];   // curr_pos.y
-    segData[off + 4] = path.prevRadius;   // prev_radius
-    segData[off + 5] = path.currRadius;   // curr_radius
-    segData[off + 6] = path.prevLoad;     // prev_load
-    segData[off + 7] = path.currLoad;     // curr_load
+    segData[off + 0] = px;    // prev_pos.x
+    segData[off + 1] = py;    // prev_pos.y
+    segData[off + 2] = cx;    // curr_pos.x
+    segData[off + 3] = cy;    // curr_pos.y
+    segData[off + 4] = pr;    // prev_radius
+    segData[off + 5] = cr;    // curr_radius
+    segData[off + 6] = pl;    // prev_load
+    segData[off + 7] = cl;    // curr_load
     segData[off + 8] = path.ringNorm;     // ring_norm
     segData[off + 9] = path.colorKr;      // color_kr
     segData[off + 10] = path.colorKg;     // color_kg
     segData[off + 11] = path.colorKb;     // color_kb
     activeCount++;
 
-    // Expand AABB — 6× radius margin for paint spread
-    const maxR = Math.max(path.prevRadius, path.currRadius) * 6;
-    aabbMinX = Math.min(aabbMinX, path.prevPos[0] - maxR, path.currPos[0] - maxR);
-    aabbMinY = Math.min(aabbMinY, path.prevPos[1] - maxR, path.currPos[1] - maxR);
-    aabbMaxX = Math.max(aabbMaxX, path.prevPos[0] + maxR, path.currPos[0] + maxR);
-    aabbMaxY = Math.max(aabbMaxY, path.prevPos[1] + maxR, path.currPos[1] + maxR);
+    // Expand AABB from interpolated positions — 6× radius margin for paint spread
+    const maxR = Math.max(pr, cr) * 6;
+    aabbMinX = Math.min(aabbMinX, px - maxR, cx - maxR);
+    aabbMinY = Math.min(aabbMinY, py - maxR, cy - maxR);
+    aabbMaxX = Math.max(aabbMaxX, px + maxR, cx + maxR);
+    aabbMaxY = Math.max(aabbMaxY, py + maxR, cy + maxR);
   }
 
   if (activeCount === 0) return;
@@ -300,6 +323,7 @@ export function beginStroke(x: number, y: number, pressure: number) {
   lastPos = [x, y];
   lastPressure = pressure;
   strokeDabCount = 0;
+  strokeDispatched = false;
   lastFrameTime = performance.now() / 1000;
 
   // Reset bundle position for new stroke
@@ -329,7 +353,36 @@ export function beginStroke(x: number, y: number, pressure: number) {
 }
 
 export function endStroke() {
+  const bundle = getActiveBundle();
+  if (bundle) {
+    if (hasDirtyPaths(bundle)) {
+      // Flush remaining un-committed segment (< COMMIT_MIN distance)
+      const scene = sceneStore.get();
+      const slot = getBrushSlot(getActiveBrushSlot());
+      const ks = getActiveKS();
+      dispatchSegments(bundle.paths, scene, slot, ks);
+      commitPaths(bundle);
+    } else if (!strokeDispatched) {
+      // Dab case: touch+lift with no movement — force zero-length capsule at prevPos
+      for (const path of bundle.paths) {
+        if (path.prevPos && !path.currPos) {
+          path.currPos = [path.prevPos[0], path.prevPos[1]];
+          path.currRadius = path.prevRadius;
+          path.currLoad = path.prevLoad;
+          path.dirty = true;
+        }
+      }
+      if (hasDirtyPaths(bundle)) {
+        const scene = sceneStore.get();
+        const slot = getBrushSlot(getActiveBrushSlot());
+        const ks = getActiveKS();
+        dispatchSegments(bundle.paths, scene, slot, ks);
+        commitPaths(bundle);
+      }
+    }
+  }
   lastPos = null;
+  strokeDispatched = false;
   depleteOil();
 }
 
@@ -415,19 +468,46 @@ export function dispatchBrushDabs(_encoder: GPUCommandEncoder, x: number, y: num
     reservoir = reservoir * 0.9 + bundleLoad * 0.1;
   }
 
-  // Per-waypoint dispatch loop: update → dispatch → swap → commit
+  // Per-waypoint dispatch loop: physics always runs, rendering gated by bristle displacement
   let dispatched = false;
   for (const wp of waypoints) {
-    // 1. Update bundle physics — sets currPos for each bristle
+    // 1. Physics always runs — sets currPos for each bristle
     updateBundle(bundle, wp.pos, wp.pressure, wp.tiltX, wp.tiltY, dtPerWp, radius, aspectCorrection, reservoir);
 
-    // 2. Dispatch if any bristle has a valid prev→curr segment
-    if (hasDirtyPaths(bundle)) {
-      dispatchSegments(bundle.paths, scene, slot, ks);
-      dispatched = true;
+    // 2. Seeding — if no dirty paths (prevPos null), commit to seed and continue
+    if (!hasDirtyPaths(bundle)) {
+      commitPaths(bundle);
+      continue;
     }
 
-    // 3. Commit: curr→prev (seeds first position or advances)
+    // 3. Max bristle displacement relative to its own radius —
+    //    outer bristles with splay jumps trigger commits sooner than center bristles
+    let maxRatio = 0;
+    for (const path of bundle.paths) {
+      if (path.dirty && path.prevPos && path.currPos && path.currRadius > 0) {
+        const d = dist2d(path.prevPos, path.currPos);
+        maxRatio = Math.max(maxRatio, d / path.currRadius);
+      }
+    }
+
+    // 4. Below minimum — no bristle has moved far enough to create a visible gap
+    if (maxRatio < BRISTLE_COMMIT) {
+      continue;
+    }
+
+    // 5. Dispatch — subdivide if any bristle would jump more than its radius
+    if (maxRatio > BRISTLE_SUBDIVIDE) {
+      const steps = Math.ceil(maxRatio / BRISTLE_COMMIT);
+      for (let s = 0; s < steps; s++) {
+        dispatchSegments(bundle.paths, scene, slot, ks, s / steps, (s + 1) / steps);
+      }
+    } else {
+      dispatchSegments(bundle.paths, scene, slot, ks);
+    }
+    dispatched = true;
+    strokeDispatched = true;
+
+    // 6. Commit — advances prevPos←currPos for all bristles
     commitPaths(bundle);
   }
 
