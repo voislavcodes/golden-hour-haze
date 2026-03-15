@@ -471,23 +471,9 @@ export function beginStroke(x: number, y: number, pressure: number) {
 }
 
 export function endStroke() {
-  if (lastPos && lastRadius > 0) {
-    const dir = lastDirection;
-    ghostAnchor = { pos: [...lastPos] as Vec2, pressure: lastPressure };
-    ghostPoints = [];
-    for (let i = 1; i <= GHOST_COUNT; i++) {
-      const t = i / GHOST_COUNT;
-      ghostPoints.push({
-        pos: [
-          lastPos[0] + dir[0] * lastRadius * 0.4 * i,
-          lastPos[1] + dir[1] * lastRadius * 0.4 * i,
-        ],
-        pressure: lastPressure * (1.0 - t * t),
-      });
-    }
-    ghostsPending = true;
-    markDirty('surface');
-  }
+  // Ghost taper disabled — per-bristle paths with continuous commit produce
+  // natural stroke endings. Ghost vertices created dense overlap blobs.
+  ghostsPending = false;
   lastPos = null;
   depleteOil();
 }
@@ -524,7 +510,7 @@ export function dispatchPendingGhosts(encoder: GPUCommandEncoder): boolean {
       const t = gi / chain.length;
       const splay = baseSplay * (1.0 - t * 0.5);
       const rBristle = (ui.brushSize / Math.sqrt(SELECTED_TIP_COUNT))
-        * (1.1 - 0.2 * tip.ringNorm) * splay;
+        * (0.35 - 0.08 * tip.ringNorm) * splay;
 
       // Ghost position: offset from center by tip's current offset (aspect-corrected)
       const ghostAspect = getSurfaceHeight() / getSurfaceWidth();
@@ -536,11 +522,12 @@ export function dispatchPendingGhosts(encoder: GPUCommandEncoder): boolean {
       path.loads.push(tip.load * (1.0 - t));
       path.count++;
 
-      // Update AABB
-      path.aabb.minX = Math.min(path.aabb.minX, wx - rBristle);
-      path.aabb.minY = Math.min(path.aabb.minY, wy - rBristle);
-      path.aabb.maxX = Math.max(path.aabb.maxX, wx + rBristle);
-      path.aabb.maxY = Math.max(path.aabb.maxY, wy + rBristle);
+      // Update AABB — expanded for paint spread
+      const aabbR = rBristle * 6;
+      path.aabb.minX = Math.min(path.aabb.minX, wx - aabbR);
+      path.aabb.minY = Math.min(path.aabb.minY, wy - aabbR);
+      path.aabb.maxX = Math.max(path.aabb.maxX, wx + aabbR);
+      path.aabb.maxY = Math.max(path.aabb.maxY, wy + aabbR);
     }
   }
 
