@@ -34,14 +34,15 @@ export { aggregateFeatures } from './features.js';
 export { classifyComposition } from './organ-composition.js';
 export { locateFocalPoint } from './organ-focal.js';
 export { readAtmosphere } from './organ-atmosphere.js';
-export { allocateBudget } from './organ-budget.js';
+export { allocateBudget, allocateBudgetFromVector } from './organ-budget.js';
 
 // Tier 3: Organism
-export { refineParameters } from './organism-params.js';
-export { conductPainting } from './organism-conductor.js';
+export { refineParameters, refineParametersFromVector } from './organism-params.js';
+export { conductPainting, conductPaintingFromVector } from './organism-conductor.js';
+export type { CompositionModifiers } from './organism-conductor.js';
 
 // Recipes
-export { executeRecipe } from './recipes.js';
+export { executeRecipe, setRecipeParams, getRecipeParams } from './recipes.js';
 
 // Assembly
 export { assemblePlan as assembleHierarchyPlan } from './assembly.js';
@@ -49,7 +50,7 @@ export { assemblePlan as assembleHierarchyPlan } from './assembly.js';
 // Full pipelines
 export { generateSpans, assemblePlan, createPaintingPlan,
          createPaintingPlanLegacy, clariceHierarchy,
-         clariceHierarchyDebug } from './tonal-recreation.js';
+         clariceHierarchyDebug, clariceHierarchyWithParams } from './tonal-recreation.js';
 
 // Legacy stroke generation
 export { generateRegionStrokes, assembleRegionPlan } from './region-strokes.js';

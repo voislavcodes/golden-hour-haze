@@ -43,24 +43,24 @@ DEPTH_CLASSES = ['near', 'mid', 'far']
 
 # Default conductor params per composition class (for SO2 target recomputation)
 COMPOSITION_DEFAULTS = {
-    'lonely-figure':  {'restraint': 0.65, 'focalDensity': 2.00, 'veilStrength': 0.70,
-                       'bareCanvasThreshold': 0.05, 'darkSoftening': 0.50,
-                       'accentTiming': 0.85, 'interRegionBleed': 0.60},
-    'street-scene':   {'restraint': 0.70, 'focalDensity': 1.80, 'veilStrength': 0.55,
-                       'bareCanvasThreshold': 0.00, 'darkSoftening': 0.35,
-                       'accentTiming': 0.85, 'interRegionBleed': 0.45},
-    'seascape':       {'restraint': 0.60, 'focalDensity': 1.30, 'veilStrength': 0.75,
-                       'bareCanvasThreshold': 0.05, 'darkSoftening': 0.45,
-                       'accentTiming': 0.40, 'interRegionBleed': 0.55},
-    'twilight-glow':  {'restraint': 0.55, 'focalDensity': 1.50, 'veilStrength': 0.80,
-                       'bareCanvasThreshold': 0.00, 'darkSoftening': 0.55,
-                       'accentTiming': 0.70, 'interRegionBleed': 0.65},
-    'intimate-scene': {'restraint': 0.65, 'focalDensity': 1.50, 'veilStrength': 0.55,
-                       'bareCanvasThreshold': 0.00, 'darkSoftening': 0.40,
-                       'accentTiming': 0.85, 'interRegionBleed': 0.50},
-    'abstract-masses':{'restraint': 0.60, 'focalDensity': 1.20, 'veilStrength': 0.60,
-                       'bareCanvasThreshold': 0.00, 'darkSoftening': 0.35,
-                       'accentTiming': 0.85, 'interRegionBleed': 0.55},
+    'lonely-figure':  {'restraint': 0.85, 'focalDensity': 1.50, 'veilStrength': 0.70,
+                       'bareCanvasThreshold': 0.05, 'darkSoftening': 0.25,
+                       'accentTiming': 0.85, 'interRegionBleed': 0.35},
+    'street-scene':   {'restraint': 0.88, 'focalDensity': 1.30, 'veilStrength': 0.55,
+                       'bareCanvasThreshold': 0.00, 'darkSoftening': 0.20,
+                       'accentTiming': 0.85, 'interRegionBleed': 0.30},
+    'seascape':       {'restraint': 0.87, 'focalDensity': 1.30, 'veilStrength': 0.65,
+                       'bareCanvasThreshold': 0.00, 'darkSoftening': 0.20,
+                       'accentTiming': 0.50, 'interRegionBleed': 0.30},
+    'twilight-glow':  {'restraint': 0.82, 'focalDensity': 1.20, 'veilStrength': 0.80,
+                       'bareCanvasThreshold': 0.00, 'darkSoftening': 0.30,
+                       'accentTiming': 0.70, 'interRegionBleed': 0.40},
+    'intimate-scene': {'restraint': 0.85, 'focalDensity': 1.30, 'veilStrength': 0.55,
+                       'bareCanvasThreshold': 0.00, 'darkSoftening': 0.20,
+                       'accentTiming': 0.85, 'interRegionBleed': 0.30},
+    'abstract-masses':{'restraint': 0.83, 'focalDensity': 1.20, 'veilStrength': 0.60,
+                       'bareCanvasThreshold': 0.00, 'darkSoftening': 0.20,
+                       'accentTiming': 0.85, 'interRegionBleed': 0.35},
 }
 
 
@@ -71,9 +71,12 @@ def b64_to_f32(b64_str: str) -> np.ndarray:
 
 # ── Data loading ──
 
-def load_corrections(path: str) -> dict:
-    """Load vision corrections from JSONL. Returns {filename: corrected_class}."""
-    corrections = {}
+def load_corrections(path: str) -> tuple:
+    """Load vision corrections from JSONL.
+    Returns (scene_corrections: {filename: composition_class},
+             recipe_corrections: {(filename, regionId): recipe_class})."""
+    scene_corrections = {}
+    recipe_corrections = {}
     with open(path) as f:
         for line in f:
             line = line.strip()
@@ -81,9 +84,12 @@ def load_corrections(path: str) -> dict:
                 continue
             rec = json.loads(line)
             if rec.get('type') == 'scene':
-                corrections[rec['file']] = rec['composition']
-    print(f"Loaded {len(corrections)} vision corrections")
-    return corrections
+                scene_corrections[rec['file']] = rec['composition']
+            elif rec.get('type') == 'region':
+                key = (rec['file'], rec['regionId'])
+                recipe_corrections[key] = rec['recipe']
+    print(f"Loaded {len(scene_corrections)} scene corrections, {len(recipe_corrections)} recipe corrections")
+    return scene_corrections, recipe_corrections
 
 
 def apply_corrections(scenes: list, corrections: dict):
@@ -450,8 +456,20 @@ def main():
             print(f"Error: corrections file {corrections_path} not found")
             sys.exit(1)
         print_distribution(scenes, "BEFORE corrections")
-        corrections = load_corrections(str(corrections_path))
-        apply_corrections(scenes, corrections)
+        scene_corrections, recipe_corrections = load_corrections(str(corrections_path))
+        apply_corrections(scenes, scene_corrections)
+        # Apply per-region recipe corrections
+        recipe_changed = 0
+        for r in regions:
+            key = (r['file'], r['regionId'])
+            if key in recipe_corrections:
+                old_recipe = r['recipe']
+                new_recipe = recipe_corrections[key]
+                if old_recipe != new_recipe:
+                    r['recipe'] = new_recipe
+                    recipe_changed += 1
+        if recipe_changed:
+            print(f"Applied {recipe_changed} recipe corrections")
         print_distribution(scenes, "AFTER corrections")
 
     # ── T8: Stroke Type ──

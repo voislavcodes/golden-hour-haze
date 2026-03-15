@@ -12,7 +12,7 @@ import { bendThroughMood, bentColorsToPiles } from './mood/oklch.js';
 import { getMaterial } from './surface/materials.js';
 import { syncBrushSlotsFromSession, setActiveBrushSlot, setBrushSlotAge, dipBrush, wipeOnRag, toggleOil, toggleAnchor, sampleTonalColumn, getActiveComplement, previewColor, MELDRUM_VALUES } from './painting/palette.js';
 import { clearSurface, getSurfaceWidth, getSurfaceHeight } from './painting/surface.js';
-import { analyzeTonalStructure, assignHuesToCells, buildMeldrumLUTs, quantizeCells, generateSpans, assemblePlan, createPaintingPlan, createPaintingPlanLegacy, downsampleImage, extractRegions, detectHorizon, computeRegionFeatures, classifyAllHeuristic, classifyRegionHeuristic, initClassifier, isClassifierReady, classifyRegionsBatch, extractPatch, generateRegionStrokes, assembleRegionPlan, clariceHierarchy, clariceHierarchyDebug, mapDepths, analyzeColors, mapTones, detectEdges, detectAccents, inferStrokeTypes, classifyRecipes, aggregateFeatures, classifyComposition, locateFocalPoint, readAtmosphere, allocateBudget, refineParameters, conductPainting, executeRecipe, assembleHierarchyPlan, initModel, isModelReady, initAllModels, inferStrokeTypesML, classifyRecipesML, classifyCompositionML, refineParametersML, conductPaintingML, serializeSceneFeatures, serializeRegionContext, serializeConductorInput, SCENE_FEATURE_ORDER } from './painting/clarice/index.js';
+import { analyzeTonalStructure, assignHuesToCells, buildMeldrumLUTs, quantizeCells, generateSpans, assemblePlan, createPaintingPlan, createPaintingPlanLegacy, downsampleImage, extractRegions, detectHorizon, computeRegionFeatures, classifyAllHeuristic, classifyRegionHeuristic, initClassifier, isClassifierReady, classifyRegionsBatch, extractPatch, generateRegionStrokes, assembleRegionPlan, clariceHierarchy, clariceHierarchyDebug, clariceHierarchyWithParams, mapDepths, analyzeColors, mapTones, detectEdges, detectAccents, inferStrokeTypes, classifyRecipes, aggregateFeatures, classifyComposition, locateFocalPoint, readAtmosphere, allocateBudget, refineParameters, conductPainting, executeRecipe, assembleHierarchyPlan, setRecipeParams, getRecipeParams, initModel, isModelReady, initAllModels, inferStrokeTypesML, classifyRecipesML, classifyCompositionML, refineParametersML, conductPaintingML, serializeSceneFeatures, serializeRegionContext, serializeConductorInput, SCENE_FEATURE_ORDER } from './painting/clarice/index.js';
 import { getActiveBundle, getAverageLoad, resetActiveBundle } from './painting/bristle-bundle.js';
 import { reloadBrush, wipeBrush, getReservoir } from './painting/brush-engine.js';
 import { resetSessionTimer, setTimeMultiplier } from './session/session-timer.js';
@@ -557,6 +557,7 @@ const bridge = {
   // --- Hierarchy ---
   clariceHierarchy,
   clariceHierarchyDebug,
+  clariceHierarchyWithParams,
   mapDepths,
   analyzeColors,
   mapTones,
@@ -572,6 +573,8 @@ const bridge = {
   refineParameters,
   conductPainting,
   executeRecipe,
+  setRecipeParams,
+  getRecipeParams,
   assembleHierarchyPlan,
 
   // --- ML models ---
@@ -646,6 +649,25 @@ const bridge = {
         aspectRatio: r.aspectRatio,
       })),
     };
+  },
+
+  /** Capture the canvas as a base64-encoded PNG (no UI overlays). */
+  async captureCanvasPNG(): Promise<string> {
+    const { context } = getGPU();
+    const canvas = context.canvas as HTMLCanvasElement;
+    return new Promise((resolve, reject) => {
+      canvas.toBlob(blob => {
+        if (!blob) { reject(new Error('toBlob failed')); return; }
+        const reader = new FileReader();
+        reader.onload = () => {
+          const dataUrl = reader.result as string;
+          // Strip "data:image/png;base64," prefix
+          resolve(dataUrl.split(',')[1]);
+        };
+        reader.onerror = () => reject(reader.error);
+        reader.readAsDataURL(blob);
+      }, 'image/png');
+    });
   },
 
   /** Batch read a horizontal line of pixels from the accumulation texture */

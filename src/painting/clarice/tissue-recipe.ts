@@ -32,15 +32,17 @@ function classifyRegionRecipe(region: Region, _depth: DepthClass): RecipeClass {
     return 'atmospheric-wash';
   }
 
-  // Reflection → atmospheric wash (soft vertical handled by stroke type)
+  // Reflection → dedicated reflection recipe (soft vertical smears)
   if (region.classification === 'reflection') {
-    return 'atmospheric-wash';
+    return 'reflection';
   }
 
   // Verticals
   if (region.classification === 'vertical') {
-    // Very narrow + tall → pole
+    // Very narrow + tall → pole (straight man-made)
     if (aspect > 5 && bboxW <= 3) {
+      // Check if it has a crossbar (wider at top third)
+      if (isTopHeavy(region) && bboxH > 8) return 'pole-crossbar';
       return 'pole-simple';
     }
     // Top wider than middle → umbrella figure
@@ -51,34 +53,61 @@ function classifyRegionRecipe(region: Region, _depth: DepthClass): RecipeClass {
     if (region.areaFraction > 0.01) {
       return 'figure-standing';
     }
+    // Moderate height natural vertical → tree trunk (curved)
+    if (aspect > 3 && bboxH > 5) {
+      return 'tree-trunk';
+    }
     // Default vertical → pole
     return 'pole-simple';
   }
 
-  // Accent → vehicle-body if compact, otherwise atmospheric
+  // Accent → context-dependent recipe
   if (region.classification === 'accent') {
+    // Tiny bright accent high in frame → sun/moon disc
+    if (region.areaFraction < 0.003 && region.centroid.y < 0.35) {
+      return 'sun-moon';
+    }
+    // Small bright accent → light dot (streetlight, harbor light)
+    if (region.areaFraction < 0.005 && region.maxChroma > 0.08) {
+      return 'light-dot';
+    }
+    // Large vivid accents with area > 0.01 → umbrella treatment (radiating dabs)
+    if (region.areaFraction > 0.01 && region.maxChroma > 0.10) {
+      return 'figure-umbrella';
+    }
     if (region.areaFraction > 0.005 && aspect < 2) {
       return 'vehicle-body';
     }
-    return 'atmospheric-wash';
+    return 'tree-canopy';
   }
 
   // Mass
   if (region.classification === 'mass') {
-    // Wider than tall → hedge band
-    if (bboxW > bboxH * 1.5) {
+    // Much wider than tall → hedge band
+    if (bboxW > bboxH * 2.5 && bboxH <= 4) {
       return 'hedge-band';
     }
-    // Dark, block-shaped → building
-    if (region.meldrumIndex >= DARK && aspect < 2 && aspect > 0.5) {
+    // Very large dark angular mass at edges → headland
+    if (region.areaFraction > 0.03 && region.meldrumIndex >= DARK &&
+        (region.centroid.x < 0.2 || region.centroid.x > 0.8)) {
+      return 'headland';
+    }
+    // Building-block: ONLY for masses near the horizon (cy within ±15% of horizon)
+    // and with compact aspect. Masses far from the horizon are trees, not buildings.
+    const nearHorizon = Math.abs(region.centroid.y - 0.37) < 0.15;
+    if (nearHorizon && aspect < 2.5 && aspect > 0.3 && bboxW >= 3 && bboxH >= 3 && bboxH <= 15) {
       return 'building-block';
     }
-    // Spread out (large area, wide) → spread tree
-    if (region.areaFraction > 0.02 && bboxW > 4) {
-      return 'tree-spread';
+    // Tall narrow mass → tree trunk with canopy
+    if (aspect > 2 && bboxW <= 6 && bboxH > 8) {
+      return 'tree-canopy';
     }
-    // Compact → rounded tree
-    return 'tree-rounded';
+    // Large masses → foliage-mass (tonal wash, not dabs)
+    if (region.areaFraction > 0.01 || bboxW > 4 || bboxH > 6) {
+      return 'foliage-mass';
+    }
+    // Compact → tree canopy
+    return 'tree-canopy';
   }
 
   return 'atmospheric-wash';

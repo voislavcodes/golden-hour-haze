@@ -5,7 +5,10 @@ export type StrokeType = 'horizontal-wash' | 'vertical-stroke' | 'clustered-dabs
 export type RecipeClass =
   | 'figure-umbrella' | 'figure-standing' | 'pole-simple' | 'pole-crossbar'
   | 'tree-rounded' | 'tree-spread' | 'hedge-band' | 'vehicle-body'
-  | 'building-block' | 'atmospheric-wash';
+  | 'building-block' | 'atmospheric-wash'
+  | 'tree-trunk' | 'tree-canopy' | 'foliage-mass'
+  | 'boat' | 'reflection' | 'light-dot' | 'wave-line'
+  | 'headland' | 'sun-moon' | 'beach-huts';
 export type CompositionClass =
   | 'lonely-figure' | 'street-scene' | 'seascape'
   | 'twilight-glow' | 'intimate-scene' | 'abstract-masses';

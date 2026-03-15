@@ -7,7 +7,7 @@ import type {
   AccentResult, ColorAnalysis, ConductorDecisions, EdgeResult,
   FocalPoint, LayerBudget, RecipeClass, RefinedParams, TissueContext,
 } from './types.js';
-import { executeRecipe } from './recipes.js';
+import { executeRecipe, getRecipeParams } from './recipes.js';
 import { BRUSH_SLOT_SIZES } from '../palette.js';
 
 const DARK = 3;
@@ -64,8 +64,8 @@ export function assemblePlan(
     r.classification === 'sky' || r.classification === 'ground');
   const bgStrokes = bgRegions.flatMap(r => {
     const tone = tones.get(r.id) ?? r.meldrumIndex;
-    // Skip regions lighter than bareCanvasThreshold (mapped to meldrum band ~1)
-    if (tone <= Math.round(conductor.bareCanvasThreshold * 4) && r.classification !== 'accent') {
+    // Skip regions lighter than bareCanvasThreshold (mapped to meldrum band)
+    if (tone < Math.round(conductor.bareCanvasThreshold * 4) && r.classification !== 'accent') {
       return [];
     }
     const params = refinedParams.get(r.id);
@@ -80,12 +80,19 @@ export function assemblePlan(
   });
   layers.push({ name: 'Background', strokes: budgetStrokes(bgStrokes, budget.background) });
 
-  // --- Layer 3: Midtones (mass + horizon) ---
-  const midRegions = regions.filter(r =>
-    r.classification === 'mass' || r.classification === 'horizon');
+  // --- Layer 3: Midtones (non-dark mass + horizon) ---
+  // Dark masses (mel >= DARK) go exclusively in Dark Forms to avoid double-painting.
+  const midRegions = regions.filter(r => {
+    if (r.classification === 'horizon') return true;
+    if (r.classification === 'mass') {
+      const tone = tones.get(r.id) ?? r.meldrumIndex;
+      return tone < DARK; // only light/mid masses here
+    }
+    return false;
+  });
   const midStrokes = midRegions.flatMap(r => {
     const tone = tones.get(r.id) ?? r.meldrumIndex;
-    if (tone <= Math.round(conductor.bareCanvasThreshold * 4)) return [];
+    if (tone < Math.round(conductor.bareCanvasThreshold * 4)) return [];
     const params = refinedParams.get(r.id);
     if (!params) return [];
     const color = colors.get(r.id);
@@ -115,7 +122,13 @@ export function assemblePlan(
     if (!params) return [];
     const color = colors.get(r.id);
     const accent = accents.get(r.id);
-    const ctx = buildContext(r, color, accent, tone, motherHueIndex);
+    // Atmospheric lightening: mass regions get shifted by mass_mel_shift steps lighter.
+    // Beckett's tree masses are atmospheric mid-tones, not absolute darks.
+    // Verticals stay dark — they're committed anchor marks.
+    const isMass = r.classification === 'mass';
+    const massMelShift = getRecipeParams().mass_mel_shift;
+    const adjustedTone = isMass ? Math.max(0, tone - massMelShift) : tone;
+    const ctx = buildContext(r, color, accent, adjustedTone, motherHueIndex);
     const recipe = recipes.get(r.id) || 'atmospheric-wash';
     const strokes = executeRecipe(recipe, r, params, ctx, cols, rows, conductor.interRegionBleed);
     const mult = focalDistanceMultiplier(r, focalPoint, conductor.focalDensity);
@@ -226,15 +239,17 @@ function buildContext(
   const isAccent = accent?.isAccent ?? false;
   const cls = region.classification;
 
-  // Atmospheric lightening: only shift BACKGROUND regions (sky/ground/horizon) 1 step lighter.
-  // Masses, verticals, reflections keep their committed tone — Beckett's darks anchor the painting.
-  const isBackground = cls === 'sky' || cls === 'ground' || cls === 'horizon';
-  const shifted = (isBackground && !isAccent) ? Math.max(0, meldrumIndex - 1) : meldrumIndex;
+  // Atmospheric lightening: only SKY gets shifted 1 step lighter.
+  // Ground keeps its observed tone — critical for seascapes (blue water ≠ pale sky).
+  // Masses, verticals, reflections keep committed tone — Beckett's darks anchor the painting.
+  const isSky = cls === 'sky';
+  const shifted = (isSky && !isAccent) ? Math.max(0, meldrumIndex - 1) : meldrumIndex;
 
-  // Atmospheric hue unification: sky/ground use mother hue.
-  // Masses and verticals retain their distinct hue for contrast.
+  // Sky uses mother hue for atmospheric unity — but only LARGE sky regions.
+  // Small sky patches near the horizon keep their distinct hue (building-adjacent sky
+  // should show local color, not mother wash).
   let hueIndex = color?.nearestHueIndex ?? region.hueIndex;
-  if (motherHueIdx !== undefined && isBackground) {
+  if (motherHueIdx !== undefined && isSky && region.areaFraction > 0.02) {
     hueIndex = motherHueIdx;
   }
 

@@ -563,9 +563,11 @@ import { aggregateFeatures } from './features.js';
 import { classifyComposition } from './organ-composition.js';
 import { locateFocalPoint } from './organ-focal.js';
 import { readAtmosphere } from './organ-atmosphere.js';
-import { allocateBudget } from './organ-budget.js';
-import { refineParameters } from './organism-params.js';
-import { conductPainting } from './organism-conductor.js';
+import { allocateBudget, allocateBudgetFromVector } from './organ-budget.js';
+import { refineParameters, refineParametersFromVector } from './organism-params.js';
+import { conductPainting, conductPaintingFromVector } from './organism-conductor.js';
+import type { ConductorDecisions } from './types.js';
+import { setRecipeParams } from './recipes.js';
 import { assemblePlan as assembleHierarchyPlan } from './assembly.js';
 import { initModel, isModelReady } from './onnx-registry.js';
 import type { ModelName } from './onnx-registry.js';
@@ -663,41 +665,14 @@ export async function clariceHierarchy(
     };
   }
 
-  // Init ML models sequentially (avoids WASM memory contention)
-  for (const name of ['region-classifier', 'stroke-type', 'shape-recipe',
-    'composition', 'param-refinement', 'painting-conductor'] as const) {
+  // Init only T8 + T9 ML models (stroke type + shape recipe).
+  // Everything else is algorithmic — ML for params/conductor/composition was unreliable.
+  for (const name of ['stroke-type', 'shape-recipe'] as const) {
     await initModel(name as ModelName).catch(() => false);
   }
 
-  // T2: Region Classifier (ML with heuristic fallback)
-  let usedML = false;
-  if (isModelReady('region-classifier') && fullResImageData) {
-    try {
-      const patches = regions.map(r => extractPatch(fullResImageData, r, gridCols, gridRows));
-      const features = regions.map(r => computeRegionFeatures(r, gridCols, gridRows));
-      const mlResults = await classifyRegionsBatch(patches, features);
-      const threshold = getConfidenceThreshold();
-
-      for (let i = 0; i < regions.length; i++) {
-        if (mlResults[i].confidence >= threshold) {
-          regions[i].classification = mlResults[i].classification;
-          regions[i].confidence = mlResults[i].confidence;
-        } else {
-          const features_i = computeRegionFeatures(regions[i], gridCols, gridRows);
-          const result = classifyRegionHeuristic(regions[i], features_i, horizonRow, gridRows);
-          regions[i].classification = result.classification;
-          regions[i].confidence = result.confidence;
-        }
-      }
-      usedML = true;
-    } catch {
-      // ML failed — fall through to heuristic
-    }
-  }
-
-  if (!usedML) {
-    classifyAllHeuristic(regions, horizonRow, gridRows);
-  }
+  // T2: Region Classifier — heuristic only (ML classifier needs full-res patches, unreliable)
+  classifyAllHeuristic(regions, horizonRow, gridRows);
 
   // Edge case: all regions classified identically
   const uniqueClasses = new Set(regions.map(r => r.classification));
@@ -717,10 +692,10 @@ export async function clariceHierarchy(
   // T7: Accent Detector
   const accents = detectAccents(regions);
 
-  // T8: Stroke Type Inferrer (ML with heuristic fallback)
+  // T8: Stroke Type Inferrer (ML — 82% accuracy)
   const strokeTypes = await inferStrokeTypesML(regions, depths, fullResImageData, gridCols, gridRows);
 
-  // T9: Shape Recipe Classifier (ML with heuristic fallback)
+  // T9: Shape Recipe Classifier (ML — 95% accuracy)
   const recipes = await classifyRecipesML(regions, depths, map);
 
   // Feature Aggregation
@@ -728,10 +703,10 @@ export async function clariceHierarchy(
     regions, depths, colors, accents, edges, horizonRow, gridRows,
   );
 
-  // O1: Composition Reader (ML with heuristic fallback)
+  // O1: Composition Reader — heuristic only
   const composition = uniqueClasses.size <= 1
     ? { class: 'abstract-masses' as const, confidence: 0.4 }
-    : await classifyCompositionML(sceneFeatures);
+    : classifyComposition(sceneFeatures);
 
   // O2: Focal Point Locator
   const focalPoint = locateFocalPoint(accents, regions, colors);
@@ -742,16 +717,11 @@ export async function clariceHierarchy(
   // O4: Layer Budget
   const budget = allocateBudget(composition.class, regions.length);
 
-  // SO1: Parameter Refinement (ML with heuristic fallback)
-  const refinedParams = await refineParametersML(
-    regions, depths, colors, tones, focalPoint,
-    composition.class, fogDensity, accents, strokeTypes,
-  );
+  // SO1: Parameter Refinement — heuristic only (deterministic lookup tables)
+  const refinedParams = refineParameters(regions, depths, colors, tones, focalPoint);
 
-  // SO2: Painting Conductor (ML with heuristic fallback)
-  const conductor = await conductPaintingML(
-    composition.class, focalPoint, fogDensity, budget, sceneFeatures,
-  );
+  // SO2: Painting Conductor — heuristic only (gardener-tuned defaults)
+  const conductor = conductPainting(composition.class, focalPoint, fogDensity, budget, sceneFeatures);
 
   // Assembly
   return assembleHierarchyPlan(
@@ -760,7 +730,9 @@ export async function clariceHierarchy(
   );
 }
 
-/** Debug version — returns intermediate tissue/organ outputs alongside the plan */
+/** Debug version — returns intermediate tissue/organ outputs alongside the plan.
+ *  Optional conductorOverrides merges into the computed conductor decisions,
+ *  enabling A/B comparison of different painting strategies. */
 export async function clariceHierarchyDebug(
   imageData: ImageData,
   paletteColors: KColor[],
@@ -768,6 +740,7 @@ export async function clariceHierarchyDebug(
   gridCols = 40,
   gridRows = 30,
   _fullResImageData?: ImageData,
+  conductorOverrides?: Partial<ConductorDecisions>,
 ) {
   const map = analyzeTonalStructure(imageData, gridCols, gridRows);
   assignHuesToCells(map, paletteColors);
@@ -796,7 +769,10 @@ export async function clariceHierarchyDebug(
   const fogDensity = readAtmosphere(sceneFeatures);
   const budget = allocateBudget(composition.class, regions.length);
   const refinedParams = refineParameters(regions, depths, colors, tones, focalPoint);
-  const conductor = conductPainting(composition.class, focalPoint, fogDensity, budget, sceneFeatures);
+  let conductor = conductPainting(composition.class, focalPoint, fogDensity, budget, sceneFeatures);
+  if (conductorOverrides) {
+    conductor = { ...conductor, ...conductorOverrides };
+  }
 
   const plan = assembleHierarchyPlan(
     regions, map, luts, tones, colors, accents, recipes,
@@ -833,6 +809,111 @@ export async function clariceHierarchyDebug(
       'painting-conductor': isModelReady('painting-conductor'),
     },
   };
+}
+
+// --- Full pipeline (CMA-ES vector-driven) ---
+
+/** Vector-parameterized pipeline for CMA-ES optimization.
+ *  Takes a 47-element parameter vector that controls all tunable constants.
+ *  Groups: A(0-6) conductor, B(7-10) composition modifiers, C(11-16) brush params,
+ *  D(17-21) layer budgets, E(22-24) global painting, F(25-46) recipe tuning. */
+export async function clariceHierarchyWithParams(
+  imageData: ImageData,
+  paletteColors: KColor[],
+  complement: ComplementConfig,
+  paramVector: number[],
+  gridCols = 80,
+  gridRows = 60,
+): Promise<PaintingPlan> {
+  // Steps 1-4: tonal analysis (shared)
+  const map = analyzeTonalStructure(imageData, gridCols, gridRows);
+  assignHuesToCells(map, paletteColors);
+  const luts = buildMeldrumLUTs(paletteColors, complement);
+  quantizeCells(map, luts);
+
+  // T1: Region Segmenter
+  const regions = extractRegions(map);
+  const horizonRow = detectHorizon(map);
+
+  if (regions.length === 0) {
+    return {
+      layers: [{ name: 'Mother', strokes: [] }],
+      metadata: {
+        gridSize: [gridCols, gridRows],
+        strokeCount: 0,
+        motherHueIndex: map.motherHueIndex,
+        hueAssignments: Array.from({ length: 5 }, (_, i) => ({ hueIndex: i, hue: 0 })),
+      },
+    };
+  }
+
+  // T2: Region Classifier — heuristic only
+  classifyAllHeuristic(regions, horizonRow, gridRows);
+
+  // T3-T7: Tissue analysis (same as standard pipeline)
+  const depths = mapDepths(regions, horizonRow, gridRows);
+  const colors = analyzeColors(regions, map);
+  const tones = mapTones(regions, colors, luts);
+  const edges = detectEdges(regions, map, depths, horizonRow);
+  const accents = detectAccents(regions);
+
+  // T8-T9: Stroke types and recipes (heuristic — no ML models needed)
+  const _strokeTypes = inferStrokeTypes(regions, depths);
+  const recipes = classifyRecipes(regions, depths);
+
+  // Feature aggregation
+  const sceneFeatures = aggregateFeatures(
+    regions, depths, colors, accents, edges, horizonRow, gridRows,
+  );
+
+  // O2: Focal Point
+  const focalPoint = locateFocalPoint(accents, regions, colors);
+
+  // O3: Atmosphere Density
+  const fogDensity = readAtmosphere(sceneFeatures);
+
+  // Apply Group F (recipe tuning params, indices 25-46)
+  setRecipeParams({
+    wash_spacing_mult: paramVector[25],
+    wash_passes: Math.round(paramVector[26]),
+    tree_wash_load: paramVector[27],
+    tree_mel_shift: Math.round(paramVector[28]),
+    tree_dab_count_scale: paramVector[29],
+    building_load_mult: paramVector[30],
+    pole_load_mult: paramVector[31],
+    trunk_curve: paramVector[32],
+    trunk_branch_prob: paramVector[33],
+    figure_load_mult: paramVector[34],
+    figure_passes: Math.round(paramVector[35]),
+    umbrella_spoke_count: Math.round(paramVector[36]),
+    boat_hull_length: paramVector[37],
+    boat_mast_height: paramVector[38],
+    reflection_opacity: paramVector[39],
+    reflection_smear: paramVector[40],
+    lightdot_size: paramVector[41],
+    lightdot_brightness: Math.round(paramVector[42]),
+    wave_spacing: paramVector[43],
+    wave_load: paramVector[44],
+    headland_edge_rough: paramVector[45],
+    mass_mel_shift: Math.round(paramVector[46]),
+  });
+
+  // SO2: Conductor from vector (Groups A+B, indices 0-10)
+  const { conductor } = conductPaintingFromVector(fogDensity, paramVector);
+
+  // SO1: Parameter refinement from vector (Group C, indices 11-16)
+  const refinedParams = refineParametersFromVector(
+    regions, depths, colors, tones, focalPoint, paramVector,
+  );
+
+  // O4: Budget from vector (Groups D+E, indices 17-24)
+  const budget = allocateBudgetFromVector(regions.length, paramVector);
+
+  // Assembly
+  return assembleHierarchyPlan(
+    regions, map, luts, tones, colors, accents, recipes,
+    refinedParams, edges, focalPoint, budget, conductor,
+  );
 }
 
 // --- Utility: downsample image to grid-sized ImageData ---

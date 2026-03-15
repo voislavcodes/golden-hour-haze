@@ -42,6 +42,7 @@ export function extractRegions(map: TonalMap): Region[] {
       if (visited[r * cols + c]) continue;
 
       const mIdx = cells[r][c].meldrumIndex;
+      const hIdx = cells[r][c].assignedHueIndex;
       const regionCells: { gridX: number; gridY: number }[] = [];
       const queue: [number, number][] = [[r, c]];
       visited[r * cols + c] = 1;
@@ -57,7 +58,9 @@ export function extractRegions(map: TonalMap): Region[] {
         for (const [nr, nc] of neighbors) {
           if (nr < 0 || nr >= rows || nc < 0 || nc >= cols) continue;
           if (visited[nr * cols + nc]) continue;
+          // Merge requires BOTH same meldrum tone AND same hue assignment
           if (cells[nr][nc].meldrumIndex !== mIdx) continue;
+          if (cells[nr][nc].assignedHueIndex !== hIdx) continue;
           visited[nr * cols + nc] = 1;
           queue.push([nr, nc]);
         }
@@ -140,7 +143,7 @@ function buildRegion(
 }
 
 function mergeSmallRegions(regions: Region[], map: TonalMap): Region[] {
-  const MIN_SIZE = 3;
+  const MIN_SIZE = 5;
   const small = regions.filter(r => r.cells.length < MIN_SIZE);
   const large = regions.filter(r => r.cells.length >= MIN_SIZE);
 

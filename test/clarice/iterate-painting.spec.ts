@@ -47,7 +47,7 @@ test('iterate — paint one reference and compare', async ({ page }) => {
     await ghz.waitFrames(10);
   });
 
-  // Run V3 hierarchy pipeline
+  // Run V3 hierarchy pipeline (ML-enabled)
   const plan = await page.evaluate(async (b64: string) => {
     const ghz = (window as any).__ghz;
     const binary = atob(b64);
@@ -63,6 +63,14 @@ test('iterate — paint one reference and compare', async ({ page }) => {
 
   console.log(`Layers: ${plan.layers.map((l: any) => `${l.name}(${l.strokes.length})`).join(', ')}`);
   console.log(`Total: ${plan.metadata.strokeCount} strokes`);
+
+  // Debug: check meldrumIndex distribution in dark forms layer
+  const darkLayer = plan.layers.find((l: any) => l.name === 'Dark Forms');
+  if (darkLayer) {
+    const melCounts: Record<number, number> = {};
+    for (const s of darkLayer.strokes) { melCounts[s.meldrumIndex] = (melCounts[s.meldrumIndex] || 0) + 1; }
+    console.log(`Dark Forms meldrum: ${JSON.stringify(melCounts)}`);
+  }
 
   // Diagnostics: region classification + recipes
   const diag = await page.evaluate(async (b64: string) => {
@@ -92,12 +100,23 @@ test('iterate — paint one reference and compare', async ({ page }) => {
       const rec = recipes.get(r.id) || 'atmospheric-wash';
       recipeCounts[rec] = (recipeCounts[rec] || 0) + 1;
     }
-    return { regionCount: regions.length, horizonRow, classCounts, recipeCounts };
+    // Mass/vertical/accent details
+    const shapeDetails = regions
+      .filter((r: any) => r.classification === 'mass' || r.classification === 'vertical' || r.classification === 'accent')
+      .map((r: any) => {
+        const rec = recipes.get(r.id) || 'atmospheric-wash';
+        const bw = r.boundingBox.x1 - r.boundingBox.x0 + 1;
+        const bh = r.boundingBox.y1 - r.boundingBox.y0 + 1;
+        return `${r.classification}[hue=${r.hueIndex} mel=${r.meldrumIndex} ${bw}x${bh} cx=${r.centroid.x.toFixed(2)},cy=${r.centroid.y.toFixed(2)} c=${r.maxChroma.toFixed(3)} →${rec}]`;
+      });
+
+    return { regionCount: regions.length, horizonRow, classCounts, recipeCounts, shapeDetails };
   }, base64);
 
   console.log(`Regions: ${diag.regionCount}, horizon at row ${diag.horizonRow}`);
   console.log(`Classes: ${JSON.stringify(diag.classCounts)}`);
   console.log(`Recipes: ${JSON.stringify(diag.recipeCounts)}`);
+  console.log(`Shapes: ${diag.shapeDetails.join('\n  ')}`);
 
   // Execute painting layer by layer (skip empty layers)
   for (let li = 0; li < plan.layers.length; li++) {

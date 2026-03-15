@@ -77,7 +77,7 @@ export async function extractHuesFromImage(file: File, detailed?: boolean): Prom
   // Muted images (chromaScale=0.33): 4× weight — preserves neutral character while still
   // letting any chromatic accent claim a cluster.
   const maxChroma = Math.max(...raw.map(p => p.chroma), 0.01);
-  const chromaWeight = 3 + 20 * chromaScale; // 3-23× based on image saturation
+  const chromaWeight = 2 + 12 * chromaScale; // 2-14× based on image saturation
   const samples: [number, number, number][] = [];
   for (const p of raw) {
     const weight = 1 + chromaWeight * (p.chroma / maxChroma);
@@ -94,14 +94,89 @@ export async function extractHuesFromImage(file: File, detailed?: boolean): Prom
   }
   const rng = mulberry32(seed);
 
-  // K-means clustering with 5 centers in OKLab space
-  const centers = kMeans(samples, 5, 30, rng);
+  // K-means with K=7 then merge to 5 — prevents phantom hues from
+  // averaging complementary colors (e.g., warm yellow + cool blue → green).
+  // K=7 (not 8) reduces merges from 3→2, preventing phantom intermediates
+  // that survive too many merge rounds.
+  const rawCenters = kMeans(samples, 7, 30, rng);
+
+  // Compute cluster sizes for weighted merging
+  const clusterSizes = new Array(rawCenters.length).fill(0);
+  for (const p of samples) {
+    let bestIdx = 0, bestD = Infinity;
+    for (let c = 0; c < rawCenters.length; c++) {
+      const d = dist2(p, rawCenters[c]);
+      if (d < bestD) { bestD = d; bestIdx = c; }
+    }
+    clusterSizes[bestIdx]++;
+  }
+
+  // Merge closest pairs (by OKLab distance) until 5 remain
+  while (rawCenters.length > 5) {
+    let bestI = 0, bestJ = 1, bestMergeDist = Infinity;
+    for (let i = 0; i < rawCenters.length; i++) {
+      for (let j = i + 1; j < rawCenters.length; j++) {
+        const d = dist2(rawCenters[i], rawCenters[j]);
+        if (d < bestMergeDist) { bestMergeDist = d; bestI = i; bestJ = j; }
+      }
+    }
+    // Weighted average merge
+    const wa = clusterSizes[bestI], wb = clusterSizes[bestJ];
+    const total = wa + wb || 1;
+    rawCenters[bestI] = [
+      (rawCenters[bestI][0] * wa + rawCenters[bestJ][0] * wb) / total,
+      (rawCenters[bestI][1] * wa + rawCenters[bestJ][1] * wb) / total,
+      (rawCenters[bestI][2] * wa + rawCenters[bestJ][2] * wb) / total,
+    ];
+    clusterSizes[bestI] = total;
+    rawCenters.splice(bestJ, 1);
+    clusterSizes.splice(bestJ, 1);
+  }
+
+  // Snap each center to its nearest actual pixel — eliminates phantom hues
+  // that arise from averaging complementary colors in Lab space.
+  for (let c = 0; c < rawCenters.length; c++) {
+    let bestD = Infinity;
+    let bestLab: [number, number, number] = rawCenters[c];
+    for (const p of raw) {
+      const d = dist2(p.lab, rawCenters[c]);
+      if (d < bestD) { bestD = d; bestLab = [...p.lab]; }
+    }
+    rawCenters[c] = bestLab;
+  }
+
+  const centers = rawCenters;
 
   // Convert cluster centers from OKLab to OKLCH, sorted by chroma (most vivid first)
   const colorsWithChroma = centers.map(c => {
     const lch = oklabToOklch(c[0], c[1], c[2]);
     return { lch, chroma: lch.c };
   });
+
+  // Phantom hue rejection: if a center's hue has very few chromatic supporters
+  // in the actual pixel distribution, neutralize it. Prevents photo artifacts
+  // (camera color cast, compression artifacts) from claiming palette slots.
+  const chromaticRaw = raw.filter(p => p.chroma > 0.025);
+  if (chromaticRaw.length > 10) {
+    for (const cc of colorsWithChroma) {
+      const h = cc.lch.h;
+      let supporters = 0;
+      for (const p of chromaticRaw) {
+        const pH = Math.atan2(p.lab[2], p.lab[1]) * 180 / Math.PI;
+        const normH = ((pH % 360) + 360) % 360;
+        let diff = Math.abs(normH - h);
+        if (diff > 180) diff = 360 - diff;
+        if (diff < 35) supporters++;
+      }
+      const fraction = supporters / chromaticRaw.length;
+      if (fraction < 0.15) {
+        // Under-represented hue — neutralize to prevent phantom domination
+        cc.lch.c = 0.015;
+        cc.chroma = 0.015;
+      }
+    }
+  }
+
   colorsWithChroma.sort((a, b) => b.chroma - a.chroma);
 
   // Boost cluster chromas — K-means averaging dampens chroma significantly.
@@ -111,6 +186,12 @@ export async function extractHuesFromImage(file: File, detailed?: boolean): Prom
   const chromaCap = 0.08 + 0.12 * chromaScale;  // 0.08 for muted → 0.20 for vivid
   for (const cc of colorsWithChroma) {
     cc.lch.c = Math.min(cc.lch.c * chromaBoost, chromaCap);
+    // Blue/cool hues (H 180-300) need higher minimum chroma to read as blue vs grey.
+    // 0.08 is the threshold where blue becomes visually distinct from warm grey.
+    const h = cc.lch.h;
+    if (h >= 180 && h <= 300) {
+      cc.lch.c = Math.max(cc.lch.c, 0.08);
+    }
     cc.chroma = cc.lch.c;
   }
 

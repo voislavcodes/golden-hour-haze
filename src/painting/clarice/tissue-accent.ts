@@ -4,8 +4,8 @@
 import type { Region } from './region-analysis.js';
 import type { AccentResult } from './types.js';
 
-const CHROMA_THRESHOLD = 0.06;
-const AREA_THRESHOLD = 0.05;
+const CHROMA_THRESHOLD = 0.09;
+const AREA_THRESHOLD = 0.03;
 
 export function detectAccents(
   regions: Region[],

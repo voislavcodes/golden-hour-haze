@@ -19,9 +19,15 @@ export function classifyComposition(
     return { class: 'street-scene', confidence: 0.75 };
   }
 
-  // Seascape: large sky + no mass + low horizon
-  if (features.skyAreaFraction > 0.3 && features.countMass === 0 && features.horizonY > 0.5) {
+  // Seascape: large sky or large ground + horizon in upper half
+  // Beach/harbor scenes have masses (buildings) but are still seascapes.
+  // Detect by: dominant ground area (sand/water) + horizon in upper portion
+  if (features.skyAreaFraction > 0.2 && features.groundAreaFraction > 0.2 && features.horizonY < 0.5) {
     return { class: 'seascape', confidence: 0.70 };
+  }
+  // Also seascape if huge ground with low vertical count (open water/beach)
+  if (features.groundAreaFraction > 0.35 && features.countVertical <= 1) {
+    return { class: 'seascape', confidence: 0.65 };
   }
 
   // Twilight glow: high chroma + warm dominant hue (30-60° orange range)
