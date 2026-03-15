@@ -12,7 +12,7 @@ import { startLoop } from './gpu/frame-loop.js';
 
 // Painting
 import { initSurface, resizeSurface, clearSurface } from './painting/surface.js';
-import { initBrushEngine, beginStroke, endStroke, dispatchBrushDabs, dispatchPendingGhosts, reloadBrush } from './painting/brush-engine.js';
+import { initBrushEngine, beginStroke, endStroke, dispatchBrushDabs, reloadBrush } from './painting/brush-engine.js';
 import { initScrapeEngine, beginScrape, endScrape, dispatchScrapeDabs } from './painting/scrape-engine.js';
 import { initWipeEngine, beginWipe, endWipe, dispatchWipeDabs } from './painting/wipe-engine.js';
 import { resetRag } from './painting/rag-state.js';
@@ -413,10 +413,6 @@ function renderFrame(dt: number, elapsed: number) {
       } else if (strokeTool === 'wipe') {
         painted = dispatchWipeDabs(encoder, ui.mouseX, ui.mouseY);
       }
-    }
-    // Lift-off ghost taper (runs once after stroke ends)
-    if (dispatchPendingGhosts(encoder)) {
-      painted = true;
     }
     clearDirty('surface');
     if (painted) {

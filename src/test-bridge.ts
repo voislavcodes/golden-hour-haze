@@ -529,7 +529,7 @@ const bridge = {
       stiffness: bundle.stiffness,
       recoveryRate: bundle.recoveryRate,
       selectedTipCount: bundle.selectedTips.length,
-      pathVertCounts: bundle.paths.map(p => p.count),
+      pathVertCounts: bundle.paths.map(p => (p.prevPos ? 1 : 0) + (p.currPos ? 1 : 0)),
     };
   },
 

@@ -1,7 +1,7 @@
-// Brush engine — per-bristle path SDF dispatch with snapshot re-render + bristle bundle physics
-// 48 selected bristle tips trace individual capsule polylines on GPU.
-// Real gaps emerge from physical spacing — no synthetic sinusoidal texture.
-// Snapshot re-render: pre-stroke surface is saved, full stroke re-rendered each frame.
+// Brush engine — incremental per-bristle capsule SDF dispatch with bristle bundle physics
+// 48 selected bristle tips each render 1 capsule (prev→curr) per waypoint.
+// Each pixel gets deposited exactly once — the frame its capsule advances over it.
+// No mask. No snapshot. No path accumulation.
 
 import { getGPU } from '../gpu/context.js';
 import { createComputePipeline } from '../gpu/pipeline-cache.js';
@@ -12,12 +12,11 @@ import { getMaterial } from '../surface/materials.js';
 import { sceneStore } from '../state/scene-state.js';
 import { uiStore, pointerQueue } from '../state/ui-state.js';
 import { getSessionTime } from '../session/session-timer.js';
-import { markDirty } from '../state/dirty-flags.js';
 import {
   createBundle, updateBundle, dipBundle, wipeBundle,
   getAverageLoad, setSurfaceProperties,
   ensureBundle, getActiveBundle, setActiveBundle,
-  resetPaths, trimPathsToTail,
+  resetPaths, commitPaths, hasDirtyPaths,
   snapTipOffsets, SELECTED_TIP_COUNT,
   type BristlePath,
 } from './bristle-bundle.js';
@@ -28,35 +27,20 @@ type SegPoint = { pos: Vec2; pressure: number; tiltX: number; tiltY: number };
 
 let pipeline: GPUComputePipeline;
 let uniformBuffer: GPUBuffer;
-let vertexBuffer: GPUBuffer;
-let bristleInfoBuffer: GPUBuffer;
+let segmentBuffer: GPUBuffer;
 let paramLayout: GPUBindGroupLayout;
 let textureLayout: GPUBindGroupLayout;
 let auxLayout: GPUBindGroupLayout;
 let grainSampler: GPUSampler;
 
-// Stroke mask — prevents re-deposition across frames within a stroke
-let maskTextures: [GPUTexture, GPUTexture] | null = null;
-let maskIndex = 0;
-let maskWidth = 0;
-let maskHeight = 0;
-let needMaskClear = true;
-
 // BrushParams: 96 bytes
-// BristleInfo: 48 bytes × 48 = 2,304 bytes
+// BristleSegment: 48 bytes × 48 = 2,304 bytes
 const UNIFORM_SIZE = 96;
-const MAX_VERTICES = 4096;    // 48 bristles × 84 verts each
-const VERTEX_STRIDE = 16;     // bytes per StrokeVertex (vec2f + f32 + f32)
-const BRISTLE_INFO_STRIDE = 48; // bytes per BristleInfo
-const BRISTLE_INFO_SIZE = SELECTED_TIP_COUNT * BRISTLE_INFO_STRIDE; // 2,304 bytes
-const MAX_VERTS_PER_BRISTLE = 84;
-const GHOST_COUNT = 3;
+const SEGMENT_STRIDE = 48;  // bytes per BristleSegment
+const SEGMENT_BUFFER_SIZE = SELECTED_TIP_COUNT * SEGMENT_STRIDE; // 2,304 bytes
 
 let lastPos: Vec2 | null = null;
 let lastPressure = 0;
-let lastRadius = 0;
-let lastDirection: Vec2 = [1, 0];
-let strokeSegIndex = 0;
 let strokeStartLayers = 0;
 let estimatedPeakLayers = 0;
 
@@ -65,22 +49,6 @@ let reservoir = 0.5;
 let strokeDabCount = 0;
 let lastFrameTime = 0;
 let loadScale = 1.0;   // rag wipe reduces this; dip resets to 1.0
-let smoothedPressure = 0; // pressure envelope — asymmetric attack/release
-
-// Snapshot re-render — save pre-stroke surface, re-render full stroke each frame
-// Eliminates frame boundary ridges (no incremental K-M mixing nonlinearity)
-let snapshotAccum: GPUTexture | null = null;
-let snapshotState: GPUTexture | null = null;
-let snapshotW = 0;
-let snapshotH = 0;
-let needSnapshotCapture = false;
-type AABB = { minX: number; minY: number; maxX: number; maxY: number };
-let strokeAABB: AABB = { minX: 0, minY: 0, maxX: 0, maxY: 0 };
-
-// Ghost state
-let ghostAnchor: { pos: Vec2; pressure: number } | null = null;
-let ghostPoints: { pos: Vec2; pressure: number }[] = [];
-let ghostsPending = false;
 
 export function initBrushEngine() {
   const { device } = getGPU();
@@ -90,7 +58,6 @@ export function initBrushEngine() {
     entries: [
       { binding: 0, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'uniform' } },
       { binding: 1, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'read-only-storage' } },
-      { binding: 2, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'read-only-storage' } },
     ],
   });
 
@@ -109,8 +76,6 @@ export function initBrushEngine() {
       { binding: 1, visibility: GPUShaderStage.COMPUTE, sampler: { type: 'filtering' } },
       { binding: 2, visibility: GPUShaderStage.COMPUTE, texture: { sampleType: 'unfilterable-float' } },
       { binding: 3, visibility: GPUShaderStage.COMPUTE, storageTexture: { access: 'write-only', format: 'rgba32float' } },
-      { binding: 4, visibility: GPUShaderStage.COMPUTE, texture: { sampleType: 'unfilterable-float' } },
-      { binding: 5, visibility: GPUShaderStage.COMPUTE, storageTexture: { access: 'write-only', format: 'r32float' } },
     ],
   });
 
@@ -122,7 +87,7 @@ export function initBrushEngine() {
     addressModeV: 'repeat',
   });
 
-  pipeline = createComputePipeline('brush-v10', device, {
+  pipeline = createComputePipeline('brush-v11', device, {
     label: 'brush-compute',
     layout: device.createPipelineLayout({
       bindGroupLayouts: [paramLayout, textureLayout, auxLayout],
@@ -139,61 +104,13 @@ export function initBrushEngine() {
     usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
   });
 
-  vertexBuffer = device.createBuffer({
-    label: 'brush-vertices',
-    size: MAX_VERTICES * VERTEX_STRIDE,
-    usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
-  });
-
-  bristleInfoBuffer = device.createBuffer({
-    label: 'brush-bristle-info',
-    size: BRISTLE_INFO_SIZE,
+  segmentBuffer = device.createBuffer({
+    label: 'brush-segments',
+    size: SEGMENT_BUFFER_SIZE,
     usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
   });
 
   reloadBrush();
-}
-
-/** Ensure mask textures exist and match surface dimensions */
-function ensureMaskTextures() {
-  const { device } = getGPU();
-  const w = getSurfaceWidth();
-  const h = getSurfaceHeight();
-  if (maskTextures && maskWidth === w && maskHeight === h) return;
-
-  if (maskTextures) {
-    maskTextures[0].destroy();
-    maskTextures[1].destroy();
-  }
-
-  const usage = GPUTextureUsage.TEXTURE_BINDING
-              | GPUTextureUsage.STORAGE_BINDING
-              | GPUTextureUsage.RENDER_ATTACHMENT;
-  maskTextures = [
-    device.createTexture({ label: 'brush-mask-0', size: [w, h], format: 'r32float', usage }),
-    device.createTexture({ label: 'brush-mask-1', size: [w, h], format: 'r32float', usage }),
-  ];
-  maskWidth = w;
-  maskHeight = h;
-  maskIndex = 0;
-  needMaskClear = false; // fresh textures are zero-initialized
-}
-
-/** Ensure snapshot textures exist and match surface dimensions */
-function ensureSnapshotTextures() {
-  const { device } = getGPU();
-  const w = getSurfaceWidth();
-  const h = getSurfaceHeight();
-  if (snapshotAccum && snapshotW === w && snapshotH === h) return;
-
-  if (snapshotAccum) snapshotAccum.destroy();
-  if (snapshotState) snapshotState.destroy();
-
-  const usage = GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST;
-  snapshotAccum = device.createTexture({ label: 'snapshot-accum', size: [w, h], format: 'rgba16float', usage });
-  snapshotState = device.createTexture({ label: 'snapshot-state', size: [w, h], format: 'rgba32float', usage });
-  snapshotW = w;
-  snapshotH = h;
 }
 
 export function reloadBrush() {
@@ -232,10 +149,6 @@ export function getReservoir(): number {
   return Math.min(reservoir, bundleLoad);
 }
 
-function pressureRadius(base: number, pressure: number): number {
-  return base * (0.3 + 0.7 * pressure);
-}
-
 function subdivideIfNeeded(prev: SegPoint, curr: SegPoint, maxLen: number): SegPoint[] {
   const dx = curr.pos[0] - prev.pos[0];
   const dy = curr.pos[1] - prev.pos[1];
@@ -257,110 +170,64 @@ function subdivideIfNeeded(prev: SegPoint, curr: SegPoint, maxLen: number): SegP
   return pts;
 }
 
-/** Write per-bristle vertex + info buffers and dispatch compute.
- *  Reads from bundle.paths for per-bristle polylines. */
-function dispatchBristlePaths(
-  encoder: GPUCommandEncoder,
+/** Pack 48 BristleSegment structs from dirty paths, dispatch + submit immediately.
+ *  Each waypoint gets its own command buffer so writeBuffer data isn't overwritten
+ *  by subsequent waypoints before the GPU reads it. */
+function dispatchSegments(
   paths: BristlePath[],
   scene: ReturnType<typeof sceneStore.get>,
   slot: ReturnType<typeof getBrushSlot>,
   ks: { Kr: number; Kg: number; Kb: number },
-  label: string,
-  aabb: AABB,
-  useSnapshot = false,
 ) {
-  // Count total verts across all bristles
-  let totalVerts = 0;
-  let activeBristles = 0;
-  for (const path of paths) {
-    if (path.count >= 2) {
-      totalVerts += path.count;
-      activeBristles++;
-    }
-  }
-  if (totalVerts === 0 || activeBristles === 0) return;
-
   const { device } = getGPU();
   const w = getSurfaceWidth();
   const h = getSurfaceHeight();
   const sessionTime = getSessionTime();
   const pigmentDensity = Math.pow(1.0 - scene.thinners * 0.9, 1.5);
 
-  ensureMaskTextures();
-
-  // Capture pre-stroke snapshot on first dispatch of a stroke
-  if (needSnapshotCapture && useSnapshot) {
-    ensureSnapshotTextures();
-    const accumPP = getAccumPP();
-    const statePP = getStatePP();
-    encoder.copyTextureToTexture(
-      { texture: accumPP.read }, { texture: snapshotAccum! }, [w, h],
-    );
-    encoder.copyTextureToTexture(
-      { texture: statePP.read }, { texture: snapshotState! }, [w, h],
-    );
-    needSnapshotCapture = false;
-  }
-
-  // Clear mask
-  if (needMaskClear) {
-    const clearPass = encoder.beginRenderPass({
-      colorAttachments: [{
-        view: maskTextures![maskIndex].createView(),
-        clearValue: { r: 0, g: 0, b: 0, a: 0 },
-        loadOp: 'clear',
-        storeOp: 'store',
-      }],
-    });
-    clearPass.end();
-    needMaskClear = false;
-  }
-
-  // Pack vertices into fixed-stride slots: 84 verts × 48 bristles
-  const vertData = new Float32Array(MAX_VERTICES * 4);
-  const infoData = new ArrayBuffer(BRISTLE_INFO_SIZE);
-  const infoF32 = new Float32Array(infoData);
-  const infoU32 = new Uint32Array(infoData);
+  // Pack segments and compute AABB
+  const segData = new Float32Array(SELECTED_TIP_COUNT * 12); // 48 floats per segment (48 bytes / 4)
+  let aabbMinX = Infinity, aabbMinY = Infinity;
+  let aabbMaxX = -Infinity, aabbMaxY = -Infinity;
+  let activeCount = 0;
 
   for (let bi = 0; bi < paths.length; bi++) {
     const path = paths[bi];
-    const slotStart = bi * MAX_VERTS_PER_BRISTLE;
-    const count = Math.min(path.count, MAX_VERTS_PER_BRISTLE);
+    if (!path.dirty || !path.prevPos || !path.currPos) continue;
 
-    // Write vertices into fixed slot
-    for (let vi = 0; vi < count; vi++) {
-      const off = (slotStart + vi) * 4;
-      if (off + 3 >= vertData.length) break;
-      vertData[off] = path.positions[vi][0];
-      vertData[off + 1] = path.positions[vi][1];
-      vertData[off + 2] = path.radii[vi];
-      vertData[off + 3] = path.loads[vi];
-    }
+    const off = bi * 12;
+    segData[off + 0] = path.prevPos[0];   // prev_pos.x
+    segData[off + 1] = path.prevPos[1];   // prev_pos.y
+    segData[off + 2] = path.currPos[0];   // curr_pos.x
+    segData[off + 3] = path.currPos[1];   // curr_pos.y
+    segData[off + 4] = path.prevRadius;   // prev_radius
+    segData[off + 5] = path.currRadius;   // curr_radius
+    segData[off + 6] = path.prevLoad;     // prev_load
+    segData[off + 7] = path.currLoad;     // curr_load
+    segData[off + 8] = path.ringNorm;     // ring_norm
+    segData[off + 9] = path.colorKr;      // color_kr
+    segData[off + 10] = path.colorKg;     // color_kg
+    segData[off + 11] = path.colorKb;     // color_kb
+    activeCount++;
 
-    // Write BristleInfo (48 bytes = 12 floats/u32s)
-    const infoOff = bi * 12; // 48 bytes / 4
-    infoU32[infoOff + 0] = slotStart;       // offset
-    infoU32[infoOff + 1] = count;            // count
-    infoF32[infoOff + 2] = path.count >= 2 ? path.loads[path.count - 1] : 0; // load (latest)
-    infoF32[infoOff + 3] = path.ringNorm;    // ring_norm
-    infoF32[infoOff + 4] = path.aabb.minX;   // bb_min.x
-    infoF32[infoOff + 5] = path.aabb.minY;   // bb_min.y
-    infoF32[infoOff + 6] = path.aabb.maxX;   // bb_max.x
-    infoF32[infoOff + 7] = path.aabb.maxY;   // bb_max.y
-    infoF32[infoOff + 8] = path.colorKr;     // color_kr
-    infoF32[infoOff + 9] = path.colorKg;     // color_kg
-    infoF32[infoOff + 10] = path.colorKb;    // color_kb
-    infoF32[infoOff + 11] = path.count >= 2 ? path.radii[path.count - 1] : 0; // bristle_radius
+    // Expand AABB — 6× radius margin for paint spread
+    const maxR = Math.max(path.prevRadius, path.currRadius) * 6;
+    aabbMinX = Math.min(aabbMinX, path.prevPos[0] - maxR, path.currPos[0] - maxR);
+    aabbMinY = Math.min(aabbMinY, path.prevPos[1] - maxR, path.currPos[1] - maxR);
+    aabbMaxX = Math.max(aabbMaxX, path.prevPos[0] + maxR, path.currPos[0] + maxR);
+    aabbMaxY = Math.max(aabbMaxY, path.prevPos[1] + maxR, path.currPos[1] + maxR);
   }
+
+  if (activeCount === 0) return;
 
   // Write uniform buffer (96 bytes)
   const ab = new ArrayBuffer(UNIFORM_SIZE);
   const f32 = new Float32Array(ab);
   const u32 = new Uint32Array(ab);
-  f32[0] = aabb.minX;
-  f32[1] = aabb.minY;
-  f32[2] = aabb.maxX;
-  f32[3] = aabb.maxY;
+  f32[0] = aabbMinX;
+  f32[1] = aabbMinY;
+  f32[2] = aabbMaxX;
+  f32[3] = aabbMaxY;
   f32[4] = ks.Kr;
   f32[5] = ks.Kg;
   f32[6] = ks.Kb;
@@ -374,37 +241,31 @@ function dispatchBristlePaths(
   f32[14] = scene.surface.absorption;
   f32[15] = sessionTime;
   f32[16] = scene.surface.drySpeed;
-  u32[17] = SELECTED_TIP_COUNT;  // bristle_count (was vertex_count)
+  u32[17] = SELECTED_TIP_COUNT;
   f32[18] = getOilRemaining();
   f32[19] = getAnchorRemaining();
   const mat = getMaterial(scene.surface.material);
-  f32[20] = mat.tooth;    // surface_tooth
+  f32[20] = mat.tooth;
   device.queue.writeBuffer(uniformBuffer, 0, ab);
 
-  // Upload buffers
-  device.queue.writeBuffer(vertexBuffer, 0, vertData);
-  device.queue.writeBuffer(bristleInfoBuffer, 0, infoData);
+  // Upload segment buffer
+  device.queue.writeBuffer(segmentBuffer, 0, segData);
 
-  // Bind groups — snapshot mode reads from pre-stroke snapshot
+  // Bind groups — reads from current accumPP.read, writes to accumPP.write
   const accumPP = getAccumPP();
   const statePP = getStatePP();
-  const accumReadView = useSnapshot && snapshotAccum
-    ? snapshotAccum.createView() : accumPP.readView;
-  const stateReadView = useSnapshot && snapshotState
-    ? snapshotState.createView() : statePP.readView;
 
   const paramBG = device.createBindGroup({
     layout: paramLayout,
     entries: [
       { binding: 0, resource: { buffer: uniformBuffer } },
-      { binding: 1, resource: { buffer: vertexBuffer } },
-      { binding: 2, resource: { buffer: bristleInfoBuffer } },
+      { binding: 1, resource: { buffer: segmentBuffer } },
     ],
   });
   const texBG = device.createBindGroup({
     layout: textureLayout,
     entries: [
-      { binding: 0, resource: accumReadView },
+      { binding: 0, resource: accumPP.readView },
       { binding: 1, resource: accumPP.writeView },
     ],
   });
@@ -413,22 +274,24 @@ function dispatchBristlePaths(
     entries: [
       { binding: 0, resource: getSurfaceHeightTexture().createView() },
       { binding: 1, resource: grainSampler },
-      { binding: 2, resource: stateReadView },
+      { binding: 2, resource: statePP.readView },
       { binding: 3, resource: statePP.writeView },
-      { binding: 4, resource: maskTextures![maskIndex].createView() },
-      { binding: 5, resource: maskTextures![1 - maskIndex].createView() },
     ],
   });
 
-  const pass = encoder.beginComputePass({ label });
+  // Own encoder + immediate submit — ensures writeBuffer data is consumed
+  // before the next waypoint overwrites it
+  const encoder = device.createCommandEncoder({ label: 'brush-segment' });
+  const pass = encoder.beginComputePass({ label: 'brush-segment-pass' });
   pass.setPipeline(pipeline);
   pass.setBindGroup(0, paramBG);
   pass.setBindGroup(1, texBG);
   pass.setBindGroup(2, auxBG);
   pass.dispatchWorkgroups(Math.ceil(w / 8), Math.ceil(h / 8));
   pass.end();
+  device.queue.submit([encoder.finish()]);
 
-  maskIndex = 1 - maskIndex;
+  // Swap after submit — next waypoint reads the updated surface
   swapSurface();
 }
 
@@ -436,14 +299,7 @@ export function beginStroke(x: number, y: number, pressure: number) {
   strokeStartLayers = estimatedPeakLayers;
   lastPos = [x, y];
   lastPressure = pressure;
-  lastRadius = 0;
-  strokeSegIndex = 0;
   strokeDabCount = 0;
-  smoothedPressure = pressure; // start at actual pressure, not 0
-  ghostsPending = false;
-  needMaskClear = true;
-  needSnapshotCapture = true;
-  strokeAABB = { minX: Infinity, minY: Infinity, maxX: -Infinity, maxY: -Infinity };
   lastFrameTime = performance.now() / 1000;
 
   // Reset bundle position for new stroke
@@ -473,84 +329,11 @@ export function beginStroke(x: number, y: number, pressure: number) {
 }
 
 export function endStroke() {
-  // Ghost taper disabled — per-bristle paths with continuous commit produce
-  // natural stroke endings. Ghost vertices created dense overlap blobs.
-  ghostsPending = false;
   lastPos = null;
   depleteOil();
 }
 
-export function dispatchPendingGhosts(encoder: GPUCommandEncoder): boolean {
-  if (!ghostsPending || !ghostAnchor) return false;
-  ghostsPending = false;
-
-  const scene = sceneStore.get();
-  const slot = getBrushSlot(getActiveBrushSlot());
-  const ks = getActiveKS();
-  const bundle = getActiveBundle();
-
-  if (!bundle) {
-    ghostAnchor = null;
-    ghostPoints = [];
-    return false;
-  }
-
-  // For ghosts, extend each selected bristle path with tapered ghost vertices
-  const chain = [ghostAnchor, ...ghostPoints];
-  const baseSplay = bundle.splay * (1.0 + bundle.age * 0.3);
-  const ui = uiStore.get();
-  const spread = 1.0 + scene.thinners * 0.4;
-
-  for (let si = 0; si < bundle.paths.length; si++) {
-    const path = bundle.paths[si];
-    if (path.count < 1) continue;
-
-    const tip = bundle.tips[bundle.selectedTips[si]];
-
-    for (let gi = 0; gi < chain.length; gi++) {
-      const pt = chain[gi];
-      const t = gi / chain.length;
-      const splay = baseSplay * (1.0 - t * 0.5);
-      const rBristle = (ui.brushSize / Math.sqrt(SELECTED_TIP_COUNT))
-        * (0.35 - 0.08 * tip.ringNorm) * splay;
-
-      // Ghost position: offset from center by tip's current offset (aspect-corrected)
-      const ghostAspect = getSurfaceHeight() / getSurfaceWidth();
-      const wx = pt.pos[0] + tip.currentOffset[0] * ui.brushSize * ghostAspect;
-      const wy = pt.pos[1] + tip.currentOffset[1] * ui.brushSize;
-
-      path.positions.push([wx, wy]);
-      path.radii.push(Math.max(rBristle * (1.0 - t * 0.5), 0.0005));
-      path.loads.push(tip.load * (1.0 - t));
-      path.count++;
-
-      // Update AABB — expanded for paint spread
-      const aabbR = rBristle * 6;
-      path.aabb.minX = Math.min(path.aabb.minX, wx - aabbR);
-      path.aabb.minY = Math.min(path.aabb.minY, wy - aabbR);
-      path.aabb.maxX = Math.max(path.aabb.maxX, wx + aabbR);
-      path.aabb.maxY = Math.max(path.aabb.maxY, wy + aabbR);
-    }
-  }
-
-  // Compute ghost AABB for dispatch
-  let ghostAABB: AABB = { ...strokeAABB };
-  for (const pt of chain) {
-    const maxR = ui.brushSize * spread * baseSplay;
-    ghostAABB.minX = Math.min(ghostAABB.minX, pt.pos[0] - maxR);
-    ghostAABB.minY = Math.min(ghostAABB.minY, pt.pos[1] - maxR);
-    ghostAABB.maxX = Math.max(ghostAABB.maxX, pt.pos[0] + maxR);
-    ghostAABB.maxY = Math.max(ghostAABB.maxY, pt.pos[1] + maxR);
-  }
-
-  dispatchBristlePaths(encoder, bundle.paths, scene, slot, ks, 'brush-ghost', ghostAABB);
-
-  ghostAnchor = null;
-  ghostPoints = [];
-  return true;
-}
-
-export function dispatchBrushDabs(encoder: GPUCommandEncoder, x: number, y: number): boolean {
+export function dispatchBrushDabs(_encoder: GPUCommandEncoder, x: number, y: number): boolean {
   const scene = sceneStore.get();
   const ui = uiStore.get();
   const radius = ui.brushSize;
@@ -591,7 +374,7 @@ export function dispatchBrushDabs(encoder: GPUCommandEncoder, x: number, y: numb
   const slot = getBrushSlot(getActiveBrushSlot());
   const bundle = ensureBundle(slot.bristleSeed, slot.age);
 
-  // Advance bundle physics for each waypoint — this also appends to per-bristle paths
+  // Advance bundle physics for each waypoint — this also sets currPos on paths
   const dtPerWp = waypoints.length > 1 ? dt / waypoints.length : dt;
   const w = getSurfaceWidth();
   const aspectCorrection = getSurfaceHeight() / w;
@@ -622,8 +405,6 @@ export function dispatchBrushDabs(encoder: GPUCommandEncoder, x: number, y: numb
       * (0.5 + 0.5 * avgPressure)
       * (1.0 + scene.thinners * 0.3)
       * splay;
-    // Distance-based depletion only — per-tip contactTerm in bristle-bundle
-    // already handles stationary dab depletion with a tighter speed threshold.
     const transferred = reservoir * transferRate * frameDistBrushWidths;
     reservoir = Math.max(RESIDUAL_FLOOR, reservoir - transferred);
   }
@@ -634,91 +415,28 @@ export function dispatchBrushDabs(encoder: GPUCommandEncoder, x: number, y: numb
     reservoir = reservoir * 0.9 + bundleLoad * 0.1;
   }
 
-  // Advance bundle physics AFTER reservoir depletion — per-vertex loads reflect current reservoir
-  let vertsBefore = 0;
-  for (const p of bundle.paths) vertsBefore += p.count;
+  // Per-waypoint dispatch loop: update → dispatch → swap → commit
+  let dispatched = false;
   for (const wp of waypoints) {
+    // 1. Update bundle physics — sets currPos for each bristle
     updateBundle(bundle, wp.pos, wp.pressure, wp.tiltX, wp.tiltY, dtPerWp, radius, aspectCorrection, reservoir);
-  }
-  let vertsAfter = 0;
-  for (const p of bundle.paths) vertsAfter += p.count;
-  const hasNewVerts = vertsAfter > vertsBefore;
 
-  // Pressure smoothing for radius tracking
-  for (let i = 0; i < points.length; i++) {
-    const targetP = points[i].pressure;
-    const rate = targetP > smoothedPressure ? 0.15 : 0.08;
-    smoothedPressure += (targetP - smoothedPressure) * rate;
-  }
-
-  // Track direction for ghost segments
-  for (let i = 1; i < points.length; i++) {
-    const dx = points[i].pos[0] - points[i - 1].pos[0];
-    const dy = points[i].pos[1] - points[i - 1].pos[1];
-    const len = Math.sqrt(dx * dx + dy * dy);
-    if (len > 0.0001) {
-      lastDirection = [dx / len, dy / len];
+    // 2. Dispatch if any bristle has a valid prev→curr segment
+    if (hasDirtyPaths(bundle)) {
+      dispatchSegments(bundle.paths, scene, slot, ks);
+      dispatched = true;
     }
+
+    // 3. Commit: curr→prev (seeds first position or advances)
+    commitPaths(bundle);
   }
 
   // Update stroke counters
-  const newSegs = strokeDabCount === 0 ? points.length : points.length - 1;
-  strokeSegIndex += points.length;
-  strokeDabCount += Math.max(1, newSegs);
-
-  // Track last radius from brush width
-  const spread = 1.0 + scene.thinners * 0.4;
-  const splayCurrent = bundle.splay * (1.0 + bundle.age * 0.3);
-  lastRadius = pressureRadius(radius, smoothedPressure) * spread * splayCurrent;
-
-  // Expand stroke AABB from all paths
-  for (const path of bundle.paths) {
-    if (path.count > 0) {
-      strokeAABB.minX = Math.min(strokeAABB.minX, path.aabb.minX);
-      strokeAABB.minY = Math.min(strokeAABB.minY, path.aabb.minY);
-      strokeAABB.maxX = Math.max(strokeAABB.maxX, path.aabb.maxX);
-      strokeAABB.maxY = Math.max(strokeAABB.maxY, path.aabb.maxY);
-    }
-  }
-
-  // Only render + commit when new path vertices were added.
-  // Without this gate, the tail 2 vertices re-render every frame with a cleared mask,
-  // causing paint to accumulate at the release point (blob on lift-off).
-  if (hasNewVerts) {
-    // Clear mask — each commit cycle starts fresh
-    needMaskClear = true;
-
-    // Dispatch current paths against snapshot
-    dispatchBristlePaths(encoder, bundle.paths, scene, slot, ks, 'brush-stroke',
-      strokeAABB, true);
-
-    // Continuous commit — bake rendered result into snapshot, trim paths to trailing edge.
-    if (snapshotAccum) {
-      const accumPP = getAccumPP();
-      const statePP = getStatePP();
-      const h = getSurfaceHeight();
-      encoder.copyTextureToTexture(
-        { texture: accumPP.read }, { texture: snapshotAccum }, [w, h],
-      );
-      encoder.copyTextureToTexture(
-        { texture: statePP.read }, { texture: snapshotState! }, [w, h],
-      );
-      trimPathsToTail(bundle);
-      strokeAABB = { minX: Infinity, minY: Infinity, maxX: -Infinity, maxY: -Infinity };
-      for (const path of bundle.paths) {
-        if (path.count > 0) {
-          strokeAABB.minX = Math.min(strokeAABB.minX, path.aabb.minX);
-          strokeAABB.minY = Math.min(strokeAABB.minY, path.aabb.minY);
-          strokeAABB.maxX = Math.max(strokeAABB.maxX, path.aabb.maxX);
-          strokeAABB.maxY = Math.max(strokeAABB.maxY, path.aabb.maxY);
-        }
-      }
-    }
-  }
+  strokeDabCount += points.length;
 
   // Update CPU-side peak weight estimate
   const pigmentDensity = Math.pow(1.0 - scene.thinners * 0.9, 1.5);
   estimatedPeakLayers += pigmentDensity;
 
-  return true;
+  return dispatched;
 }

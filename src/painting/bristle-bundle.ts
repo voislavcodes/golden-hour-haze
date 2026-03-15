@@ -10,21 +10,20 @@ type Vec2 = [number, number];
 
 // --- Per-bristle path rendering constants ---
 export const SELECTED_TIP_COUNT = 48;
-const MAX_VERTS_PER_BRISTLE = 84;
-const RDP_THRESHOLD_RATIO = 0.5; // epsilon = brushRadius * this
-const RDP_TRIGGER = 67;          // 80% of 84
 
 export interface BristlePath {
   tipIndex: number;
-  positions: Vec2[];
-  radii: number[];
-  loads: number[];
-  count: number;
-  aabb: { minX: number; minY: number; maxX: number; maxY: number };
+  prevPos: Vec2 | null;   // committed position (null before first commit)
+  prevRadius: number;
+  prevLoad: number;
+  currPos: Vec2 | null;   // current frame position (set by updateBundle)
+  currRadius: number;
+  currLoad: number;
   colorKr: number;
   colorKg: number;
   colorKb: number;
   ringNorm: number;
+  dirty: boolean;         // true if currPos was updated this waypoint
 }
 
 export interface BristleTip {
@@ -262,58 +261,6 @@ function generatePinkNoise(count: number, seed: number): Float32Array {
   return result;
 }
 
-// --- Ramer-Douglas-Peucker path decimation ---
-function rdpPerpendicularDist(p: Vec2, a: Vec2, b: Vec2): number {
-  const dx = b[0] - a[0];
-  const dy = b[1] - a[1];
-  const lenSq = dx * dx + dy * dy;
-  if (lenSq < 1e-12) return Math.sqrt((p[0] - a[0]) ** 2 + (p[1] - a[1]) ** 2);
-  const t = Math.max(0, Math.min(1, ((p[0] - a[0]) * dx + (p[1] - a[1]) * dy) / lenSq));
-  const projX = a[0] + t * dx;
-  const projY = a[1] + t * dy;
-  return Math.sqrt((p[0] - projX) ** 2 + (p[1] - projY) ** 2);
-}
-
-export function decimatePath(path: BristlePath, epsilon: number): void {
-  if (path.count <= 2) return;
-
-  const keep = new Uint8Array(path.count);
-  keep[0] = 1;
-  keep[path.count - 1] = 1;
-
-  // Iterative stack-based RDP
-  const stack: [number, number][] = [[0, path.count - 1]];
-  while (stack.length > 0) {
-    const [start, end] = stack.pop()!;
-    let maxDist = 0;
-    let maxIdx = start;
-    for (let i = start + 1; i < end; i++) {
-      const d = rdpPerpendicularDist(path.positions[i], path.positions[start], path.positions[end]);
-      if (d > maxDist) { maxDist = d; maxIdx = i; }
-    }
-    if (maxDist > epsilon) {
-      keep[maxIdx] = 1;
-      if (maxIdx - start > 1) stack.push([start, maxIdx]);
-      if (end - maxIdx > 1) stack.push([maxIdx, end]);
-    }
-  }
-
-  // Compact in-place
-  let write = 0;
-  for (let i = 0; i < path.count; i++) {
-    if (keep[i]) {
-      path.positions[write] = path.positions[i];
-      path.radii[write] = path.radii[i];
-      path.loads[write] = path.loads[i];
-      write++;
-    }
-  }
-  path.count = write;
-  path.positions.length = write;
-  path.radii.length = write;
-  path.loads.length = write;
-}
-
 // --- Stratified tip selection: 48 tips from 1024 ---
 // 4 concentric bands by ringNorm, proportional to ring area
 function selectTips(tips: BristleTip[], seed: number): number[] {
@@ -370,15 +317,17 @@ function selectTips(tips: BristleTip[], seed: number): number[] {
 function createEmptyPath(tipIndex: number, tip: BristleTip): BristlePath {
   return {
     tipIndex,
-    positions: [],
-    radii: [],
-    loads: [],
-    count: 0,
-    aabb: { minX: Infinity, minY: Infinity, maxX: -Infinity, maxY: -Infinity },
+    prevPos: null,
+    prevRadius: 0,
+    prevLoad: 0,
+    currPos: null,
+    currRadius: 0,
+    currLoad: 0,
     colorKr: tip.colorKr,
     colorKg: tip.colorKg,
     colorKb: tip.colorKb,
     ringNorm: tip.ringNorm,
+    dirty: false,
   };
 }
 
@@ -619,11 +568,8 @@ export function updateBundle(
     }
   }
 
-  // --- Per-bristle path tracking: append world-space positions for selected tips ---
-  // Tip positions use brushRadius directly — splay (already pressure-driven) determines spread.
-  // The cursor matches by showing brushSize * splay as its radius.
+  // --- Per-bristle path tracking: set currPos for selected tips ---
   // Skip recording when pressure is near zero — prevents convergent blob on release
-  // (splay contracts, all tips converge to center, creating dense splat).
   if (bundle.contactPressure < 0.05) {
     bundle.lastPos = [pos[0], pos[1]];
     return;
@@ -636,45 +582,27 @@ export function updateBundle(
     const wx: number = pos[0] + tip.currentOffset[0] * brushRadius * aspectCorrection;
     const wy: number = pos[1] + tip.currentOffset[1] * brushRadius;
     const splayScale = bundle.splay * (1.0 + bundle.age * 0.3);
-    // Bristle radius: thin enough to look like hair clusters, not fat circles.
-    // Gap-filling when loaded is handled by paint spread in the shader.
     const rBristle = (brushRadius / Math.sqrt(SELECTED_TIP_COUNT))
       * (0.35 - 0.08 * tip.ringNorm) * splayScale;
 
-    // Deduplicate: skip if tip hasn't moved at least 10% of its radius.
-    // Prevents O-U jitter from generating vertices when stationary (release blob).
-    // With trim-to-1, dedup at count >= 1 prevents stationary re-deposition.
+    // Deduplicate: skip if tip hasn't moved at least 10% of its radius
     const dedupThresh = rBristle * rBristle * 0.01;
-    if (path.count >= 1) {
-      const lastP = path.positions[path.count - 1];
-      const ddx = wx - lastP[0];
-      const ddy = wy - lastP[1];
+    const cmpPos = path.prevPos ?? path.currPos;
+    if (cmpPos) {
+      const ddx = wx - cmpPos[0];
+      const ddy = wy - cmpPos[1];
       if (ddx * ddx + ddy * ddy < dedupThresh) continue;
     }
 
-    path.positions.push([wx, wy]);
-    path.radii.push(Math.max(rBristle, 0.0005));
-    // Per-vertex load = per-tip paint × reservoir — captures both physical
-    // bristle depletion AND distance-based paint exhaustion
-    path.loads.push(tip.load * reservoirScale);
-    path.count++;
+    path.currPos = [wx, wy];
+    path.currRadius = Math.max(rBristle, 0.0005);
+    path.currLoad = tip.load * reservoirScale;
+    path.dirty = true;
 
     // Update per-bristle color from tip
     path.colorKr = tip.colorKr;
     path.colorKg = tip.colorKg;
     path.colorKb = tip.colorKb;
-
-    // Update AABB — expanded by 6x radius to account for paint spread when loaded
-    const aabbR = rBristle * 6;
-    path.aabb.minX = Math.min(path.aabb.minX, wx - aabbR);
-    path.aabb.minY = Math.min(path.aabb.minY, wy - aabbR);
-    path.aabb.maxX = Math.max(path.aabb.maxX, wx + aabbR);
-    path.aabb.maxY = Math.max(path.aabb.maxY, wy + aabbR);
-
-    // RDP decimation when path gets long
-    if (path.count >= RDP_TRIGGER) {
-      decimatePath(path, brushRadius * RDP_THRESHOLD_RATIO);
-    }
   }
 
   bundle.lastPos = [pos[0], pos[1]];
@@ -710,10 +638,6 @@ export function wipeBundle(bundle: BristleBundle) {
   }
 }
 
-export function getSelectedPaths(bundle: BristleBundle): BristlePath[] {
-  return bundle.paths;
-}
-
 export function resetPaths(bundle: BristleBundle): void {
   for (let i = 0; i < bundle.paths.length; i++) {
     const tip = bundle.tips[bundle.selectedTips[i]];
@@ -721,34 +645,25 @@ export function resetPaths(bundle: BristleBundle): void {
   }
 }
 
-/** Check if any path has exceeded the vertex budget and needs a snapshot commit */
-export function anyPathOverBudget(bundle: BristleBundle): boolean {
+/** Copy curr→prev for dirty paths, clear dirty flag. Call after each dispatch. */
+export function commitPaths(bundle: BristleBundle): void {
   for (const path of bundle.paths) {
-    if (path.count >= MAX_VERTS_PER_BRISTLE) return true;
-  }
-  return false;
-}
-
-/** Reset all paths to their last vertex (junction anchor for next commit cycle).
- *  Keeping 1 vertex instead of 2 prevents re-rendering a committed segment —
- *  each new segment is rendered once then committed, eliminating dab banding. */
-export function trimPathsToTail(bundle: BristleBundle): void {
-  for (const path of bundle.paths) {
-    if (path.count > 1) {
-      const tailStart = path.count - 1;
-      path.positions = path.positions.slice(tailStart);
-      path.radii = path.radii.slice(tailStart);
-      path.loads = path.loads.slice(tailStart);
-      path.count = 1;
-      // Recompute AABB from remaining
-      const [px, py] = path.positions[0];
-      const r = path.radii[0] * 6; // account for paint spread
-      path.aabb = {
-        minX: px - r, minY: py - r,
-        maxX: px + r, maxY: py + r,
-      };
+    if (path.currPos) {
+      path.prevPos = path.currPos;
+      path.prevRadius = path.currRadius;
+      path.prevLoad = path.currLoad;
+      path.currPos = null;
+      path.dirty = false;
     }
   }
+}
+
+/** True if any path has both prevPos and currPos set + dirty — ready for dispatch */
+export function hasDirtyPaths(bundle: BristleBundle): boolean {
+  for (const path of bundle.paths) {
+    if (path.dirty && path.prevPos && path.currPos) return true;
+  }
+  return false;
 }
 
 export function getAverageLoad(bundle: BristleBundle): number {
@@ -764,84 +679,6 @@ export function getAverageLoad(bundle: BristleBundle): number {
 export function setSurfaceProperties(bundle: BristleBundle, friction: number, tooth: number) {
   bundle.friction = friction;
   bundle.tooth = tooth;
-}
-
-// --- 1D bristle density profile for GPU dry brush ---
-// Projects all 1024 tips onto the cross-stroke (perpendicular) axis,
-// producing a density profile the shader samples instead of hash-noise lanes.
-// Poisson disk layout + O-U noise + stochastic contact → irregular clumping.
-export const BRISTLE_PROFILE_SIZE = 64;
-
-export function buildBristleProfile(bundle: BristleBundle, dirX: number, dirY: number): Float32Array {
-  const profile = new Float32Array(BRISTLE_PROFILE_SIZE);
-  const { tips } = bundle;
-
-  // Perpendicular to stroke direction
-  const perpX = -dirY;
-  const perpY = dirX;
-
-  // Find max extent of tips along perp axis for normalization
-  let maxExtent = 0;
-  for (let i = 0; i < tips.length; i++) {
-    const proj = Math.abs(tips[i].currentOffset[0] * perpX + tips[i].currentOffset[1] * perpY);
-    if (proj > maxExtent) maxExtent = proj;
-  }
-  if (maxExtent < 0.001) {
-    // No clear direction — fill profile uniformly
-    profile.fill(1.0);
-    return profile;
-  }
-
-  for (let i = 0; i < tips.length; i++) {
-    const tip = tips[i];
-    const perpProj = tip.currentOffset[0] * perpX + tip.currentOffset[1] * perpY;
-
-    // Map from [-maxExtent, maxExtent] to [0, PROFILE_SIZE-1]
-    const normalized = (perpProj / maxExtent + 1) * 0.5;
-    const bin = Math.floor(normalized * (BRISTLE_PROFILE_SIZE - 1));
-    if (bin < 0 || bin >= BRISTLE_PROFILE_SIZE) continue;
-
-    // In-contact tips: full contribution weighted by load
-    // Out-of-contact: faint residue from tips that barely graze the surface
-    const weight = tip.inContact
-      ? Math.max(tip.load, 0.08)
-      : tip.load * 0.12;
-
-    // Spread across neighboring bins — tip has physical width
-    profile[bin] += weight * 0.5;
-    if (bin > 0) profile[bin - 1] += weight * 0.25;
-    if (bin < BRISTLE_PROFILE_SIZE - 1) profile[bin + 1] += weight * 0.25;
-  }
-
-  // 5-tap weighted smoothing — reduces directional sensitivity from Poisson disk
-  // Without this, small velocity direction changes create dramatically different profiles
-  const smoothed = new Float32Array(BRISTLE_PROFILE_SIZE);
-  for (let i = 0; i < BRISTLE_PROFILE_SIZE; i++) {
-    let sum = profile[i] * 3;
-    let wt = 3;
-    for (const d of [-2, -1, 1, 2]) {
-      const j = i + d;
-      if (j >= 0 && j < BRISTLE_PROFILE_SIZE) {
-        const dw = Math.abs(d) === 1 ? 2 : 1;
-        sum += profile[j] * dw;
-        wt += dw;
-      }
-    }
-    smoothed[i] = sum / wt;
-  }
-
-  // Normalize peak to 1.0
-  let maxVal = 0;
-  for (let i = 0; i < BRISTLE_PROFILE_SIZE; i++) {
-    if (smoothed[i] > maxVal) maxVal = smoothed[i];
-  }
-  if (maxVal > 0) {
-    for (let i = 0; i < BRISTLE_PROFILE_SIZE; i++) {
-      smoothed[i] /= maxVal;
-    }
-  }
-
-  return smoothed;
 }
 
 // --- Module-level bundle instance ---

@@ -1,8 +1,7 @@
-// Per-bristle path SDF brush — 48 bristle polylines with multiplicative coverage compositing
-// Each bristle traces its own capsule polyline. Real gaps emerge from physical spacing.
+// Incremental per-bristle capsule SDF brush — 48 bristle segments with multiplicative coverage
+// Each bristle = 1 capsule (prev→curr) per frame. Baked immediately. No mask, no snapshot.
 // Accumulation texture layout: R=K_r, G=K_g, B=K_b, A=paint_weight
 // Paint state texture: R=session_time_painted, G=thinners_at_paint_time
-// Stroke mask: R=max geometric alpha (prevents re-deposition across frames)
 
 #include "../common/wetness.wgsl"
 
@@ -20,7 +19,7 @@ struct BrushParams {
   surface_absorption: f32,      // offset 56
   session_time: f32,            // offset 60
   surface_dry_speed: f32,       // offset 64
-  bristle_count: u32,           // offset 68  — number of bristle paths (48)
+  bristle_count: u32,           // offset 68  — number of bristle segments (48)
   oil_remaining: f32,           // offset 72  — oil on brush (0=none, 1=full)
   anchor_intensity: f32,        // offset 76  — anchor chroma unlock (0=none, 1=full)
   surface_tooth: f32,           // offset 80
@@ -29,36 +28,27 @@ struct BrushParams {
   _pad2: f32,                   // offset 92
 };
 
-struct StrokeVertex {
-  pos: vec2f,      // offset 0
-  radius: f32,     // offset 8   — per-bristle radius
-  load: f32,       // offset 12  — per-vertex paint load from CPU bristle tip
-};
-
-struct BristleInfo {
-  offset: u32,         // start index in vertex array
-  count: u32,          // active vertices for this bristle
-  load: f32,           // current tip paint load
-  ring_norm: f32,      // radial position in bundle
-  bb_min: vec2f,       // per-bristle AABB for early reject
-  bb_max: vec2f,
-  color_kr: f32,       // per-bristle K-M color (pickup/contamination)
-  color_kg: f32,
-  color_kb: f32,
-  bristle_radius: f32, // latest radius
-};
+struct BristleSegment {
+  prev_pos: vec2f,      // 0
+  curr_pos: vec2f,      // 8
+  prev_radius: f32,     // 16
+  curr_radius: f32,     // 20
+  prev_load: f32,       // 24
+  curr_load: f32,       // 28
+  ring_norm: f32,       // 32
+  color_kr: f32,        // 36
+  color_kg: f32,        // 40
+  color_kb: f32,        // 44
+};  // 48 bytes, naturally aligned
 
 @group(0) @binding(0) var<uniform> params: BrushParams;
-@group(0) @binding(1) var<storage, read> vertices: array<StrokeVertex>;
-@group(0) @binding(2) var<storage, read> bristle_info: array<BristleInfo>;
+@group(0) @binding(1) var<storage, read> segments: array<BristleSegment>;
 @group(1) @binding(0) var accum_read: texture_2d<f32>;
 @group(1) @binding(1) var accum_write: texture_storage_2d<rgba16float, write>;
 @group(2) @binding(0) var surface_height: texture_2d<f32>;
 @group(2) @binding(1) var grain_sampler: sampler;
 @group(2) @binding(2) var state_read: texture_2d<f32>;
 @group(2) @binding(3) var state_write: texture_storage_2d<rgba32float, write>;
-@group(2) @binding(4) var mask_read: texture_2d<f32>;
-@group(2) @binding(5) var mask_write: texture_storage_2d<r32float, write>;
 
 // Simple hash noise for edge roughness
 fn hash_noise(angle: f32, seed: f32) -> f32 {
@@ -86,20 +76,17 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
   let uv = (vec2f(gid.xy) + 0.5) / vec2f(dims);
   let existing = textureLoad(accum_read, vec2i(gid.xy), 0);
   let state = textureLoad(state_read, vec2i(gid.xy), 0);
-  let prev_mask = textureLoad(mask_read, vec2i(gid.xy), 0).r;
 
-  // AABB early reject (entire stroke bounding box)
+  // AABB early reject (entire dispatch bounding box)
   if (uv.x < params.bb_min.x || uv.x > params.bb_max.x ||
       uv.y < params.bb_min.y || uv.y > params.bb_max.y) {
     textureStore(accum_write, vec2i(gid.xy), existing);
     textureStore(state_write, vec2i(gid.xy), state);
-    textureStore(mask_write, vec2i(gid.xy), vec4f(prev_mask, 0.0, 0.0, 0.0));
     return;
   }
 
   // === Per-bristle SDF evaluation with multiplicative coverage compositing ===
-  // Each bristle independently has a chance of covering this pixel.
-  // Combined coverage = complement of all missing: 1 - ∏(1 - alpha_i * load_i)
+  // Each bristle = 1 capsule (prev→curr). Combined coverage = 1 - ∏(1 - alpha_i * load_i)
   var miss = 1.0;
   var weighted_K = vec3f(0.0);
   var total_weight: f32 = 0.0;
@@ -110,49 +97,39 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
   var closest_dir: vec2f = vec2f(1.0, 0.0);
 
   let bristle_count = min(params.bristle_count, 48u);
+  let pixel_size = 1.0 / f32(dims.x);
 
   for (var bi: u32 = 0u; bi < bristle_count; bi = bi + 1u) {
-    let info = bristle_info[bi];
+    let seg = segments[bi];
 
-    // Skip empty bristles
-    if (info.count < 2u) { continue; }
-
-    // Per-bristle AABB cull
-    if (uv.x < info.bb_min.x || uv.x > info.bb_max.x ||
-        uv.y < info.bb_min.y || uv.y > info.bb_max.y) {
+    // Per-bristle AABB cull — computed from prev/curr positions
+    let max_r = max(seg.prev_radius, seg.curr_radius) * 6.0; // paint spread margin
+    let bb_min = min(seg.prev_pos, seg.curr_pos) - vec2f(max_r);
+    let bb_max = max(seg.prev_pos, seg.curr_pos) + vec2f(max_r);
+    if (uv.x < bb_min.x || uv.x > bb_max.x ||
+        uv.y < bb_min.y || uv.y > bb_max.y) {
       continue;
     }
 
-    // Find minimum SDF across this bristle's segments
-    var b_min_dist: f32 = 999.0;
-    var b_best_t: f32 = 0.0;
-    var b_best_seg: u32 = 0u;
-    let seg_count = info.count - 1u;
+    // Junction gap prevention — extend capsule backward by 0.5px past prev_pos
+    let seg_vec = seg.curr_pos - seg.prev_pos;
+    let seg_len = length(seg_vec);
+    let gap_extend = select(0.5 * pixel_size / seg_len, 0.0, seg_len < 0.0001);
+    let actual_start = seg.prev_pos - seg_vec * gap_extend;
 
-    for (var si: u32 = 0u; si < seg_count; si = si + 1u) {
-      let vi0 = info.offset + si;
-      let vi1 = info.offset + si + 1u;
-      let sdf = capsule_sdf(uv, vertices[vi0].pos, vertices[vi1].pos,
-                             vertices[vi0].radius, vertices[vi1].radius);
-      if (sdf.x < b_min_dist) {
-        b_min_dist = sdf.x;
-        b_best_seg = si;
-        b_best_t = sdf.y;
-      }
-    }
+    // Single capsule SDF for this bristle
+    let sdf = capsule_sdf(uv, actual_start, seg.curr_pos, seg.prev_radius, seg.curr_radius);
+    let b_min_dist = sdf.x;
+    let b_best_t = sdf.y;
 
     // Conservative early exit: outside bristle + max paint spread
-    if (b_min_dist > info.bristle_radius * 5.0) { continue; }
+    if (b_min_dist > max(seg.prev_radius, seg.curr_radius) * 5.0) { continue; }
 
-    // Local properties at closest point on this bristle
-    let vi0 = info.offset + b_best_seg;
-    let vi1 = info.offset + b_best_seg + 1u;
-    let local_r = mix(vertices[vi0].radius, vertices[vi1].radius, b_best_t);
-    let local_load = mix(vertices[vi0].load, vertices[vi1].load, b_best_t);
+    // Local properties at closest point
+    let local_r = mix(seg.prev_radius, seg.curr_radius, b_best_t);
+    let local_load = mix(seg.prev_load, seg.curr_load, b_best_t);
 
-    // Paint spread: wet loaded paint flows beyond the physical bristle tip,
-    // filling gaps between hairs. As paint depletes, spread → 0 and individual
-    // thin bristle streaks emerge (dry brush).
+    // Paint spread: wet loaded paint flows beyond the physical bristle tip
     let spread = local_r * smoothstep(0.05, 0.3, local_load) * 5.0;
 
     // Outside physical bristle + spread — no contribution
@@ -162,7 +139,7 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
 
     // Edge softness for this bristle
     let edge_softness = local_r * (0.2 + params.thinners * 0.3);
-    let edge_noise_angle = atan2(uv.y - vertices[vi0].pos.y, uv.x - vertices[vi0].pos.x);
+    let edge_noise_angle = atan2(uv.y - seg.prev_pos.y, uv.x - seg.prev_pos.x);
     let roughness = 0.05 + params.age * 0.22;
     let edge_noise = hash_noise(edge_noise_angle * 3.0, params.bristle_seed + f32(bi)) * 0.7
                    + hash_noise(edge_noise_angle * 12.0, params.bristle_seed + f32(bi) + 5.0) * 0.3;
@@ -170,7 +147,7 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
     let bristle_alpha = 1.0 - smoothstep(-edge_softness - edge_roughness, spread, b_min_dist);
 
     // Radial bias — edges of the bundle deposit less
-    let ring = info.ring_norm;
+    let ring = seg.ring_norm;
     let edge_sq = ring * ring;
     let radial_bias = 1.0 - edge_sq * 0.4;
 
@@ -183,8 +160,7 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
     load_weight_sum += contrib;
 
     // Weighted K-M color — per-bristle contamination/pickup
-    let bristle_K = vec3f(info.color_kr, info.color_kg, info.color_kb);
-    // Mix between palette color and bristle-specific contaminated color
+    let bristle_K = vec3f(seg.color_kr, seg.color_kg, seg.color_kb);
     let contamination = length(bristle_K);
     let use_bristle = select(0.0, 0.5, contamination > 0.01);
     let effective_K = mix(params.palette_K, bristle_K, use_bristle);
@@ -194,8 +170,6 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
     // Track closest bristle for direction
     if (b_min_dist < closest_dist) {
       closest_dist = b_min_dist;
-      let seg_vec = vertices[vi1].pos - vertices[vi0].pos;
-      let seg_len = length(seg_vec);
       closest_dir = select(vec2f(1.0, 0.0), seg_vec / seg_len, seg_len > 0.0001);
     }
   }
@@ -207,7 +181,6 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
   if (!any_contact || alpha < 0.001) {
     textureStore(accum_write, vec2i(gid.xy), existing);
     textureStore(state_write, vec2i(gid.xy), state);
-    textureStore(mask_write, vec2i(gid.xy), vec4f(prev_mask, 0.0, 0.0, 0.0));
     return;
   }
 
@@ -215,16 +188,11 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
   let final_reservoir = select(0.0, weighted_load / load_weight_sum, load_weight_sum > 0.001);
   let dir = closest_dir;
 
-  // Stroke mask — only deposit the incremental coverage since last frame
-  let new_mask = max(alpha, prev_mask);
-  let delta = max(0.0, alpha - prev_mask);
-  textureStore(mask_write, vec2i(gid.xy), vec4f(new_mask, 0.0, 0.0, 0.0));
-
   // Wetness of existing paint (needed for tooth model + later physics)
   let wetness = calculate_wetness(state.r, params.session_time, params.surface_dry_speed, state.g);
   let tacky = smoothstep(0.1, 0.25, wetness) * smoothstep(0.5, 0.35, wetness);
 
-  // === Paint physics uses delta (incremental alpha) ===
+  // === Paint physics uses alpha directly (no mask delta needed) ===
 
   // Surface grain sampling
   let grain_uv = uv * vec2f(f32(dims.x) / 2048.0, f32(dims.y) / 2048.0);
@@ -250,8 +218,6 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
   let opacity_boost = mix(2.2, 1.0, params.thinners);
 
   // Surface tooth saturation — filled tooth blocks further deposition
-  // Wet paint is slippery (low block) — new paint pushes through and mixes.
-  // Dry paint grips the tooth (high block) — scumble still works via lower coefficient.
   let tooth_fill_rate = 1.5 / (0.5 + params.surface_tooth);
   let paint_fill = saturate(existing.a * tooth_fill_rate);
   let wet_block = paint_fill * wetness * 0.15;
@@ -260,10 +226,10 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
 
   // Dry brush: proportional boost keeps fresh dry brush visible
   let dry_reservoir = mix(final_reservoir, final_reservoir * 3.0, dry_brush_t);
-  let effective_alpha = delta * params.pigment_density * opacity_boost * pow(params.falloff, layers_this_stroke) * dry_reservoir * grain_interaction * tooth_remaining;
+  let effective_alpha = alpha * params.pigment_density * opacity_boost * pow(params.falloff, layers_this_stroke) * dry_reservoir * grain_interaction * tooth_remaining;
 
   // === Depleted brush interaction — the brush always does something ===
-  let brush_contact = delta > 0.01;
+  let brush_contact = alpha > 0.01;
   let brush_empty = final_reservoir < 0.05;
 
   // Sample upstream — where the brush is dragging paint FROM
@@ -275,11 +241,11 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
   if (effective_alpha < 0.001 && has_paint_to_drag && brush_contact && brush_empty) {
     let up_wetness = calculate_wetness(upstream_state.r, params.session_time, params.surface_dry_speed, upstream_state.g);
     let local_wetness = calculate_wetness(state.r, params.session_time, params.surface_dry_speed, state.g);
-    let wetness = max(up_wetness, local_wetness);
-    let tacky = smoothstep(0.1, 0.25, wetness) * smoothstep(0.5, 0.35, wetness);
+    let smear_wetness = max(up_wetness, local_wetness);
+    let smear_tacky = smoothstep(0.1, 0.25, smear_wetness) * smoothstep(0.5, 0.35, smear_wetness);
 
-    let smear_base = wetness * 0.7 + tacky * 0.8;
-    let smear_strength = smear_base * delta * (0.5 + params.age * 0.5);
+    let smear_base = smear_wetness * 0.7 + smear_tacky * 0.8;
+    let smear_strength = smear_base * alpha * (0.5 + params.age * 0.5);
 
     if (smear_strength > 0.001) {
       let transfer = upstream.a * smear_strength;
@@ -287,7 +253,7 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
       let smeared_K = mix(existing.rgb, upstream.rgb, blend_ratio);
       let smeared_weight = existing.a + transfer;
       let avg_K = dot(smeared_K, vec3f(0.333));
-      let muddy_smear = mix(smeared_K, vec3f(avg_K), tacky * 0.25);
+      let muddy_smear = mix(smeared_K, vec3f(avg_K), smear_tacky * 0.25);
 
       textureStore(accum_write, vec2i(gid.xy), vec4f(muddy_smear, smeared_weight));
       let drag_wetness = max(up_wetness, local_wetness);
