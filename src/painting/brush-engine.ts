@@ -448,7 +448,7 @@ export function dispatchBrushDabs(_encoder: GPUCommandEncoder, x: number, y: num
   if (effectiveLoad <= 0) {
     reservoir = 0;
   } else {
-    const BASE_TRANSFER = 0.12;
+    const BASE_TRANSFER = 0.02;
     const isDryBrush = loadScale < 0.5;
     const transferMult = isDryBrush ? 2.5 : 1.0;
     const RESIDUAL_FLOOR = isDryBrush ? 0 : 0.02 * effectiveLoad;
@@ -464,8 +464,8 @@ export function dispatchBrushDabs(_encoder: GPUCommandEncoder, x: number, y: num
 
   // Bundle average load nudges reservoir when tips deplete
   const bundleLoad = getAverageLoad(bundle);
-  if (bundleLoad < 0.5 && bundleLoad < reservoir) {
-    reservoir = reservoir * 0.9 + bundleLoad * 0.1;
+  if (bundleLoad < 0.3 && bundleLoad < reservoir) {
+    reservoir = reservoir * 0.95 + bundleLoad * 0.05;
   }
 
   // Per-waypoint dispatch loop: physics always runs, rendering gated by bristle displacement
