@@ -23,6 +23,10 @@ struct BrushParams {
   bristle_count: u32,           // offset 68  — number of bristle paths (48)
   oil_remaining: f32,           // offset 72  — oil on brush (0=none, 1=full)
   anchor_intensity: f32,        // offset 76  — anchor chroma unlock (0=none, 1=full)
+  surface_tooth: f32,           // offset 80
+  _pad0: f32,                   // offset 84  (alignment padding)
+  _pad1: f32,                   // offset 88
+  _pad2: f32,                   // offset 92
 };
 
 struct StrokeVertex {
@@ -216,6 +220,10 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
   let delta = max(0.0, alpha - prev_mask);
   textureStore(mask_write, vec2i(gid.xy), vec4f(new_mask, 0.0, 0.0, 0.0));
 
+  // Wetness of existing paint (needed for tooth model + later physics)
+  let wetness = calculate_wetness(state.r, params.session_time, params.surface_dry_speed, state.g);
+  let tacky = smoothstep(0.1, 0.25, wetness) * smoothstep(0.5, 0.35, wetness);
+
   // === Paint physics uses delta (incremental alpha) ===
 
   // Surface grain sampling
@@ -241,9 +249,18 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
   let layers_this_stroke = max(existing.a - params.stroke_start_layers, 0.0);
   let opacity_boost = mix(2.2, 1.0, params.thinners);
 
+  // Surface tooth saturation — filled tooth blocks further deposition
+  // Wet paint is slippery (low block) — new paint pushes through and mixes.
+  // Dry paint grips the tooth (high block) — scumble still works via lower coefficient.
+  let tooth_fill_rate = 1.5 / (0.5 + params.surface_tooth);
+  let paint_fill = saturate(existing.a * tooth_fill_rate);
+  let wet_block = paint_fill * wetness * 0.15;
+  let dry_block = paint_fill * (1.0 - wetness) * 0.5;
+  let tooth_remaining = pow(max(1.0 - wet_block - dry_block, 0.0), 1.8);
+
   // Dry brush: proportional boost keeps fresh dry brush visible
   let dry_reservoir = mix(final_reservoir, final_reservoir * 3.0, dry_brush_t);
-  let effective_alpha = delta * params.pigment_density * opacity_boost * pow(params.falloff, layers_this_stroke) * dry_reservoir * grain_interaction;
+  let effective_alpha = delta * params.pigment_density * opacity_boost * pow(params.falloff, layers_this_stroke) * dry_reservoir * grain_interaction * tooth_remaining;
 
   // === Depleted brush interaction — the brush always does something ===
   let brush_contact = delta > 0.01;
@@ -295,10 +312,6 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
     textureStore(state_write, vec2i(gid.xy), vec4f(params.session_time, 1.0, state.b, state.a));
     return;
   }
-
-  // Wetness of existing paint
-  let wetness = calculate_wetness(state.r, params.session_time, params.surface_dry_speed, state.g);
-  let tacky = smoothstep(0.1, 0.25, wetness) * smoothstep(0.5, 0.35, wetness);
 
   // Surface absorption
   let bare_surface = 1.0 - saturate(existing.a * 3.0);

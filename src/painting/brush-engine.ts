@@ -42,9 +42,9 @@ let maskWidth = 0;
 let maskHeight = 0;
 let needMaskClear = true;
 
-// BrushParams: 80 bytes
+// BrushParams: 96 bytes
 // BristleInfo: 48 bytes × 48 = 2,304 bytes
-const UNIFORM_SIZE = 80;
+const UNIFORM_SIZE = 96;
 const MAX_VERTICES = 4096;    // 48 bristles × 84 verts each
 const VERTEX_STRIDE = 16;     // bytes per StrokeVertex (vec2f + f32 + f32)
 const BRISTLE_INFO_STRIDE = 48; // bytes per BristleInfo
@@ -122,7 +122,7 @@ export function initBrushEngine() {
     addressModeV: 'repeat',
   });
 
-  pipeline = createComputePipeline('brush-v9', device, {
+  pipeline = createComputePipeline('brush-v10', device, {
     label: 'brush-compute',
     layout: device.createPipelineLayout({
       bindGroupLayouts: [paramLayout, textureLayout, auxLayout],
@@ -353,7 +353,7 @@ function dispatchBristlePaths(
     infoF32[infoOff + 11] = path.count >= 2 ? path.radii[path.count - 1] : 0; // bristle_radius
   }
 
-  // Write uniform buffer (80 bytes)
+  // Write uniform buffer (96 bytes)
   const ab = new ArrayBuffer(UNIFORM_SIZE);
   const f32 = new Float32Array(ab);
   const u32 = new Uint32Array(ab);
@@ -377,6 +377,8 @@ function dispatchBristlePaths(
   u32[17] = SELECTED_TIP_COUNT;  // bristle_count (was vertex_count)
   f32[18] = getOilRemaining();
   f32[19] = getAnchorRemaining();
+  const mat = getMaterial(scene.surface.material);
+  f32[20] = mat.tooth;    // surface_tooth
   device.queue.writeBuffer(uniformBuffer, 0, ab);
 
   // Upload buffers
