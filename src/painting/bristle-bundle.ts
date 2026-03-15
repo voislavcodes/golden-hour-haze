@@ -643,9 +643,9 @@ export function updateBundle(
 
     // Deduplicate: skip if tip hasn't moved at least 10% of its radius.
     // Prevents O-U jitter from generating vertices when stationary (release blob).
-    // Always allow first 2 vertices — shader needs a capsule segment to render.
+    // With trim-to-1, dedup at count >= 1 prevents stationary re-deposition.
     const dedupThresh = rBristle * rBristle * 0.01;
-    if (path.count >= 2) {
+    if (path.count >= 1) {
       const lastP = path.positions[path.count - 1];
       const ddx = wx - lastP[0];
       const ddy = wy - lastP[1];
@@ -729,25 +729,24 @@ export function anyPathOverBudget(bundle: BristleBundle): boolean {
   return false;
 }
 
-/** Reset all paths to their last 2 vertices (for mid-stroke snapshot reset) */
+/** Reset all paths to their last vertex (junction anchor for next commit cycle).
+ *  Keeping 1 vertex instead of 2 prevents re-rendering a committed segment —
+ *  each new segment is rendered once then committed, eliminating dab banding. */
 export function trimPathsToTail(bundle: BristleBundle): void {
   for (const path of bundle.paths) {
-    if (path.count > 2) {
-      const tailStart = path.count - 2;
+    if (path.count > 1) {
+      const tailStart = path.count - 1;
       path.positions = path.positions.slice(tailStart);
       path.radii = path.radii.slice(tailStart);
       path.loads = path.loads.slice(tailStart);
-      path.count = 2;
+      path.count = 1;
       // Recompute AABB from remaining
-      path.aabb = { minX: Infinity, minY: Infinity, maxX: -Infinity, maxY: -Infinity };
-      for (let i = 0; i < path.count; i++) {
-        const [px, py] = path.positions[i];
-        const r = path.radii[i] * 6; // account for paint spread
-        path.aabb.minX = Math.min(path.aabb.minX, px - r);
-        path.aabb.minY = Math.min(path.aabb.minY, py - r);
-        path.aabb.maxX = Math.max(path.aabb.maxX, px + r);
-        path.aabb.maxY = Math.max(path.aabb.maxY, py + r);
-      }
+      const [px, py] = path.positions[0];
+      const r = path.radii[0] * 6; // account for paint spread
+      path.aabb = {
+        minX: px - r, minY: py - r,
+        maxX: px + r, maxY: py + r,
+      };
     }
   }
 }

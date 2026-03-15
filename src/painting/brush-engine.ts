@@ -622,10 +622,9 @@ export function dispatchBrushDabs(encoder: GPUCommandEncoder, x: number, y: numb
       * (0.5 + 0.5 * avgPressure)
       * (1.0 + scene.thinners * 0.3)
       * splay;
-    // Distance-based depletion + contact cost for dabs (inversely scales with speed)
-    const speedNorm = Math.min(1, frameDistBrushWidths / 0.5);
-    const contactCost = 0.5 * avgPressure * splay * (1.0 - speedNorm);
-    const transferred = reservoir * transferRate * (frameDistBrushWidths + contactCost);
+    // Distance-based depletion only — per-tip contactTerm in bristle-bundle
+    // already handles stationary dab depletion with a tighter speed threshold.
+    const transferred = reservoir * transferRate * frameDistBrushWidths;
     reservoir = Math.max(RESIDUAL_FLOOR, reservoir - transferred);
   }
 
