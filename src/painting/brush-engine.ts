@@ -1,6 +1,6 @@
-// Brush engine — polyline SDF dispatch with snapshot re-render + bristle bundle physics
-// The 512-tip bristle bundle runs on CPU to drive per-vertex splay, depletion, and age.
-// The GPU renders via capsule SDF for continuous stroke coverage.
+// Brush engine — per-bristle path SDF dispatch with snapshot re-render + bristle bundle physics
+// 48 selected bristle tips trace individual capsule polylines on GPU.
+// Real gaps emerge from physical spacing — no synthetic sinusoidal texture.
 // Snapshot re-render: pre-stroke surface is saved, full stroke re-rendered each frame.
 
 import { getGPU } from '../gpu/context.js';
@@ -17,7 +17,9 @@ import {
   createBundle, updateBundle, dipBundle, wipeBundle,
   getAverageLoad, setSurfaceProperties,
   ensureBundle, getActiveBundle, setActiveBundle,
-  buildBristleProfile, BRISTLE_PROFILE_SIZE,
+  resetPaths, anyPathOverBudget, trimPathsToTail,
+  SELECTED_TIP_COUNT,
+  type BristlePath,
 } from './bristle-bundle.js';
 import brushShader from '../shaders/brush/brush.wgsl';
 
@@ -27,7 +29,7 @@ type SegPoint = { pos: Vec2; pressure: number; tiltX: number; tiltY: number };
 let pipeline: GPUComputePipeline;
 let uniformBuffer: GPUBuffer;
 let vertexBuffer: GPUBuffer;
-let profileBuffer: GPUBuffer;
+let bristleInfoBuffer: GPUBuffer;
 let paramLayout: GPUBindGroupLayout;
 let textureLayout: GPUBindGroupLayout;
 let auxLayout: GPUBindGroupLayout;
@@ -40,9 +42,14 @@ let maskWidth = 0;
 let maskHeight = 0;
 let needMaskClear = true;
 
-const UNIFORM_SIZE = 80;    // bytes — BrushParams struct
-const MAX_VERTICES = 4096;
-const VERTEX_STRIDE = 16;   // bytes per StrokeVertex (vec2f + f32 + pad)
+// BrushParams: 80 bytes
+// BristleInfo: 48 bytes × 48 = 2,304 bytes
+const UNIFORM_SIZE = 80;
+const MAX_VERTICES = 4096;    // 48 bristles × 84 verts each
+const VERTEX_STRIDE = 16;     // bytes per StrokeVertex (vec2f + f32 + f32)
+const BRISTLE_INFO_STRIDE = 48; // bytes per BristleInfo
+const BRISTLE_INFO_SIZE = SELECTED_TIP_COUNT * BRISTLE_INFO_STRIDE; // 2,304 bytes
+const MAX_VERTS_PER_BRISTLE = 84;
 const GHOST_COUNT = 3;
 
 let lastPos: Vec2 | null = null;
@@ -55,16 +62,10 @@ let estimatedPeakLayers = 0;
 
 // Paint depletion state
 let reservoir = 0.5;
-let lastReservoir = 1.0;
 let strokeDabCount = 0;
 let lastFrameTime = 0;
 let loadScale = 1.0;   // rag wipe reduces this; dip resets to 1.0
 let smoothedPressure = 0; // pressure envelope — asymmetric attack/release
-
-// Cumulative polyline — grows over the entire stroke lifetime
-// Each frame re-renders the full stroke from a pre-stroke snapshot
-type BakedVert = { pos: Vec2; radius: number; reservoir: number };
-let cumulativeVerts: BakedVert[] = [];
 
 // Snapshot re-render — save pre-stroke surface, re-render full stroke each frame
 // Eliminates frame boundary ridges (no incremental K-M mixing nonlinearity)
@@ -121,7 +122,7 @@ export function initBrushEngine() {
     addressModeV: 'repeat',
   });
 
-  pipeline = createComputePipeline('brush-v8', device, {
+  pipeline = createComputePipeline('brush-v9', device, {
     label: 'brush-compute',
     layout: device.createPipelineLayout({
       bindGroupLayouts: [paramLayout, textureLayout, auxLayout],
@@ -144,15 +145,11 @@ export function initBrushEngine() {
     usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
   });
 
-  profileBuffer = device.createBuffer({
-    label: 'brush-bristle-profile',
-    size: BRISTLE_PROFILE_SIZE * 4,
+  bristleInfoBuffer = device.createBuffer({
+    label: 'brush-bristle-info',
+    size: BRISTLE_INFO_SIZE,
     usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
   });
-  // Initialize to uniform 1.0 — no gating until first bundle update
-  const initProfile = new Float32Array(BRISTLE_PROFILE_SIZE);
-  initProfile.fill(1.0);
-  device.queue.writeBuffer(profileBuffer, 0, initProfile.buffer, initProfile.byteOffset, initProfile.byteLength);
 
   reloadBrush();
 }
@@ -208,7 +205,6 @@ export function reloadBrush() {
   // Reset reservoir — proportional to load amount
   loadScale = 1.0;
   reservoir = load;
-  lastReservoir = reservoir;
 
   // Init/dip the bristle bundle
   let bundle = getActiveBundle();
@@ -227,7 +223,6 @@ export function wipeBrush() {
   if (bundle) wipeBundle(bundle);
   loadScale *= 0.2;
   reservoir *= 0.2;
-  lastReservoir = reservoir;
 }
 
 export function getReservoir(): number {
@@ -262,76 +257,28 @@ function subdivideIfNeeded(prev: SegPoint, curr: SegPoint, maxLen: number): SegP
   return pts;
 }
 
-export function beginStroke(x: number, y: number, pressure: number) {
-  strokeStartLayers = estimatedPeakLayers;
-  lastPos = [x, y];
-  lastPressure = pressure;
-  lastRadius = 0;
-  strokeSegIndex = 0;
-  strokeDabCount = 0;
-  smoothedPressure = pressure; // start at actual pressure, not 0
-  ghostsPending = false;
-  needMaskClear = true;
-  needSnapshotCapture = true;
-  cumulativeVerts = [];
-  strokeAABB = { minX: Infinity, minY: Infinity, maxX: -Infinity, maxY: -Infinity };
-  lastFrameTime = performance.now() / 1000;
-
-  // Reset bundle position for new stroke
-  const slot = getBrushSlot(getActiveBrushSlot());
-  let bundle = getActiveBundle();
-  if (!bundle) {
-    bundle = createBundle(slot.bristleSeed, slot.age);
-    setActiveBundle(bundle);
-  }
-  bundle.lastPos = [x, y];
-  bundle.springBackActive = false;
-  bundle.springBackFrames = 0;
-  // Snap splay to initial pressure target — no spring delay for first touch
-  const initPSq = pressure * pressure;
-  bundle.splay = initPSq * 0.85 + 0.15;
-  bundle.splayVelocity = 0;
-
-  const scene = sceneStore.get();
-  const mat = getMaterial(scene.surface.material);
-  setSurfaceProperties(bundle, mat.friction, mat.tooth);
-}
-
-export function endStroke() {
-  if (lastPos && lastRadius > 0) {
-    const dir = lastDirection;
-    ghostAnchor = { pos: [...lastPos] as Vec2, pressure: lastPressure };
-    ghostPoints = [];
-    for (let i = 1; i <= GHOST_COUNT; i++) {
-      const t = i / GHOST_COUNT;
-      ghostPoints.push({
-        pos: [
-          lastPos[0] + dir[0] * lastRadius * 0.4 * i,
-          lastPos[1] + dir[1] * lastRadius * 0.4 * i,
-        ],
-        pressure: lastPressure * (1.0 - t * t),
-      });
-    }
-    ghostsPending = true;
-    markDirty('surface');
-  }
-  lastPos = null;
-  depleteOil();
-}
-
-/** Write uniform + vertex buffers and dispatch a single compute pass.
- *  useSnapshot: read from pre-stroke snapshot instead of current accum/state. */
-function dispatchPolyline(
+/** Write per-bristle vertex + info buffers and dispatch compute.
+ *  Reads from bundle.paths for per-bristle polylines. */
+function dispatchBristlePaths(
   encoder: GPUCommandEncoder,
-  verts: BakedVert[],
+  paths: BristlePath[],
   scene: ReturnType<typeof sceneStore.get>,
   slot: ReturnType<typeof getBrushSlot>,
   ks: { Kr: number; Kg: number; Kb: number },
   label: string,
-  aabb?: AABB,
+  aabb: AABB,
   useSnapshot = false,
 ) {
-  if (verts.length === 0) return;
+  // Count total verts across all bristles
+  let totalVerts = 0;
+  let activeBristles = 0;
+  for (const path of paths) {
+    if (path.count >= 2) {
+      totalVerts += path.count;
+      activeBristles++;
+    }
+  }
+  if (totalVerts === 0 || activeBristles === 0) return;
 
   const { device } = getGPU();
   const w = getSurfaceWidth();
@@ -369,35 +316,51 @@ function dispatchPolyline(
     needMaskClear = false;
   }
 
-  const vertexCount = Math.min(verts.length, MAX_VERTICES);
+  // Pack vertices into fixed-stride slots: 84 verts × 48 bristles
+  const vertData = new Float32Array(MAX_VERTICES * 4);
+  const infoData = new ArrayBuffer(BRISTLE_INFO_SIZE);
+  const infoF32 = new Float32Array(infoData);
+  const infoU32 = new Uint32Array(infoData);
 
-  // AABB
-  let bbMinX: number, bbMinY: number, bbMaxX: number, bbMaxY: number;
-  if (aabb) {
-    bbMinX = aabb.minX;
-    bbMinY = aabb.minY;
-    bbMaxX = aabb.maxX;
-    bbMaxY = aabb.maxY;
-  } else {
-    bbMinX = Infinity; bbMinY = Infinity;
-    bbMaxX = -Infinity; bbMaxY = -Infinity;
-    for (let i = 0; i < vertexCount; i++) {
-      const v = verts[i];
-      bbMinX = Math.min(bbMinX, v.pos[0] - v.radius);
-      bbMinY = Math.min(bbMinY, v.pos[1] - v.radius);
-      bbMaxX = Math.max(bbMaxX, v.pos[0] + v.radius);
-      bbMaxY = Math.max(bbMaxY, v.pos[1] + v.radius);
+  for (let bi = 0; bi < paths.length; bi++) {
+    const path = paths[bi];
+    const slotStart = bi * MAX_VERTS_PER_BRISTLE;
+    const count = Math.min(path.count, MAX_VERTS_PER_BRISTLE);
+
+    // Write vertices into fixed slot
+    for (let vi = 0; vi < count; vi++) {
+      const off = (slotStart + vi) * 4;
+      if (off + 3 >= vertData.length) break;
+      vertData[off] = path.positions[vi][0];
+      vertData[off + 1] = path.positions[vi][1];
+      vertData[off + 2] = path.radii[vi];
+      vertData[off + 3] = path.loads[vi];
     }
+
+    // Write BristleInfo (48 bytes = 12 floats/u32s)
+    const infoOff = bi * 12; // 48 bytes / 4
+    infoU32[infoOff + 0] = slotStart;       // offset
+    infoU32[infoOff + 1] = count;            // count
+    infoF32[infoOff + 2] = path.count >= 2 ? path.loads[path.count - 1] : 0; // load (latest)
+    infoF32[infoOff + 3] = path.ringNorm;    // ring_norm
+    infoF32[infoOff + 4] = path.aabb.minX;   // bb_min.x
+    infoF32[infoOff + 5] = path.aabb.minY;   // bb_min.y
+    infoF32[infoOff + 6] = path.aabb.maxX;   // bb_max.x
+    infoF32[infoOff + 7] = path.aabb.maxY;   // bb_max.y
+    infoF32[infoOff + 8] = path.colorKr;     // color_kr
+    infoF32[infoOff + 9] = path.colorKg;     // color_kg
+    infoF32[infoOff + 10] = path.colorKb;    // color_kb
+    infoF32[infoOff + 11] = path.count >= 2 ? path.radii[path.count - 1] : 0; // bristle_radius
   }
 
   // Write uniform buffer (80 bytes)
   const ab = new ArrayBuffer(UNIFORM_SIZE);
   const f32 = new Float32Array(ab);
   const u32 = new Uint32Array(ab);
-  f32[0] = bbMinX;
-  f32[1] = bbMinY;
-  f32[2] = bbMaxX;
-  f32[3] = bbMaxY;
+  f32[0] = aabb.minX;
+  f32[1] = aabb.minY;
+  f32[2] = aabb.maxX;
+  f32[3] = aabb.maxY;
   f32[4] = ks.Kr;
   f32[5] = ks.Kg;
   f32[6] = ks.Kb;
@@ -411,22 +374,14 @@ function dispatchPolyline(
   f32[14] = scene.surface.absorption;
   f32[15] = sessionTime;
   f32[16] = scene.surface.drySpeed;
-  u32[17] = vertexCount;
+  u32[17] = SELECTED_TIP_COUNT;  // bristle_count (was vertex_count)
   f32[18] = getOilRemaining();
   f32[19] = getAnchorRemaining();
   device.queue.writeBuffer(uniformBuffer, 0, ab);
 
-  // Write vertex buffer
-  const vertData = new Float32Array(vertexCount * 4);
-  for (let i = 0; i < vertexCount; i++) {
-    const v = verts[i];
-    const off = i * 4;
-    vertData[off] = v.pos[0];
-    vertData[off + 1] = v.pos[1];
-    vertData[off + 2] = v.radius;
-    vertData[off + 3] = v.reservoir;
-  }
+  // Upload buffers
   device.queue.writeBuffer(vertexBuffer, 0, vertData);
+  device.queue.writeBuffer(bristleInfoBuffer, 0, infoData);
 
   // Bind groups — snapshot mode reads from pre-stroke snapshot
   const accumPP = getAccumPP();
@@ -441,7 +396,7 @@ function dispatchPolyline(
     entries: [
       { binding: 0, resource: { buffer: uniformBuffer } },
       { binding: 1, resource: { buffer: vertexBuffer } },
-      { binding: 2, resource: { buffer: profileBuffer } },
+      { binding: 2, resource: { buffer: bristleInfoBuffer } },
     ],
   });
   const texBG = device.createBindGroup({
@@ -475,6 +430,65 @@ function dispatchPolyline(
   swapSurface();
 }
 
+export function beginStroke(x: number, y: number, pressure: number) {
+  strokeStartLayers = estimatedPeakLayers;
+  lastPos = [x, y];
+  lastPressure = pressure;
+  lastRadius = 0;
+  strokeSegIndex = 0;
+  strokeDabCount = 0;
+  smoothedPressure = pressure; // start at actual pressure, not 0
+  ghostsPending = false;
+  needMaskClear = true;
+  needSnapshotCapture = true;
+  strokeAABB = { minX: Infinity, minY: Infinity, maxX: -Infinity, maxY: -Infinity };
+  lastFrameTime = performance.now() / 1000;
+
+  // Reset bundle position for new stroke
+  const slot = getBrushSlot(getActiveBrushSlot());
+  let bundle = getActiveBundle();
+  if (!bundle) {
+    bundle = createBundle(slot.bristleSeed, slot.age);
+    setActiveBundle(bundle);
+  }
+  bundle.lastPos = [x, y];
+  bundle.springBackActive = false;
+  bundle.springBackFrames = 0;
+  // Snap splay to initial pressure target — no spring delay for first touch
+  const initPSq = pressure * pressure;
+  bundle.splay = initPSq * 0.85 + 0.15;
+  bundle.splayVelocity = 0;
+
+  // Reset per-bristle paths for new stroke
+  resetPaths(bundle);
+
+  const scene = sceneStore.get();
+  const mat = getMaterial(scene.surface.material);
+  setSurfaceProperties(bundle, mat.friction, mat.tooth);
+}
+
+export function endStroke() {
+  if (lastPos && lastRadius > 0) {
+    const dir = lastDirection;
+    ghostAnchor = { pos: [...lastPos] as Vec2, pressure: lastPressure };
+    ghostPoints = [];
+    for (let i = 1; i <= GHOST_COUNT; i++) {
+      const t = i / GHOST_COUNT;
+      ghostPoints.push({
+        pos: [
+          lastPos[0] + dir[0] * lastRadius * 0.4 * i,
+          lastPos[1] + dir[1] * lastRadius * 0.4 * i,
+        ],
+        pressure: lastPressure * (1.0 - t * t),
+      });
+    }
+    ghostsPending = true;
+    markDirty('surface');
+  }
+  lastPos = null;
+  depleteOil();
+}
+
 export function dispatchPendingGhosts(encoder: GPUCommandEncoder): boolean {
   if (!ghostsPending || !ghostAnchor) return false;
   ghostsPending = false;
@@ -482,27 +496,61 @@ export function dispatchPendingGhosts(encoder: GPUCommandEncoder): boolean {
   const scene = sceneStore.get();
   const slot = getBrushSlot(getActiveBrushSlot());
   const ks = getActiveKS();
-  const ui = uiStore.get();
-
-  const spread = 1.0 + scene.thinners * 0.4;
   const bundle = getActiveBundle();
-  const baseSplay = bundle
-    ? bundle.splay * (1.0 + bundle.age * 0.3)
-    : (1.0 + slot.age * 0.3);
 
+  if (!bundle) {
+    ghostAnchor = null;
+    ghostPoints = [];
+    return false;
+  }
+
+  // For ghosts, extend each selected bristle path with tapered ghost vertices
   const chain = [ghostAnchor, ...ghostPoints];
-  const verts: BakedVert[] = chain.map((pt, i) => {
-    // Taper splay toward 0 as ghost lifts off
-    const t = i / chain.length;
-    const splay = baseSplay * (1.0 - t * 0.5);
-    return {
-      pos: pt.pos,
-      radius: pressureRadius(ui.brushSize, pt.pressure) * spread * splay,
-      reservoir: reservoir,
-    };
-  });
+  const baseSplay = bundle.splay * (1.0 + bundle.age * 0.3);
+  const ui = uiStore.get();
+  const spread = 1.0 + scene.thinners * 0.4;
 
-  dispatchPolyline(encoder, verts, scene, slot, ks, 'brush-ghost');
+  for (let si = 0; si < bundle.paths.length; si++) {
+    const path = bundle.paths[si];
+    if (path.count < 1) continue;
+
+    const tip = bundle.tips[bundle.selectedTips[si]];
+
+    for (let gi = 0; gi < chain.length; gi++) {
+      const pt = chain[gi];
+      const t = gi / chain.length;
+      const splay = baseSplay * (1.0 - t * 0.5);
+      const rBristle = (ui.brushSize / Math.sqrt(SELECTED_TIP_COUNT))
+        * (1.1 - 0.2 * tip.ringNorm) * splay;
+
+      // Ghost position: offset from center by tip's current offset
+      const wx = pt.pos[0] + tip.currentOffset[0] * ui.brushSize;
+      const wy = pt.pos[1] + tip.currentOffset[1] * ui.brushSize;
+
+      path.positions.push([wx, wy]);
+      path.radii.push(Math.max(rBristle * (1.0 - t * 0.5), 0.0005));
+      path.loads.push(tip.load * (1.0 - t));
+      path.count++;
+
+      // Update AABB
+      path.aabb.minX = Math.min(path.aabb.minX, wx - rBristle);
+      path.aabb.minY = Math.min(path.aabb.minY, wy - rBristle);
+      path.aabb.maxX = Math.max(path.aabb.maxX, wx + rBristle);
+      path.aabb.maxY = Math.max(path.aabb.maxY, wy + rBristle);
+    }
+  }
+
+  // Compute ghost AABB for dispatch
+  let ghostAABB: AABB = { ...strokeAABB };
+  for (const pt of chain) {
+    const maxR = ui.brushSize * spread * baseSplay;
+    ghostAABB.minX = Math.min(ghostAABB.minX, pt.pos[0] - maxR);
+    ghostAABB.minY = Math.min(ghostAABB.minY, pt.pos[1] - maxR);
+    ghostAABB.maxX = Math.max(ghostAABB.maxX, pt.pos[0] + maxR);
+    ghostAABB.maxY = Math.max(ghostAABB.maxY, pt.pos[1] + maxR);
+  }
+
+  dispatchBristlePaths(encoder, bundle.paths, scene, slot, ks, 'brush-ghost', ghostAABB);
 
   ghostAnchor = null;
   ghostPoints = [];
@@ -545,29 +593,15 @@ export function dispatchBrushDabs(encoder: GPUCommandEncoder, x: number, y: numb
   }
 
   if (points.length === 0) return false;
-  if (points.length > MAX_VERTICES) {
-    points = points.slice(points.length - MAX_VERTICES);
-  }
 
   const ks = getActiveKS();
   const slot = getBrushSlot(getActiveBrushSlot());
   const bundle = ensureBundle(slot.bristleSeed, slot.age);
 
-  // Advance bundle physics for each waypoint
+  // Advance bundle physics for each waypoint — this also appends to per-bristle paths
   const dtPerWp = waypoints.length > 1 ? dt / waypoints.length : dt;
   for (const wp of waypoints) {
     updateBundle(bundle, wp.pos, wp.pressure, wp.tiltX, wp.tiltY, dtPerWp, radius);
-  }
-
-  // Build bristle density profile for GPU dry brush contact gate
-  const bVel = bundle.lastVelocity;
-  const bSpeed = Math.sqrt(bVel[0] ** 2 + bVel[1] ** 2);
-  if (bSpeed > 0.001) {
-    const bDirX = bVel[0] / bSpeed;
-    const bDirY = bVel[1] / bSpeed;
-    const profile = buildBristleProfile(bundle, bDirX, bDirY);
-    const { device } = getGPU();
-    device.queue.writeBuffer(profileBuffer, 0, profile.buffer, profile.byteOffset, profile.byteLength);
   }
 
   // Compute frame distance in brush-widths for exponential paint transfer
@@ -581,9 +615,7 @@ export function dispatchBrushDabs(encoder: GPUCommandEncoder, x: number, y: numb
   }
   const frameDistBrushWidths = frameDist / radiusPixels;
 
-  // Exponential decay reservoir — each unit of contact transfers a fraction of remaining paint.
-  // Early in stroke: loaded head (lots remaining → lots transferred).
-  // Late in stroke: dry tail (little remaining → little transferred).
+  // Exponential decay reservoir
   const load = scene.load;
   const effectiveLoad = load * loadScale;
   if (effectiveLoad <= 0) {
@@ -609,32 +641,11 @@ export function dispatchBrushDabs(encoder: GPUCommandEncoder, x: number, y: numb
     reservoir = reservoir * 0.9 + bundleLoad * 0.1;
   }
 
-  // Build StrokeVertex array — pressure envelope + bundle splay modulates radius
-  const spread = 1.0 + scene.thinners * 0.4;
-  const splayCurrent = bundle.splay * (1.0 + bundle.age * 0.3);
-  const NORMAL_SPEED = 0.003; // normalized coords/frame for endpoint detection
-  const verts: BakedVert[] = [];
-
+  // Pressure smoothing for radius tracking
   for (let i = 0; i < points.length; i++) {
-    // Asymmetric pressure smoothing — fast attack, slow release
     const targetP = points[i].pressure;
     const rate = targetP > smoothedPressure ? 0.15 : 0.08;
     smoothedPressure += (targetP - smoothedPressure) * rate;
-
-    const r = pressureRadius(radius, smoothedPressure) * spread * splayCurrent;
-    const t = points.length > 1 ? i / (points.length - 1) : 1.0;
-    let vertRes = lastReservoir + (reservoir - lastReservoir) * t;
-
-    // Endpoint paint accumulation — slow brush movement pools paint
-    if (i > 0) {
-      const dx = points[i].pos[0] - points[i - 1].pos[0];
-      const dy = points[i].pos[1] - points[i - 1].pos[1];
-      const ptSpeed = Math.sqrt(dx * dx + dy * dy);
-      const slowBoost = 1.0 + 0.3 * Math.max(0, 1.0 - ptSpeed / NORMAL_SPEED);
-      vertRes = Math.min(1.0, vertRes * slowBoost);
-    }
-
-    verts.push({ pos: points[i].pos, radius: r, reservoir: vertRes });
   }
 
   // Track direction for ghost segments
@@ -651,32 +662,14 @@ export function dispatchBrushDabs(encoder: GPUCommandEncoder, x: number, y: numb
   const newSegs = strokeDabCount === 0 ? points.length : points.length - 1;
   strokeSegIndex += points.length;
   strokeDabCount += Math.max(1, newSegs);
-  if (verts.length > 0) {
-    lastRadius = verts[verts.length - 1].radius;
-  }
 
-  // Self-intersection detection — auto-commit before SDF corruption
-  const SELF_INTERSECT_GAP = 20;
-  let commitNeeded = false;
-  if (cumulativeVerts.length > SELF_INTERSECT_GAP && verts.length > 0) {
-    const checkEnd = cumulativeVerts.length - SELF_INTERSECT_GAP;
-    outer:
-    for (const nv of verts) {
-      for (let i = 0; i < checkEnd; i += 4) {
-        const ov = cumulativeVerts[i];
-        const threshold = nv.radius + ov.radius;
-        const dx = nv.pos[0] - ov.pos[0];
-        const dy = nv.pos[1] - ov.pos[1];
-        if (dx * dx + dy * dy < threshold * threshold) {
-          commitNeeded = true;
-          break outer;
-        }
-      }
-    }
-  }
+  // Track last radius from brush width
+  const spread = 1.0 + scene.thinners * 0.4;
+  const splayCurrent = bundle.splay * (1.0 + bundle.age * 0.3);
+  lastRadius = pressureRadius(radius, smoothedPressure) * spread * splayCurrent;
 
-  // Auto-commit before self-intersection corrupts the SDF
-  if (commitNeeded && snapshotAccum) {
+  // Mid-stroke commit: when any bristle path exceeds budget, commit snapshot + reset
+  if (anyPathOverBudget(bundle) && snapshotAccum) {
     const accumPP = getAccumPP();
     const statePP = getStatePP();
     const h = getSurfaceHeight();
@@ -686,42 +679,34 @@ export function dispatchBrushDabs(encoder: GPUCommandEncoder, x: number, y: numb
     encoder.copyTextureToTexture(
       { texture: statePP.read }, { texture: snapshotState! }, [w, h],
     );
-    cumulativeVerts = cumulativeVerts.slice(-2);
+    trimPathsToTail(bundle);
     strokeAABB = { minX: Infinity, minY: Infinity, maxX: -Infinity, maxY: -Infinity };
-    for (const v of cumulativeVerts) {
-      strokeAABB.minX = Math.min(strokeAABB.minX, v.pos[0] - v.radius);
-      strokeAABB.minY = Math.min(strokeAABB.minY, v.pos[1] - v.radius);
-      strokeAABB.maxX = Math.max(strokeAABB.maxX, v.pos[0] + v.radius);
-      strokeAABB.maxY = Math.max(strokeAABB.maxY, v.pos[1] + v.radius);
+    for (const path of bundle.paths) {
+      if (path.count > 0) {
+        strokeAABB.minX = Math.min(strokeAABB.minX, path.aabb.minX);
+        strokeAABB.minY = Math.min(strokeAABB.minY, path.aabb.minY);
+        strokeAABB.maxX = Math.max(strokeAABB.maxX, path.aabb.maxX);
+        strokeAABB.maxY = Math.max(strokeAABB.maxY, path.aabb.maxY);
+      }
     }
   }
 
-  // Accumulate into cumulative polyline
-  if (cumulativeVerts.length === 0) {
-    cumulativeVerts = [...verts];
-  } else if (verts.length > 0) {
-    cumulativeVerts.push(...verts.slice(1));
-  }
-
-  if (cumulativeVerts.length > MAX_VERTICES) {
-    cumulativeVerts = cumulativeVerts.slice(0, MAX_VERTICES);
-  }
-
-  // Expand cumulative stroke AABB
-  for (const v of verts) {
-    strokeAABB.minX = Math.min(strokeAABB.minX, v.pos[0] - v.radius);
-    strokeAABB.minY = Math.min(strokeAABB.minY, v.pos[1] - v.radius);
-    strokeAABB.maxX = Math.max(strokeAABB.maxX, v.pos[0] + v.radius);
-    strokeAABB.maxY = Math.max(strokeAABB.maxY, v.pos[1] + v.radius);
+  // Expand cumulative stroke AABB from all paths
+  for (const path of bundle.paths) {
+    if (path.count > 0) {
+      strokeAABB.minX = Math.min(strokeAABB.minX, path.aabb.minX);
+      strokeAABB.minY = Math.min(strokeAABB.minY, path.aabb.minY);
+      strokeAABB.maxX = Math.max(strokeAABB.maxX, path.aabb.maxX);
+      strokeAABB.maxY = Math.max(strokeAABB.maxY, path.aabb.maxY);
+    }
   }
 
   // Clear mask every frame — re-render from scratch
   needMaskClear = true;
 
-  // Dispatch full cumulative polyline against pre-stroke snapshot
-  dispatchPolyline(encoder, cumulativeVerts, scene, slot, ks, 'brush-stroke',
+  // Dispatch all per-bristle paths against pre-stroke snapshot
+  dispatchBristlePaths(encoder, bundle.paths, scene, slot, ks, 'brush-stroke',
     strokeAABB, true);
-  lastReservoir = reservoir;
 
   // Update CPU-side peak weight estimate
   const pigmentDensity = Math.pow(1.0 - scene.thinners * 0.9, 1.5);

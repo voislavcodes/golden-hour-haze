@@ -155,7 +155,8 @@ async function replayStroke(points: StrokePoint[], options: StrokeOptions = {}) 
     load,
   } = options;
 
-  // Configure tool and brush
+  // Configure tool and brush — set load/thinners BEFORE reloadBrush so
+  // the reservoir initializes with the correct paint amount.
   uiStore.set({ activeTool: tool });
   if (brushSlot !== undefined) {
     uiStore.set({ activeBrushSlot: brushSlot });
@@ -164,18 +165,18 @@ async function replayStroke(points: StrokePoint[], options: StrokeOptions = {}) 
   if (brushSize !== undefined) {
     uiStore.set({ brushSize });
   }
+  if (thinners !== undefined) {
+    sceneStore.set({ thinners });
+  }
+  if (load !== undefined) {
+    sceneStore.set({ load });
+  }
   if (hueIndex !== undefined) {
     sceneStore.update(s => ({
       palette: { ...s.palette, activeIndex: hueIndex },
     }));
     dipBrush(hueIndex);
     reloadBrush();
-  }
-  if (thinners !== undefined) {
-    sceneStore.set({ thinners });
-  }
-  if (load !== undefined) {
-    sceneStore.set({ load });
   }
 
   await waitFrames(2);
@@ -527,6 +528,8 @@ const bridge = {
       age: bundle.age,
       stiffness: bundle.stiffness,
       recoveryRate: bundle.recoveryRate,
+      selectedTipCount: bundle.selectedTips.length,
+      pathVertCounts: bundle.paths.map(p => p.count),
     };
   },
 

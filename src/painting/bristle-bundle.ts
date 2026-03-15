@@ -8,6 +8,25 @@
 
 type Vec2 = [number, number];
 
+// --- Per-bristle path rendering constants ---
+export const SELECTED_TIP_COUNT = 48;
+const MAX_VERTS_PER_BRISTLE = 84;
+const RDP_THRESHOLD_RATIO = 0.5; // epsilon = brushRadius * this
+const RDP_TRIGGER = 67;          // 80% of 84
+
+export interface BristlePath {
+  tipIndex: number;
+  positions: Vec2[];
+  radii: number[];
+  loads: number[];
+  count: number;
+  aabb: { minX: number; minY: number; maxX: number; maxY: number };
+  colorKr: number;
+  colorKg: number;
+  colorKb: number;
+  ringNorm: number;
+}
+
 export interface BristleTip {
   restOffset: Vec2;
   currentOffset: Vec2;
@@ -46,6 +65,8 @@ export interface BristleBundle {
   friction: number;
   tooth: number;
   frameCount: number;       // for stochastic seeding
+  selectedTips: number[];   // 48 indices into tips[] for per-bristle path rendering
+  paths: BristlePath[];     // 48 per-bristle polyline paths
 }
 
 // --- Pickup grid (64x64 low-res color tracking) ---
@@ -241,6 +262,126 @@ function generatePinkNoise(count: number, seed: number): Float32Array {
   return result;
 }
 
+// --- Ramer-Douglas-Peucker path decimation ---
+function rdpPerpendicularDist(p: Vec2, a: Vec2, b: Vec2): number {
+  const dx = b[0] - a[0];
+  const dy = b[1] - a[1];
+  const lenSq = dx * dx + dy * dy;
+  if (lenSq < 1e-12) return Math.sqrt((p[0] - a[0]) ** 2 + (p[1] - a[1]) ** 2);
+  const t = Math.max(0, Math.min(1, ((p[0] - a[0]) * dx + (p[1] - a[1]) * dy) / lenSq));
+  const projX = a[0] + t * dx;
+  const projY = a[1] + t * dy;
+  return Math.sqrt((p[0] - projX) ** 2 + (p[1] - projY) ** 2);
+}
+
+export function decimatePath(path: BristlePath, epsilon: number): void {
+  if (path.count <= 2) return;
+
+  const keep = new Uint8Array(path.count);
+  keep[0] = 1;
+  keep[path.count - 1] = 1;
+
+  // Iterative stack-based RDP
+  const stack: [number, number][] = [[0, path.count - 1]];
+  while (stack.length > 0) {
+    const [start, end] = stack.pop()!;
+    let maxDist = 0;
+    let maxIdx = start;
+    for (let i = start + 1; i < end; i++) {
+      const d = rdpPerpendicularDist(path.positions[i], path.positions[start], path.positions[end]);
+      if (d > maxDist) { maxDist = d; maxIdx = i; }
+    }
+    if (maxDist > epsilon) {
+      keep[maxIdx] = 1;
+      if (maxIdx - start > 1) stack.push([start, maxIdx]);
+      if (end - maxIdx > 1) stack.push([maxIdx, end]);
+    }
+  }
+
+  // Compact in-place
+  let write = 0;
+  for (let i = 0; i < path.count; i++) {
+    if (keep[i]) {
+      path.positions[write] = path.positions[i];
+      path.radii[write] = path.radii[i];
+      path.loads[write] = path.loads[i];
+      write++;
+    }
+  }
+  path.count = write;
+  path.positions.length = write;
+  path.radii.length = write;
+  path.loads.length = write;
+}
+
+// --- Stratified tip selection: 48 tips from 1024 ---
+// 4 concentric bands by ringNorm, proportional to ring area
+function selectTips(tips: BristleTip[], seed: number): number[] {
+  const rng = splitmix32(seed + 31337);
+  const bands: { range: [number, number]; count: number }[] = [
+    { range: [0, 0.25], count: 4 },
+    { range: [0.25, 0.5], count: 12 },
+    { range: [0.5, 0.75], count: 16 },
+    { range: [0.75, 1.0], count: 16 },
+  ];
+
+  const selected: number[] = [];
+  for (const band of bands) {
+    // Collect candidate indices in this band
+    const candidates: number[] = [];
+    for (let i = 0; i < tips.length; i++) {
+      if (tips[i].ringNorm >= band.range[0] && tips[i].ringNorm < band.range[1]) {
+        candidates.push(i);
+      }
+    }
+    // Include tips at ringNorm exactly 1.0 in the last band
+    if (band.range[1] === 1.0) {
+      for (let i = 0; i < tips.length; i++) {
+        if (tips[i].ringNorm === 1.0 && !candidates.includes(i)) {
+          candidates.push(i);
+        }
+      }
+    }
+
+    // Sort by angle for even angular distribution, then pick evenly spaced
+    candidates.sort((a, b) => {
+      const aa = Math.atan2(tips[a].restOffset[1], tips[a].restOffset[0]);
+      const ab = Math.atan2(tips[b].restOffset[1], tips[b].restOffset[0]);
+      return aa - ab;
+    });
+
+    const n = Math.min(band.count, candidates.length);
+    if (candidates.length <= n) {
+      selected.push(...candidates);
+    } else {
+      // Evenly spaced with jitter
+      const step = candidates.length / n;
+      const offset = rng() * step;
+      for (let i = 0; i < n; i++) {
+        const idx = Math.floor(offset + i * step) % candidates.length;
+        selected.push(candidates[idx]);
+      }
+    }
+  }
+
+  return selected;
+}
+
+function createEmptyPath(tipIndex: number, tip: BristleTip): BristlePath {
+  return {
+    tipIndex,
+    positions: [],
+    radii: [],
+    loads: [],
+    count: 0,
+    aabb: { minX: Infinity, minY: Infinity, maxX: -Infinity, maxY: -Infinity },
+    colorKr: tip.colorKr,
+    colorKg: tip.colorKg,
+    colorKb: tip.colorKb,
+    ringNorm: tip.ringNorm,
+  };
+}
+
 // --- Bundle creation ---
 
 export function createBundle(seed: number, age: number): BristleBundle {
@@ -288,6 +429,9 @@ export function createBundle(seed: number, age: number): BristleBundle {
 
   initPickupGrid();
 
+  const selectedTips = selectTips(tips, seed);
+  const paths = selectedTips.map(idx => createEmptyPath(idx, tips[idx]));
+
   return {
     tips,
     tipCount: tips.length,
@@ -306,6 +450,8 @@ export function createBundle(seed: number, age: number): BristleBundle {
     friction: 0.3,
     tooth: 0.4,
     frameCount: 0,
+    selectedTips,
+    paths,
   };
 }
 
@@ -444,6 +590,48 @@ export function updateBundle(
     }
   }
 
+  // --- Per-bristle path tracking: append world-space positions for selected tips ---
+  for (let si = 0; si < bundle.selectedTips.length; si++) {
+    const tipIdx = bundle.selectedTips[si];
+    const tip = tips[tipIdx];
+    const path = bundle.paths[si];
+
+    const wx: number = pos[0] + tip.currentOffset[0] * brushRadius;
+    const wy: number = pos[1] + tip.currentOffset[1] * brushRadius;
+    const splayScale = bundle.splay * (1.0 + bundle.age * 0.3);
+    const rBristle = (brushRadius / Math.sqrt(SELECTED_TIP_COUNT))
+      * (1.1 - 0.2 * tip.ringNorm) * splayScale;
+
+    // Deduplicate: skip if identical to last position
+    if (path.count > 0) {
+      const lastP = path.positions[path.count - 1];
+      const ddx = wx - lastP[0];
+      const ddy = wy - lastP[1];
+      if (ddx * ddx + ddy * ddy < 1e-12) continue;
+    }
+
+    path.positions.push([wx, wy]);
+    path.radii.push(Math.max(rBristle, 0.0005));
+    path.loads.push(tip.load);
+    path.count++;
+
+    // Update per-bristle color from tip
+    path.colorKr = tip.colorKr;
+    path.colorKg = tip.colorKg;
+    path.colorKb = tip.colorKb;
+
+    // Update AABB
+    path.aabb.minX = Math.min(path.aabb.minX, wx - rBristle);
+    path.aabb.minY = Math.min(path.aabb.minY, wy - rBristle);
+    path.aabb.maxX = Math.max(path.aabb.maxX, wx + rBristle);
+    path.aabb.maxY = Math.max(path.aabb.maxY, wy + rBristle);
+
+    // RDP decimation when path gets long
+    if (path.count >= RDP_TRIGGER) {
+      decimatePath(path, brushRadius * RDP_THRESHOLD_RATIO);
+    }
+  }
+
   bundle.lastPos = [pos[0], pos[1]];
 }
 
@@ -474,6 +662,48 @@ export function wipeBundle(bundle: BristleBundle) {
     tip.contamination *= 0.2;
     tip.oil = 0;
     tip.anchor = 0;
+  }
+}
+
+export function getSelectedPaths(bundle: BristleBundle): BristlePath[] {
+  return bundle.paths;
+}
+
+export function resetPaths(bundle: BristleBundle): void {
+  for (let i = 0; i < bundle.paths.length; i++) {
+    const tip = bundle.tips[bundle.selectedTips[i]];
+    bundle.paths[i] = createEmptyPath(bundle.selectedTips[i], tip);
+  }
+}
+
+/** Check if any path has exceeded the vertex budget and needs a snapshot commit */
+export function anyPathOverBudget(bundle: BristleBundle): boolean {
+  for (const path of bundle.paths) {
+    if (path.count >= MAX_VERTS_PER_BRISTLE) return true;
+  }
+  return false;
+}
+
+/** Reset all paths to their last 2 vertices (for mid-stroke snapshot reset) */
+export function trimPathsToTail(bundle: BristleBundle): void {
+  for (const path of bundle.paths) {
+    if (path.count > 2) {
+      const tailStart = path.count - 2;
+      path.positions = path.positions.slice(tailStart);
+      path.radii = path.radii.slice(tailStart);
+      path.loads = path.loads.slice(tailStart);
+      path.count = 2;
+      // Recompute AABB from remaining
+      path.aabb = { minX: Infinity, minY: Infinity, maxX: -Infinity, maxY: -Infinity };
+      for (let i = 0; i < path.count; i++) {
+        const [px, py] = path.positions[i];
+        const r = path.radii[i];
+        path.aabb.minX = Math.min(path.aabb.minX, px - r);
+        path.aabb.minY = Math.min(path.aabb.minY, py - r);
+        path.aabb.maxX = Math.max(path.aabb.maxX, px + r);
+        path.aabb.maxY = Math.max(path.aabb.maxY, py + r);
+      }
+    }
   }
 }
 
