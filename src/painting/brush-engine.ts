@@ -644,9 +644,14 @@ export function dispatchBrushDabs(encoder: GPUCommandEncoder, x: number, y: numb
   }
 
   // Advance bundle physics AFTER reservoir depletion — per-vertex loads reflect current reservoir
+  let vertsBefore = 0;
+  for (const p of bundle.paths) vertsBefore += p.count;
   for (const wp of waypoints) {
     updateBundle(bundle, wp.pos, wp.pressure, wp.tiltX, wp.tiltY, dtPerWp, radius, aspectCorrection, reservoir);
   }
+  let vertsAfter = 0;
+  for (const p of bundle.paths) vertsAfter += p.count;
+  const hasNewVerts = vertsAfter > vertsBefore;
 
   // Pressure smoothing for radius tracking
   for (let i = 0; i < points.length; i++) {
@@ -685,34 +690,37 @@ export function dispatchBrushDabs(encoder: GPUCommandEncoder, x: number, y: numb
     }
   }
 
-  // Clear mask — each commit cycle starts fresh
-  needMaskClear = true;
+  // Only render + commit when new path vertices were added.
+  // Without this gate, the tail 2 vertices re-render every frame with a cleared mask,
+  // causing paint to accumulate at the release point (blob on lift-off).
+  if (hasNewVerts) {
+    // Clear mask — each commit cycle starts fresh
+    needMaskClear = true;
 
-  // Dispatch current paths against snapshot
-  dispatchBristlePaths(encoder, bundle.paths, scene, slot, ks, 'brush-stroke',
-    strokeAABB, true);
+    // Dispatch current paths against snapshot
+    dispatchBristlePaths(encoder, bundle.paths, scene, slot, ks, 'brush-stroke',
+      strokeAABB, true);
 
-  // Continuous commit — bake rendered result into snapshot, trim paths to trailing edge.
-  // Paint is permanent the moment the brush moves past. Going back deposits new paint
-  // on top of what's already committed — real physics.
-  if (snapshotAccum) {
-    const accumPP = getAccumPP();
-    const statePP = getStatePP();
-    const h = getSurfaceHeight();
-    encoder.copyTextureToTexture(
-      { texture: accumPP.read }, { texture: snapshotAccum }, [w, h],
-    );
-    encoder.copyTextureToTexture(
-      { texture: statePP.read }, { texture: snapshotState! }, [w, h],
-    );
-    trimPathsToTail(bundle);
-    strokeAABB = { minX: Infinity, minY: Infinity, maxX: -Infinity, maxY: -Infinity };
-    for (const path of bundle.paths) {
-      if (path.count > 0) {
-        strokeAABB.minX = Math.min(strokeAABB.minX, path.aabb.minX);
-        strokeAABB.minY = Math.min(strokeAABB.minY, path.aabb.minY);
-        strokeAABB.maxX = Math.max(strokeAABB.maxX, path.aabb.maxX);
-        strokeAABB.maxY = Math.max(strokeAABB.maxY, path.aabb.maxY);
+    // Continuous commit — bake rendered result into snapshot, trim paths to trailing edge.
+    if (snapshotAccum) {
+      const accumPP = getAccumPP();
+      const statePP = getStatePP();
+      const h = getSurfaceHeight();
+      encoder.copyTextureToTexture(
+        { texture: accumPP.read }, { texture: snapshotAccum }, [w, h],
+      );
+      encoder.copyTextureToTexture(
+        { texture: statePP.read }, { texture: snapshotState! }, [w, h],
+      );
+      trimPathsToTail(bundle);
+      strokeAABB = { minX: Infinity, minY: Infinity, maxX: -Infinity, maxY: -Infinity };
+      for (const path of bundle.paths) {
+        if (path.count > 0) {
+          strokeAABB.minX = Math.min(strokeAABB.minX, path.aabb.minX);
+          strokeAABB.minY = Math.min(strokeAABB.minY, path.aabb.minY);
+          strokeAABB.maxX = Math.max(strokeAABB.maxX, path.aabb.maxX);
+          strokeAABB.maxY = Math.max(strokeAABB.maxY, path.aabb.maxY);
+        }
       }
     }
   }

@@ -619,6 +619,12 @@ export function updateBundle(
   // --- Per-bristle path tracking: append world-space positions for selected tips ---
   // Tip positions use brushRadius directly — splay (already pressure-driven) determines spread.
   // The cursor matches by showing brushSize * splay as its radius.
+  // Skip recording when pressure is near zero — prevents convergent blob on release
+  // (splay contracts, all tips converge to center, creating dense splat).
+  if (bundle.contactPressure < 0.05) {
+    bundle.lastPos = [pos[0], pos[1]];
+    return;
+  }
   for (let si = 0; si < bundle.selectedTips.length; si++) {
     const tipIdx = bundle.selectedTips[si];
     const tip = tips[tipIdx];
@@ -627,15 +633,19 @@ export function updateBundle(
     const wx: number = pos[0] + tip.currentOffset[0] * brushRadius * aspectCorrection;
     const wy: number = pos[1] + tip.currentOffset[1] * brushRadius;
     const splayScale = bundle.splay * (1.0 + bundle.age * 0.3);
+    // Bristle radius: thin enough to look like hair clusters, not fat circles.
+    // Gap-filling when loaded is handled by paint spread in the shader.
     const rBristle = (brushRadius / Math.sqrt(SELECTED_TIP_COUNT))
-      * (1.5 - 0.3 * tip.ringNorm) * splayScale;
+      * (0.35 - 0.08 * tip.ringNorm) * splayScale;
 
-    // Deduplicate: skip if identical to last position
+    // Deduplicate: skip if tip hasn't moved at least 10% of its radius.
+    // Prevents O-U jitter from generating vertices when stationary (release blob).
+    const dedupThresh = rBristle * rBristle * 0.01;
     if (path.count > 0) {
       const lastP = path.positions[path.count - 1];
       const ddx = wx - lastP[0];
       const ddy = wy - lastP[1];
-      if (ddx * ddx + ddy * ddy < 1e-12) continue;
+      if (ddx * ddx + ddy * ddy < dedupThresh) continue;
     }
 
     path.positions.push([wx, wy]);
@@ -650,11 +660,12 @@ export function updateBundle(
     path.colorKg = tip.colorKg;
     path.colorKb = tip.colorKb;
 
-    // Update AABB
-    path.aabb.minX = Math.min(path.aabb.minX, wx - rBristle);
-    path.aabb.minY = Math.min(path.aabb.minY, wy - rBristle);
-    path.aabb.maxX = Math.max(path.aabb.maxX, wx + rBristle);
-    path.aabb.maxY = Math.max(path.aabb.maxY, wy + rBristle);
+    // Update AABB — expanded by 6x radius to account for paint spread when loaded
+    const aabbR = rBristle * 6;
+    path.aabb.minX = Math.min(path.aabb.minX, wx - aabbR);
+    path.aabb.minY = Math.min(path.aabb.minY, wy - aabbR);
+    path.aabb.maxX = Math.max(path.aabb.maxX, wx + aabbR);
+    path.aabb.maxY = Math.max(path.aabb.maxY, wy + aabbR);
 
     // RDP decimation when path gets long
     if (path.count >= RDP_TRIGGER) {
@@ -727,7 +738,7 @@ export function trimPathsToTail(bundle: BristleBundle): void {
       path.aabb = { minX: Infinity, minY: Infinity, maxX: -Infinity, maxY: -Infinity };
       for (let i = 0; i < path.count; i++) {
         const [px, py] = path.positions[i];
-        const r = path.radii[i];
+        const r = path.radii[i] * 6; // account for paint spread
         path.aabb.minX = Math.min(path.aabb.minX, px - r);
         path.aabb.minY = Math.min(path.aabb.minY, py - r);
         path.aabb.maxX = Math.max(path.aabb.maxX, px + r);

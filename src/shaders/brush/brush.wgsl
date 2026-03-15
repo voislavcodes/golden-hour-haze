@@ -137,10 +137,8 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
       }
     }
 
-    // Outside this bristle's stroke — no contribution
-    if (b_min_dist > 0.0) { continue; }
-
-    any_contact = true;
+    // Conservative early exit: outside bristle + max paint spread
+    if (b_min_dist > info.bristle_radius * 5.0) { continue; }
 
     // Local properties at closest point on this bristle
     let vi0 = info.offset + b_best_seg;
@@ -148,15 +146,24 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
     let local_r = mix(vertices[vi0].radius, vertices[vi1].radius, b_best_t);
     let local_load = mix(vertices[vi0].load, vertices[vi1].load, b_best_t);
 
+    // Paint spread: wet loaded paint flows beyond the physical bristle tip,
+    // filling gaps between hairs. As paint depletes, spread → 0 and individual
+    // thin bristle streaks emerge (dry brush).
+    let spread = local_r * smoothstep(0.05, 0.3, local_load) * 5.0;
+
+    // Outside physical bristle + spread — no contribution
+    if (b_min_dist > spread) { continue; }
+
+    any_contact = true;
+
     // Edge softness for this bristle
-    let depth = max(-b_min_dist, 0.0) / max(local_r, 0.0001);
     let edge_softness = local_r * (0.2 + params.thinners * 0.3);
     let edge_noise_angle = atan2(uv.y - vertices[vi0].pos.y, uv.x - vertices[vi0].pos.x);
     let roughness = 0.05 + params.age * 0.22;
     let edge_noise = hash_noise(edge_noise_angle * 3.0, params.bristle_seed + f32(bi)) * 0.7
                    + hash_noise(edge_noise_angle * 12.0, params.bristle_seed + f32(bi) + 5.0) * 0.3;
     let edge_roughness = edge_noise * roughness * local_r;
-    let bristle_alpha = 1.0 - smoothstep(-edge_softness - edge_roughness, 0.0, b_min_dist);
+    let bristle_alpha = 1.0 - smoothstep(-edge_softness - edge_roughness, spread, b_min_dist);
 
     // Radial bias — edges of the bundle deposit less
     let ring = info.ring_norm;
@@ -164,10 +171,7 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
     let radial_bias = 1.0 - edge_sq * 0.4;
 
     // Per-bristle contribution: alpha × load × radial bias
-    // Loaded boost: when paint is full, each bristle covers more area (paint spreads
-    // between bristles). As load depletes, boost fades → gaps emerge as dry brush.
-    let load_boost = 1.0 + smoothstep(0.3, 0.7, local_load) * 1.2;
-    let contrib = bristle_alpha * max(local_load, 0.01) * radial_bias * load_boost;
+    let contrib = bristle_alpha * max(local_load, 0.01) * radial_bias;
     miss *= (1.0 - saturate(contrib));
 
     // Accumulate weighted load for smooth dry brush transition
