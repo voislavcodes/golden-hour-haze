@@ -620,7 +620,10 @@ export function dispatchBrushDabs(encoder: GPUCommandEncoder, x: number, y: numb
       * (0.5 + 0.5 * avgPressure)
       * (1.0 + scene.thinners * 0.3)
       * splay;
-    const transferred = reservoir * transferRate * frameDistBrushWidths;
+    // Distance-based depletion + contact cost for dabs (inversely scales with speed)
+    const speedNorm = Math.min(1, frameDistBrushWidths / 0.5);
+    const contactCost = 0.5 * avgPressure * splay * (1.0 - speedNorm);
+    const transferred = reservoir * transferRate * (frameDistBrushWidths + contactCost);
     reservoir = Math.max(RESIDUAL_FLOOR, reservoir - transferred);
   }
 

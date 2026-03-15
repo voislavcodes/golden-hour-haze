@@ -605,7 +605,10 @@ export function updateBundle(
       const phase = tip.load > 0.35 ? 0.012 : 0.08; // slow loaded → faster dry tail
       const baseRate = (phase + edgeFactor * 0.06) * tipPressure / tip.loadCapacity;
       const distanceTerm = brushDist > 0 ? baseRate * (brushDist / brushRadius) : 0;
-      const contactTerm = baseRate * 0.1 * dt; // slow squeeze while stationary
+      // Contact cost: stationary pressure squeezes paint out. Scales inversely with speed
+      // so it only matters for dabs, not continuous strokes (which use distance term).
+      const speedNorm = Math.min(1, brushDist / (brushRadius * 0.05));
+      const contactTerm = baseRate * 1.0 * (1.0 - speedNorm);
       const transferred = tip.load * (distanceTerm + contactTerm);
       tip.load = Math.max(0, tip.load - transferred);
     }
@@ -640,8 +643,9 @@ export function updateBundle(
 
     // Deduplicate: skip if tip hasn't moved at least 10% of its radius.
     // Prevents O-U jitter from generating vertices when stationary (release blob).
+    // Always allow first 2 vertices — shader needs a capsule segment to render.
     const dedupThresh = rBristle * rBristle * 0.01;
-    if (path.count > 0) {
+    if (path.count >= 2) {
       const lastP = path.positions[path.count - 1];
       const ddx = wx - lastP[0];
       const ddy = wy - lastP[1];
