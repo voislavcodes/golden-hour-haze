@@ -47,7 +47,7 @@ let estimatedPeakLayers = 0;
 // Hysteresis commit control — decouple physics rate from render rate
 let strokeDispatched = false;
 const BRISTLE_COMMIT = 0.4;    // commit when any bristle moves 0.4× its own radius
-const BRISTLE_SUBDIVIDE = 1.0; // subdivide when any bristle would jump > 1× its radius
+const BRISTLE_SUBDIVIDE = 2.5; // subdivide when any bristle would jump > 2.5× its radius
 
 // Paint depletion state
 let reservoir = 0.5;
@@ -497,7 +497,7 @@ export function dispatchBrushDabs(_encoder: GPUCommandEncoder, x: number, y: num
 
     // 5. Dispatch — subdivide if any bristle would jump more than its radius
     if (maxRatio > BRISTLE_SUBDIVIDE) {
-      const steps = Math.ceil(maxRatio / BRISTLE_COMMIT);
+      const steps = Math.ceil(maxRatio / 0.8);
       for (let s = 0; s < steps; s++) {
         dispatchSegments(bundle.paths, scene, slot, ks, s / steps, (s + 1) / steps);
       }
